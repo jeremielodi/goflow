@@ -27,11 +27,13 @@ func main() {
 		log.Fatalln("Postgres: ", err)
 	}
 	processDefinitionCtrl := api.NewProcessDefinitionController(db, &rootDirPath)
+	processInstanceCtrl := api.NewProcessInstanceController(db)
 
 	app := fiber.New()
 
 	// Deploy BPMN
 	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 
 	app.Listen(":8080")
 }
