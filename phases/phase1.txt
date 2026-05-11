@@ -1,0 +1,438 @@
+Phase 1 — Core BPMN Runtime
+
+This phase is the MOST important.
+
+If Phase 1 is clean,
+everything else becomes easier.
+
+Supported BPMN Elements
+Start Event
+StartEvent → next node
+
+Simple.
+
+End Event
+
+Marks:
+
+execution complete
+process finished if no more active executions
+Sequence Flow
+A → B
+
+Just transition execution pointer.
+
+Exclusive Gateway
+
+This is your first real engine logic.
+
+Example:
+
+amount > 1000
+
+You evaluate expressions and choose path.
+
+Recommended:
+
+use CEL
+or Expr
+or simple Go evaluator
+
+Do NOT build your own expression language initially.
+
+Service Tasks
+
+This is critical.
+
+Recommended architecture:
+
+Workflow Engine
+    ↓ creates job
+Worker polls jobs
+Worker executes logic
+Worker completes job
+
+Exactly like Camunda workers.
+
+Example
+{
+  "type": "send-email",
+  "variables": {
+    "to": "john@test.com"
+  }
+}
+
+Worker:
+
+worker.Subscribe("send-email", handler)
+User Tasks
+
+Store in DB.
+
+Users:
+
+claim
+complete
+reassign
+
+This becomes your Tasklist equivalent.
+
+BPMN Parsing
+
+You should internally convert BPMN XML into:
+
+type Node struct {
+    ID   string
+    Type string
+    Next []string
+}
+
+And:
+
+type ProcessGraph struct {
+    Nodes map[string]*Node
+}
+
+VERY important:
+Build graph once during deployment.
+
+Do NOT parse XML during execution.
+
+REST API
+Minimal APIs
+Deploy BPMN
+POST /deployments
+Start Process
+POST /processes/{key}/start
+
+Body:
+
+{
+  "variables": {
+    "amount": 1200
+  }
+}
+Get Tasks
+GET /tasks
+Complete Task
+POST /tasks/{id}/complete
+PHASE 1 ARCHITECTURE
+HTTP API
+   ↓
+Workflow Engine
+   ↓
+Execution Manager
+   ↓
+PostgreSQL
+Phase 2 — Real BPMN Power
+
+This phase makes the engine genuinely useful.
+
+Parallel Gateway
+
+This introduces:
+
+concurrency
+multiple executions
+
+Example:
+
+Fork
+ ├── Task A
+ └── Task B
+
+You create:
+
+2 execution tokens
+
+Join waits until:
+
+all branches completed
+
+This is where execution trees become important.
+
+Timers
+
+Very important.
+
+Recommended design:
+
+jobs (
+   id,
+   type,
+   due_at,
+   retries,
+   payload
+)
+
+Timer worker polls due jobs.
+
+Message Events
+
+Example:
+
+Wait for invoice_received
+
+Then external API:
+
+POST /messages
+
+Correlates waiting execution.
+
+Forms
+
+DO NOT build forms first.
+
+Store JSON schema.
+
+Example:
+
+{
+  "fields": [
+    {
+      "type": "text",
+      "label": "Reason"
+    }
+  ]
+}
+
+Frontend renders dynamically.
+
+Attachments
+
+Simple table:
+
+attachments (
+   id,
+   task_id,
+   filename,
+   path
+)
+Notifications
+
+Use:
+
+email
+websocket
+push
+queue
+
+Event-based architecture is best.
+
+Phase 3 — Enterprise Readiness
+
+This phase turns prototype into product.
+
+Process Monitoring
+
+You need:
+
+Active instances
+Failed jobs
+Task duration
+Bottlenecks
+SLA
+
+This becomes your "Operate".
+
+Retry Policies
+
+Example:
+
+{
+  "retries": 3,
+  "retryBackoff": "PT5M"
+}
+
+Very important for service tasks.
+
+Job Queue
+
+At this point:
+
+introduce NATS
+OR
+Redis Streams
+
+This decouples workers.
+
+Multi-user Assignment
+
+Add:
+
+candidate users
+candidate groups
+delegation
+escalation
+Audit Logs
+
+Critical for enterprise.
+
+Store:
+
+who
+what
+when
+old/new values
+Phase 4 — Distributed Engine
+
+Only after stability.
+
+Distributed Workers
+
+Workers can run:
+
+anywhere
+any language
+
+Exactly like:
+
+Temporal
+Camunda
+Zeebe
+Horizontal Scaling
+
+Important rules:
+
+Engine must be stateless
+DB handles consistency
+Workers idempotent
+Event Streaming
+
+Use:
+
+NATS
+Kafka
+Redpanda
+
+Publish:
+
+process.started
+task.created
+task.completed
+job.failed
+
+This becomes incredibly powerful.
+
+MOST IMPORTANT DESIGN DECISIONS
+1. Separate Runtime from BPMN
+
+BPMN is ONLY:
+
+a definition
+a graph
+
+Runtime is independent.
+
+This is VERY important.
+
+2. Execution Token Model
+
+Your engine should work like token movement.
+
+Example:
+
+Start
+ ↓
+Task A
+ ↓
+Gateway
+
+Execution pointer moves node to node.
+
+This is the heart of BPMN engines.
+
+3. Async-first architecture
+
+Never block execution thread.
+
+Everything:
+
+jobs
+timers
+notifications
+workers
+
+Should be async.
+
+4. Idempotency
+
+VERY important.
+
+Workers may retry.
+
+Never assume single execution.
+
+Recommended Tech Stack
+Backend
+Go
+Fiber
+pgx
+PostgreSQL
+BPMN
+BPMN XML parser
+BPMN.js frontend
+Messaging
+
+Initially:
+
+internal Go channels
+
+Later:
+
+NATS
+Search
+
+Later:
+
+OpenSearch
+Suggested Project Structure
+/cmd
+/internal
+    /engine
+    /runtime
+    /parser
+    /scheduler
+    /workers
+    /storage
+    /api
+/pkg
+My recommendation for implementation order
+Week 1–2
+BPMN parser
+Graph builder
+Start/end events
+Week 3
+User tasks
+Week 4
+Service tasks
+Week 5
+Exclusive gateways
+Week 6
+Variables
+Week 7
+Persistence
+Week 8
+Timers
+
+At this point:
+you already have a serious workflow engine.
+
+Final Advice
+
+Your biggest risk is NOT technical.
+
+It is:
+
+overengineering too early
+trying to support all BPMN elements
+adding clustering too soon
+
+Keep it:
+
+simple
+deterministic
+observable
+async
+
+A focused BPMN engine in Go for enterprise workflows is absolutely realistic.
