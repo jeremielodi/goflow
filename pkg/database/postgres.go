@@ -5,6 +5,7 @@ import (
 
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
 )
 
 func NewPostgres(util common.Util) (*sqlx.DB, error) {

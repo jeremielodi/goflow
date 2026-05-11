@@ -3,17 +3,8 @@ package parser
 import "encoding/xml"
 
 type Definitions struct {
-	Process Process `xml:"process"`
-}
-
-type Process struct {
-	ID                string             `xml:"id,attr"`
-	StartEvents       []StartEvent       `xml:"startEvent"`
-	EndEvents         []EndEvent         `xml:"endEvent"`
-	UserTasks         []UserTask         `xml:"userTask"`
-	ServiceTasks      []ServiceTask      `xml:"serviceTask"`
-	SequenceFlows     []SequenceFlow     `xml:"sequenceFlow"`
-	ExclusiveGateways []ExclusiveGateway `xml:"exclusiveGateway"`
+	XMLName xml.Name `xml:"definitions"`
+	Process Process  `xml:"process"`
 }
 
 type Task struct {
