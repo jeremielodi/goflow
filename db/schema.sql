@@ -102,6 +102,8 @@ CREATE TABLE process_definitions (
 
     version INTEGER NOT NULL DEFAULT 1,
 
+    engine_type TEXT NOT NULL DEFAULT 'unknown'
+
     is_active BOOLEAN NOT NULL DEFAULT true,
 
     -- Original BPMN XML uploaded from Camunda Modeler
@@ -217,8 +219,7 @@ CREATE TABLE tasks (
     -- BPMN task name
     task_name TEXT NULL,
 
-    assignee UUID NULL
-        REFERENCES users(id),
+    assignee TEXT NULL,
 
     candidate_group TEXT NULL,
 

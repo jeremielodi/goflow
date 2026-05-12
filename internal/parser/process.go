@@ -11,16 +11,22 @@ type Process struct {
 	ID           string `xml:"id,attr"`
 	IsExecutable bool   `xml:"isExecutable,attr"`
 
+	Name                    string                   `xml:"name,attr"`
 	StartEvents             []StartEvent             `xml:"startEvent"`
-	EndEvents               []EndEvent               `xml:"endEvent"`
-	Tasks                   []Task                   `xml:"task"`
 	UserTasks               []UserTask               `xml:"userTask"`
 	ServiceTasks            []ServiceTask            `xml:"serviceTask"`
+	EndEvents               []EndEvent               `xml:"endEvent"`
 	ExclusiveGateways       []ExclusiveGateway       `xml:"exclusiveGateway"`
 	ParallelGateways        []ParallelGateway        `xml:"parallelGateway"`
 	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
+	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
+}
 
-	SequenceFlows []SequenceFlow `xml:"sequenceFlow"`
+type ProcessDefinitionInfo struct {
+	ID           string `json:"id"`
+	Key          string `json:"key"`
+	Version      int    `json:"version"`
+	ResourceName string `json:"resourceName"`
 }
 
 // Deployment model (matches table columns)
@@ -49,6 +55,7 @@ type ProcessDefinition struct {
 	IsActive     bool            `db:"is_active"`
 	BpmnXML      string          `db:"bpmn_xml"`
 	ParsedGraph  json.RawMessage `db:"parsed_graph"` // JSONB
+	EngineType   string          `db:"engine_type"`
 	CreatedAt    time.Time       `db:"created_at"`
 }
 

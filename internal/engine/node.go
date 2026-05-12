@@ -21,10 +21,12 @@ type Flow struct {
 }
 
 type Node struct {
-	ID   string
-	Name string
-	Type NodeType
-
-	Incoming []string
-	Outgoing []Flow
+	ID                 string
+	Name               string
+	Type               NodeType
+	AssigneeExpr       *string
+	CandidateGroupExpr *string
+	Incoming           []string
+	Outgoing           []Flow
+	JobType            *string // for service tasks
 }

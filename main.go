@@ -28,12 +28,17 @@ func main() {
 	}
 	processDefinitionCtrl := api.NewProcessDefinitionController(db, &rootDirPath)
 	processInstanceCtrl := api.NewProcessInstanceController(db)
+	taskCtrl := api.NewTaskController(db, &rootDirPath)
 
 	app := fiber.New()
 
 	// Deploy BPMN
-	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)    // C8
+	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN) // C7
+
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
+	app.Get("/tasks", taskCtrl.GetTasks)
+	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
 
 	app.Listen(":8080")
 }

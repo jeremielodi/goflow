@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/repository"
 
 	"context"
 	"database/sql"
@@ -206,7 +208,6 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		json.Unmarshal(varsData, &variables)
 	}
 
-	// 3. Run the token through the graph until a user task or end
 	currentID := exec.CurrentElementID
 	for {
 		node, ok := r.Graph.Nodes[currentID]
@@ -218,20 +219,17 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		case engine.StartEventType, engine.ExclusiveGatewayType:
 			next, err := r.resolveNext(ctx, node, variables, exec.ProcessInstanceID)
 			if err != nil {
-				return fmt.Errorf("Failed to resolve next %s", err)
+				return err
 			}
-			// Move execution token
 			err = r.updateExecution(ctx, exec.ID, next, variables)
 			if err != nil {
-				return fmt.Errorf("Failed to update execution %s, next is %s", err, next)
+				return err
 			}
 			currentID = next
-			return nil
+			// ✅ continue loop (do not return)
 
 		case engine.ServiceTaskType:
-			// For now, execute synchronously (later create a job)
 			fmt.Printf("Executing service task: %s\n", node.Name)
-			// Optionally call an external worker hook
 			next, err := r.resolveNext(ctx, node, variables, exec.ProcessInstanceID)
 			if err != nil {
 				return err
@@ -241,21 +239,18 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return err
 			}
 			currentID = next
-			return nil
+			// ✅ continue loop
 
 		case engine.UserTaskType:
-			// Create a task in the tasks table
 			taskID, err := r.createUserTask(ctx, exec.ProcessInstanceID, exec.ID, node, variables)
 			if err != nil {
 				return err
 			}
 			fmt.Printf("UserTask '%s' created, task id = %s\n", node.Name, taskID)
-			// Execution stops here – waiting for task completion
-			return nil
+			return nil // stop, waiting for user action
 
 		case engine.EndEventType:
-			// Process instance completed
-			_, err = r.DB.ExecContext(ctx, `
+			_, err := r.DB.ExecContext(ctx, `
                 UPDATE public.process_instances
                 SET status = 'completed', ended_at = $1
                 WHERE id = $2
@@ -263,7 +258,6 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			if err != nil {
 				return err
 			}
-			// Mark execution as completed
 			_, err = r.DB.ExecContext(ctx, `
                 UPDATE public.executions
                 SET status = 'completed', is_active = false, updated_at = $1
@@ -378,22 +372,58 @@ func (r *Runtime) updateExecution(ctx context.Context, execID uuid.UUID, newElem
 // ------------------------------------------------------------
 // createUserTask inserts a task and returns its ID
 // ------------------------------------------------------------
-func (r *Runtime) createUserTask(ctx context.Context, instanceID, execID uuid.UUID, node *engine.Node, variables map[string]interface{}) (uuid.UUID, error) {
-	taskID := uuid.New()
-	_, err := r.DB.ExecContext(ctx, `
-        INSERT INTO public.tasks (
-            id, process_instance_id, execution_id, task_definition_key, task_name,
-            status, created_at, form_data
-        ) VALUES ($1, $2, $3, $4, $5, 'created', $6, $7)
-    `, taskID, instanceID, execID, node.ID, node.Name, time.Now(), variables)
-	if err != nil {
-		return uuid.Nil, err
+func (r *Runtime) createUserTask(
+	ctx context.Context,
+	instanceID, execID uuid.UUID,
+	node *engine.Node,
+	vars map[string]interface{},
+) (uuid.UUID, error) {
+	// Resolve assignee
+	var assignee *string
+	if node.AssigneeExpr != nil {
+		resolved := resolveExpression(*node.AssigneeExpr, vars)
+		if resolved != "" {
+			assignee = &resolved
+		}
 	}
-	// Also mark execution as waiting? Optionally, set execution status to 'waiting'
-	_, err = r.DB.ExecContext(ctx, `
-        UPDATE public.executions
-        SET status = 'waiting', updated_at = $1
-        WHERE id = $2
-    `, time.Now(), execID)
-	return taskID, err
+
+	// Resolve candidate group
+	var candidateGroup *string
+	if node.CandidateGroupExpr != nil {
+		resolved := resolveExpression(*node.CandidateGroupExpr, vars)
+		if resolved != "" {
+			candidateGroup = &resolved
+		}
+	}
+
+	// Insert task into database (using TaskRepository)
+	task := models.Task{
+		ID:                uuid.New(),
+		ProcessInstanceID: instanceID,
+		ExecutionID:       &execID,
+		TaskDefinitionKey: node.ID,
+		TaskName:          &node.Name,
+		Assignee:          assignee,       // resolved string
+		CandidateGroup:    candidateGroup, // resolved string
+		Status:            "created",
+		CreatedAt:         time.Now(),
+	}
+	taskRepo := repository.NewTaskRepository(r.DB)
+	_, err := taskRepo.CreateTask(task)
+	return task.ID, err
+}
+
+func resolveExpression(expr string, vars map[string]interface{}) string {
+	expr = strings.TrimSpace(expr)
+	// If it looks like a variable reference: ${...}
+	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
+		key := expr[2 : len(expr)-1] // extract variable name
+		if val, ok := vars[key]; ok {
+			return fmt.Sprintf("%v", val)
+		}
+		// fallback: return empty if variable not found
+		return ""
+	}
+	// Otherwise treat as literal string
+	return expr
 }

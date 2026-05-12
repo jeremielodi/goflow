@@ -3,8 +3,8 @@ package parser
 import "encoding/xml"
 
 type Definitions struct {
-	XMLName xml.Name `xml:"definitions"`
-	Process Process  `xml:"process"`
+	XMLName   xml.Name  `xml:"definitions"`
+	Processes []Process `xml:"process"` // change from single Process to slice
 }
 
 type Task struct {
@@ -23,12 +23,41 @@ type EndEvent struct {
 	ID       string   `xml:"id,attr"`
 	Incoming []string `xml:"incoming"`
 }
+type CamundaExtensions struct {
+	Assignee        string `xml:"assignee,attr"`
+	CandidateGroups string `xml:"candidateGroups,attr"`
+	TaskDefinition  *struct {
+		Topic string `xml:"topic,attr"`
+	} `xml:"taskDefinition"`
+}
+type CamundaTaskDefinition struct {
+	Topic string `xml:"topic,attr"` // for external service tasks
+}
+
+// ZeebeExtensions (for Camunda 8)
+type ZeebeExtensions struct {
+	TaskDefinition *ZeebeTaskDefinition `xml:"taskDefinition"`
+	Assignment     *ZeebeAssignment     `xml:"assignment"`
+}
+
+type ZeebeTaskDefinition struct {
+	Type string `xml:"type,attr"`
+}
+
+type ZeebeAssignment struct {
+	Assignee string `xml:"assignee,attr"`
+}
 
 type UserTask struct {
-	ID       string   `xml:"id,attr"`
-	Name     string   `xml:"name,attr"`
-	Incoming []string `xml:"incoming"`
-	Outgoing []string `xml:"outgoing"`
+	ID                     string             `xml:"id,attr"`
+	Name                   string             `xml:"name,attr"`
+	Incoming               []string           `xml:"incoming"`
+	Outgoing               []string           `xml:"outgoing"`
+	CamundaExt             *CamundaExtensions `xml:"extensionElements>camunda:taskListener?omitempty"`
+	CamundaAssignee        string             `xml:"http://camunda.org/schema/1.0/bpmn assignee,attr"`
+	CamundaCandidateGroups string             `xml:"http://camunda.org/schema/1.0/bpmn candidateGroups,attr"`
+	CamundaFormKey         string             `xml:"http://camunda.org/schema/1.0/bpmn formKey,attr"`
+	ZeebeExt               *ZeebeExtensions   `xml:"extensionElements>zeebe:assignment"?`
 }
 
 type ServiceTask struct {
@@ -36,6 +65,12 @@ type ServiceTask struct {
 	Name     string   `xml:"name,attr"`
 	Incoming []string `xml:"incoming"`
 	Outgoing []string `xml:"outgoing"`
+
+	CamundaExt *CamundaExtensions `xml:"extensionElements>camunda:taskListener"?`
+	ZeebeExt   *ZeebeExtensions   `xml:"extensionElements>zeebe:assignment"?`
+
+	CamundaType  string `xml:"http://camunda.org/schema/1.0/bpmn type,attr"`
+	CamundaTopic string `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`
 }
 
 type ExclusiveGateway struct {

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -137,125 +137,17 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 // COMPLETE USER TASK
 // POST /tasks/:id/complete
 // ============================================================
-type CompleteTaskRequest struct {
-	Variables map[string]interface{} `json:"variables"`
-}
-
 func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
-	taskID, err := uuid.Parse(c.Params("id"))
+	taskID, _ := uuid.Parse(c.Params("id"))
+	var req struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+	c.BodyParser(&req)
+
+	svc := service.NewTaskService(pc.db)
+	err := svc.CompleteTask(c.Context(), taskID, req.Variables)
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid task id"})
+		return c.JSON(fiber.Map{"title": "Error", "message": "Task not completed", "error": err.Error()})
 	}
-
-	var body CompleteTaskRequest
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
-	}
-
-	// Load task and linked information
-	var task struct {
-		ID                uuid.UUID `db:"id"`
-		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
-		ExecutionID       uuid.UUID `db:"execution_id"`
-		TaskDefinitionKey string    `db:"task_definition_key"`
-		Status            string    `db:"status"`
-	}
-	err = pc.db.Get(&task, `
-        SELECT id, process_instance_id, execution_id, task_definition_key, status
-        FROM public.tasks
-        WHERE id = $1
-    `, taskID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "task not found"})
-	}
-	if task.Status != "created" {
-		return c.Status(400).JSON(fiber.Map{"error": "task already completed or claimed"})
-	}
-
-	// Begin transaction to update task and variables
-	tx, err := pc.db.Beginx()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "transaction error"})
-	}
-	defer tx.Rollback()
-
-	// Mark task completed
-	_, err = tx.Exec(`
-        UPDATE public.tasks
-        SET status = 'completed', completed_at = $1
-        WHERE id = $2
-    `, time.Now(), task.ID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to update task"})
-	}
-
-	// Merge variables
-	var existingData []byte
-	err = tx.Get(&existingData, `SELECT data FROM public.variables WHERE process_instance_id = $1`, task.ProcessInstanceID)
-	if err != nil && err != sql.ErrNoRows {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch variables"})
-	}
-	vars := make(map[string]interface{})
-	if len(existingData) > 0 {
-		json.Unmarshal(existingData, &vars)
-	}
-	for k, v := range body.Variables {
-		vars[k] = v
-	}
-	newData, _ := json.Marshal(vars)
-	_, err = tx.Exec(`
-        INSERT INTO public.variables (id, process_instance_id, data, updated_at)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (process_instance_id) DO UPDATE
-        SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
-    `, uuid.New(), task.ProcessInstanceID, newData, time.Now())
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to update variables"})
-	}
-
-	// Resume the execution (set status back to active)
-	_, err = tx.Exec(`
-        UPDATE public.executions
-        SET status = 'active', updated_at = $1
-        WHERE id = $2
-    `, time.Now(), task.ExecutionID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to resume execution"})
-	}
-
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "commit failed"})
-	}
-
-	// Now run the runtime again, starting from the execution
-	// Load the process graph again
-	var defID uuid.UUID
-	err = pc.db.Get(&defID, `
-        SELECT process_definition_id FROM public.process_instances WHERE id = $1
-    `, task.ProcessInstanceID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "definition not found"})
-	}
-	processRepo := repository.NewProcessRepository(pc.db)
-	def, err := processRepo.FindProcessDefinitionByID(defID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to load process definition"})
-	}
-	var graph engine.ProcessGraph
-	json.Unmarshal(def.ParsedGraph, &graph)
-
-	rt := &runtime.Runtime{
-		Graph: &graph,
-		DB:    pc.db,
-	}
-	ctx := c.Context()
-	err = rt.ExecuteExecution(ctx, task.ExecutionID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(fiber.Map{
-		"message": "task completed and process resumed",
-		"taskId":  task.ID,
-	})
+	return c.JSON(fiber.Map{"message": "completed"})
 }

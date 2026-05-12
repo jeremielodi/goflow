@@ -46,4 +46,5 @@ type ProcessDefinitionCreateModel struct {
 	IsActive     bool
 	BpmnXML      string
 	ParsedGraph  json.RawMessage
+	EngineType   string
 }

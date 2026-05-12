@@ -143,6 +143,7 @@ func (r *ProcessRepository) CreateProcessDefinition(
 			{Key: "is_active", Value: def.IsActive},
 			{Key: "bpmn_xml", Value: def.BpmnXML},
 			{Key: "parsed_graph", Value: def.ParsedGraph},
+			{Key: "engine_type", Value: def.EngineType},
 			{Key: "created_at", Value: now},
 		},
 	)

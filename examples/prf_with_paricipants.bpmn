@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bioc="http://bpmn.io/schema/bpmn/biocolor/1.0" xmlns:color="http://www.omg.org/spec/BPMN/non-normative/color/1.0" id="Definitions_PurchaseProcess" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.46.1">
+  <bpmn:message id="Message_NotifySupervisor" name="notify_supervisor" />
+  <bpmn:message id="Message_NotifyApprover" name="notify_approver" />
+  <bpmn:message id="Message_NotifyAccountant" name="notify_accountant" />
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_Requester" name="Requester (Employee)" processRef="prf_process_requester" />
+    <bpmn:participant id="Participant_Supervisor" name="Supervisor" processRef="prf_process_supervisor" />
+    <bpmn:participant id="Participant_Approver" name="Approver / Budget Holder" processRef="prf_process_approver" />
+    <bpmn:participant id="Participant_Accountant" name="Accountant" processRef="prf_process_accountant" />
+    <bpmn:messageFlow id="Flow_13dxsqd" sourceRef="Task_SystemNotifyApprover" targetRef="Event_ApproverNotifReceived" />
+    <bpmn:messageFlow id="Flow_1fd1muj" sourceRef="Task_SystemNotifyAccountant" targetRef="Event_AccountantNotifReceived" />
+    <bpmn:messageFlow id="Flow_0lvgyf3" sourceRef="Task_SystemNotifySupervisor" targetRef="supervisor_receive_message" />
+  </bpmn:collaboration>
+  <bpmn:process id="prf_process_requester" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:startEvent id="StartEvent_Requester" name="Start">
+      <bpmn:outgoing>Flow_R1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_CreatePRF" name="create_PRF" camunda:formKey="">
+      <bpmn:extensionElements />
+      <bpmn:incoming>Flow_R1</bpmn:incoming>
+      <bpmn:outgoing>Flow_R2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="Task_SignPRF" name="Sign_PRF" camunda:assignee="${maker_name}">
+      <bpmn:incoming>Flow_R2</bpmn:incoming>
+      <bpmn:outgoing>Flow_0be263b</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="Flow_R1" sourceRef="StartEvent_Requester" targetRef="Task_CreatePRF" />
+    <bpmn:sequenceFlow id="Flow_R2" sourceRef="Task_CreatePRF" targetRef="Task_SignPRF" />
+    <bpmn:sequenceFlow id="Flow_0be263b" sourceRef="Task_SignPRF" targetRef="Task_SystemNotifySupervisor" />
+    <bpmn:serviceTask id="Task_SystemNotifySupervisor" name="Send notification&#10;to Supervisor&#10;notify-supervisor" camunda:type="external" camunda:topic="prf_notify_supervisor">
+      <bpmn:incoming>Flow_0be263b</bpmn:incoming>
+    </bpmn:serviceTask>
+  </bpmn:process>
+  <bpmn:process id="prf_process_supervisor" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:extensionElements />
+    <bpmn:sequenceFlow id="Flow_1ivmk71" sourceRef="Gateway_Supervisor" targetRef="Task_SystemNotifyApprover">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${supervisor_reviewed == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_S4_False" name="supervisorApproved = false" sourceRef="Gateway_Supervisor" targetRef="EndEvent_SupervisorReject">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${supervisor_reviewed == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_S3" sourceRef="Task_SupervisorReview" targetRef="Gateway_Supervisor" />
+    <bpmn:sequenceFlow id="Flow_09ies2c" sourceRef="supervisor_receive_message" targetRef="Task_SupervisorReview" />
+    <bpmn:serviceTask id="Task_SystemNotifyApprover" name="Send notification&#10;to Approver&#10;notify-approver" camunda:type="external" camunda:topic="prf_notify_approver">
+      <bpmn:incoming>Flow_1ivmk71</bpmn:incoming>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_SupervisorReject" name="End">
+      <bpmn:incoming>Flow_S4_False</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="Gateway_Supervisor" name="supervisorApproved?">
+      <bpmn:incoming>Flow_S3</bpmn:incoming>
+      <bpmn:outgoing>Flow_S4_False</bpmn:outgoing>
+      <bpmn:outgoing>Flow_1ivmk71</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="Task_SupervisorReview" name="supervisor_review" camunda:assignee="${supervisor}">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="supervisor_reviewed" label="supervisor revision" type="boolean" />
+          <camunda:formField id="supervisor_comments" label="supervisor comments" type="string" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_09ies2c</bpmn:incoming>
+      <bpmn:outgoing>Flow_S3</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:startEvent id="supervisor_receive_message" name="System notification received&#10;(from System)" camunda:formKey="">
+      <bpmn:extensionElements />
+      <bpmn:outgoing>Flow_09ies2c</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_1ky8uz5" messageRef="Message_02jr1h8" />
+    </bpmn:startEvent>
+  </bpmn:process>
+  <bpmn:process id="prf_process_approver" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:userTask id="Task_ApproverApproved" name="approver_approved" camunda:assignee="${approver}">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="approver_approved" label="approver approval" type="boolean" />
+          <camunda:formField id="approver_comments" label="approver comments" type="string" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_A2</bpmn:incoming>
+      <bpmn:outgoing>Flow_A3</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_ApproverReject" name="End">
+      <bpmn:incoming>Flow_A4_False</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:startEvent id="Event_ApproverNotifReceived" name="System notification received&#10;(from System)" camunda:formKey="">
+      <bpmn:outgoing>Flow_A2</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_02nyhnp" messageRef="Message_2ajvqhi" />
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="Flow_A3" sourceRef="Task_ApproverApproved" targetRef="Gateway_Approver" />
+    <bpmn:sequenceFlow id="Flow_A4_False" name="rejected" sourceRef="Gateway_Approver" targetRef="EndEvent_ApproverReject">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approver_approved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_0y96fwk" sourceRef="Gateway_Approver" targetRef="Task_SystemNotifyAccountant">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approver_approved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_A2" sourceRef="Event_ApproverNotifReceived" targetRef="Task_ApproverApproved" />
+    <bpmn:exclusiveGateway id="Gateway_Approver" name="approverApproved?">
+      <bpmn:incoming>Flow_A3</bpmn:incoming>
+      <bpmn:outgoing>Flow_A4_False</bpmn:outgoing>
+      <bpmn:outgoing>Flow_0y96fwk</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Task_SystemNotifyAccountant" name="Send notification&#10;to Accountant&#10;notify-accountant" camunda:type="external" camunda:topic="prf_notify_accountant">
+      <bpmn:incoming>Flow_0y96fwk</bpmn:incoming>
+    </bpmn:serviceTask>
+  </bpmn:process>
+  <bpmn:process id="prf_process_accountant" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:exclusiveGateway id="Gateway_Accountant" name="accountantApproved?">
+      <bpmn:incoming>Flow_AC3</bpmn:incoming>
+      <bpmn:outgoing>Flow_AC4_True</bpmn:outgoing>
+      <bpmn:outgoing>Flow_AC4_False</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="EndEvent_AccountantReject" name="End">
+      <bpmn:incoming>Flow_AC4_False</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="EndEvent_AccountantApprove" name="End">
+      <bpmn:incoming>Flow_AC4_True</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:userTask id="Task_AccountantPay" name="accountant_pay" camunda:assignee="${accountant}">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="accountant_approved" label="payment approval" type="boolean" />
+          <camunda:formField id="transaction_id" label="transaction id" type="string" />
+          <camunda:formField id="payment_comments" label="payment comments" type="string" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_AC2</bpmn:incoming>
+      <bpmn:outgoing>Flow_AC3</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="Flow_AC3" sourceRef="Task_AccountantPay" targetRef="Gateway_Accountant" />
+    <bpmn:sequenceFlow id="Flow_AC4_True" name="paid" sourceRef="Gateway_Accountant" targetRef="EndEvent_AccountantApprove">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${accountant_approved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AC4_False" name="rejected" sourceRef="Gateway_Accountant" targetRef="EndEvent_AccountantReject">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${accountant_approved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_AC2" sourceRef="Event_AccountantNotifReceived" targetRef="Task_AccountantPay" />
+    <bpmn:startEvent id="Event_AccountantNotifReceived" name="System notification received&#10;(from System)">
+      <bpmn:outgoing>Flow_AC2</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_1ezc8zv" messageRef="Message_3n3d73p" />
+    </bpmn:startEvent>
+  </bpmn:process>
+  <bpmn:message id="Message_02jr1h8" name="supervisor_receive_message" />
+  <bpmn:message id="Message_04rei5r" name="approver" />
+  <bpmn:message id="Message_2ajvqhi" name="approver_receive_message" />
+  <bpmn:message id="Message_3n3d73p" name="accountant_receive_message" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_1">
+      <bpmndi:BPMNShape id="Participant_Requester_di" bpmnElement="Participant_Requester" isHorizontal="true">
+        <dc:Bounds x="170" y="73" width="1400" height="120" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_Requester_di" bpmnElement="StartEvent_Requester">
+        <dc:Bounds x="212" y="115" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="218" y="151" width="24" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CreatePRF_di" bpmnElement="Task_CreatePRF">
+        <dc:Bounds x="290" y="93" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SignPRF_di" bpmnElement="Task_SignPRF">
+        <dc:Bounds x="470" y="93" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SystemNotifySupervisor_di" bpmnElement="Task_SystemNotifySupervisor">
+        <dc:Bounds x="700" y="93" width="140" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_R1_di" bpmnElement="Flow_R1">
+        <di:waypoint x="248" y="133" />
+        <di:waypoint x="290" y="133" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_R2_di" bpmnElement="Flow_R2">
+        <di:waypoint x="410" y="133" />
+        <di:waypoint x="470" y="133" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0be263b_di" bpmnElement="Flow_0be263b">
+        <di:waypoint x="590" y="133" />
+        <di:waypoint x="700" y="133" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_Supervisor_di" bpmnElement="Participant_Supervisor" isHorizontal="true" bioc:stroke="#0d4372" bioc:fill="#bbdefb" color:background-color="#bbdefb" color:border-color="#0d4372">
+        <dc:Bounds x="170" y="211" width="1400" height="307" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SystemNotifyApprover_di" bpmnElement="Task_SystemNotifyApprover">
+        <dc:Bounds x="800" y="300" width="140" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_SupervisorReject_di" bpmnElement="EndEvent_SupervisorReject">
+        <dc:Bounds x="672" y="399" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="680" y="435" width="20" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_1374fes_di" bpmnElement="Gateway_Supervisor" isMarkerVisible="true">
+        <dc:Bounds x="665" y="315" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="619" y="278" width="81" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SupervisorReview_di" bpmnElement="Task_SupervisorReview">
+        <dc:Bounds x="450" y="300" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_0k8wvk4_di" bpmnElement="supervisor_receive_message">
+        <dc:Bounds x="262" y="322" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="246" y="365" width="70" height="53" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_1ivmk71_di" bpmnElement="Flow_1ivmk71">
+        <di:waypoint x="715" y="340" />
+        <di:waypoint x="800" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S4_False_di" bpmnElement="Flow_S4_False">
+        <di:waypoint x="690" y="365" />
+        <di:waypoint x="690" y="399" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="697" y="377" width="86" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_S3_di" bpmnElement="Flow_S3">
+        <di:waypoint x="570" y="340" />
+        <di:waypoint x="665" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_09ies2c_di" bpmnElement="Flow_09ies2c">
+        <di:waypoint x="298" y="340" />
+        <di:waypoint x="450" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_Approver_di" bpmnElement="Participant_Approver" isHorizontal="true">
+        <dc:Bounds x="170" y="540" width="1400" height="264" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ApproverApproved_di" bpmnElement="Task_ApproverApproved">
+        <dc:Bounds x="590" y="602" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_ApproverReject_di" bpmnElement="EndEvent_ApproverReject">
+        <dc:Bounds x="802" y="734" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="810" y="770" width="20" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_19xktsf_di" bpmnElement="Event_ApproverNotifReceived">
+        <dc:Bounds x="502" y="628" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="485" y="674" width="70" height="53" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Approver_di" bpmnElement="Gateway_Approver" isMarkerVisible="true">
+        <dc:Bounds x="795" y="617" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="778" y="580" width="85" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SystemNotifyAccountant_di" bpmnElement="Task_SystemNotifyAccountant">
+        <dc:Bounds x="970" y="598" width="140" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_A3_di" bpmnElement="Flow_A3">
+        <di:waypoint x="710" y="642" />
+        <di:waypoint x="795" y="642" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_A4_False_di" bpmnElement="Flow_A4_False">
+        <di:waypoint x="820" y="667" />
+        <di:waypoint x="820" y="734" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="850" y="683" width="40" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0y96fwk_di" bpmnElement="Flow_0y96fwk">
+        <di:waypoint x="845" y="642" />
+        <di:waypoint x="970" y="642" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_A2_di" bpmnElement="Flow_A2">
+        <di:waypoint x="537" y="641" />
+        <di:waypoint x="590" y="641" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_Accountant_di" bpmnElement="Participant_Accountant" isHorizontal="true">
+        <dc:Bounds x="170" y="820" width="1400" height="334" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_Accountant_di" bpmnElement="Gateway_Accountant" isMarkerVisible="true">
+        <dc:Bounds x="985" y="983" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1045" y="994" width="84" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_AccountantReject_di" bpmnElement="EndEvent_AccountantReject">
+        <dc:Bounds x="1162" y="1050" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1170" y="1086" width="20" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_AccountantApprove_di" bpmnElement="EndEvent_AccountantApprove">
+        <dc:Bounds x="1162" y="900" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1170" y="936" width="20" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AccountantPay_di" bpmnElement="Task_AccountantPay">
+        <dc:Bounds x="770" y="968" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1jhykcg_di" bpmnElement="Event_AccountantNotifReceived">
+        <dc:Bounds x="632" y="988" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="615" y="1034" width="70" height="53" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_AC3_di" bpmnElement="Flow_AC3">
+        <di:waypoint x="890" y="1008" />
+        <di:waypoint x="985" y="1008" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AC4_True_di" bpmnElement="Flow_AC4_True">
+        <di:waypoint x="1010" y="983" />
+        <di:waypoint x="1010" y="918" />
+        <di:waypoint x="1162" y="918" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1051" y="893" width="21" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AC4_False_di" bpmnElement="Flow_AC4_False">
+        <di:waypoint x="1010" y="1033" />
+        <di:waypoint x="1010" y="1068" />
+        <di:waypoint x="1162" y="1068" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1062" y="1079" width="40" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AC2_di" bpmnElement="Flow_AC2">
+        <di:waypoint x="668" y="1006" />
+        <di:waypoint x="770" y="1006" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_13dxsqd_di" bpmnElement="Flow_13dxsqd">
+        <di:waypoint x="870" y="380" />
+        <di:waypoint x="870" y="480" />
+        <di:waypoint x="520" y="480" />
+        <di:waypoint x="520" y="628" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1fd1muj_di" bpmnElement="Flow_1fd1muj">
+        <di:waypoint x="1040" y="678" />
+        <di:waypoint x="1040" y="840" />
+        <di:waypoint x="650" y="840" />
+        <di:waypoint x="650" y="988" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0lvgyf3_di" bpmnElement="Flow_0lvgyf3">
+        <di:waypoint x="770" y="173" />
+        <di:waypoint x="770" y="246" />
+        <di:waypoint x="280" y="246" />
+        <di:waypoint x="280" y="322" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

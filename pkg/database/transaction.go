@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"time"
 
@@ -70,8 +71,10 @@ func (t *Transactions) Execute() ([]sql.Result, bool, error) {
 	for _, query := range t.Queries {
 
 		params := t.Adaptor.QueryParamsToMap(query.JsonData)
+
 		result, err := tx.NamedExec(query.SQL, params)
 		if err != nil {
+			fmt.Println(query.SQL, params, err)
 			complete = false
 			_error = err
 			break
