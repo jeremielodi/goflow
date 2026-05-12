@@ -23,16 +23,26 @@ func NewTaskController(db *sqlx.DB, rootDirPath *string) *TaskController {
 func (tc *TaskController) GetTasks(c *fiber.Ctx) error {
 	assignee := c.Query("assignee")
 	group := c.Query("candidateGroup")
+	status := c.Query("sttaus")
+	processInstanceId := c.Query("processInstanceId")
 	repo := repository.NewTaskRepository(tc.db)
+	var params = map[string]interface{}{}
 	var tasks []models.Task
 	var err error
 	if assignee != "" {
-		tasks, err = repo.FindTasksByAssignee(assignee, "created") // only open tasks
-	} else if group != "" {
-		tasks, err = repo.FindTasksByCandidateGroup(group, "created")
+		params["assignee"] = assignee
+	}
+	if group != "" {
+		params["candidate_group"] = group
+	}
+	if status != "" {
+		params["status"] = status
+	}
+	if processInstanceId != "" {
+		params["process_instance_id"] = processInstanceId
 	}
 
-	tasks, err = repo.FindAll("created")
+	tasks, err = repo.FindAll(params)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}

@@ -4,6 +4,8 @@ package repository
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -110,28 +112,50 @@ func (r *TaskRepository) FindTasksByAssignee(assignee string, status ...string) 
 	return tasks, err
 }
 
-// FindTasksByAssignee returns all open tasks assigned to a specific user.
-func (r *TaskRepository) FindAll(status ...string) ([]models.Task, error) {
-	var tasks []models.Task
-	query := `
-		SELECT
-			id,
-			process_instance_id,
-			execution_id,
-			task_definition_key,
-			task_name,
-			assignee,
-			candidate_group,
-			status,
-			form_data,
-			created_at,
-			claimed_at,
-			completed_at
-		FROM public.tasks
-	`
+// FindAll returns tasks filtered by any column given in the params map.
+// Example: params := map[string]interface{}{"assignee": "john", "status": "created"}
+func (r *TaskRepository) FindAll(params map[string]interface{}) ([]models.Task, error) {
+	// Allowed column names for filtering (prevent SQL injection)
+	allowedColumns := map[string]bool{
+		"id": true, "process_instance_id": true, "execution_id": true,
+		"task_definition_key": true, "task_name": true, "assignee": true,
+		"candidate_group": true, "status": true, "form_data": true,
+		"created_at": true, "claimed_at": true, "completed_at": true,
+	}
 
+	query := `
+        SELECT
+            id,
+            process_instance_id,
+            execution_id,
+            task_definition_key,
+            task_name,
+            assignee,
+            candidate_group,
+            status,
+            form_data,
+            created_at,
+            claimed_at,
+            completed_at
+        FROM public.tasks
+    `
+	var conditions []string
+	var args []interface{}
+	i := 1
+	for key, value := range params {
+		if allowedColumns[key] {
+			conditions = append(conditions, fmt.Sprintf("%s = $%d", key, i))
+			args = append(args, value)
+			i++
+		}
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
 	query += " ORDER BY created_at ASC"
-	err := r.db.Select(&tasks, query)
+
+	var tasks []models.Task
+	err := r.db.Select(&tasks, query, args...)
 	return tasks, err
 }
 

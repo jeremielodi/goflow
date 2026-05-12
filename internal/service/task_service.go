@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/pkg/database"
@@ -46,7 +47,6 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if err != nil {
 		return fmt.Errorf("process instance not found: %w", err)
 	}
-	print("Porcess definition id ", defID.String())
 	def, err := s.procRepo.FindProcessDefinitionByID(defID)
 	if err != nil {
 		return fmt.Errorf("process definition not found: %w", err)
@@ -70,22 +70,26 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if !ok || userNode.Type != engine.UserTaskType {
 		return fmt.Errorf("user task node not found")
 	}
-	nextID, err := s.resolveNext(&graph, userNode, currentVars)
+
+	// Try to resolve next node; if no outgoing flows, process ends here
+	nextID, err := s.ResolveNext(&graph, userNode, currentVars)
 	if err != nil {
+		// No outgoing flows → process completed after this user task
+		if err.Error() == "no outgoing flows" {
+			return s.completeProcessAndTask(task, currentVars)
+		}
 		return fmt.Errorf("failed to resolve next node: %w", err)
 	}
 
-	print("Next node", nextID)
-
-	// 5. Start transaction using your database.NewTransaction
+	// 5. Start transaction (move token, complete task, update variables)
 	tx := database.NewTransaction(s.db)
 
 	// a. Move execution token
-	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
+	tx.AddUpdateQuery(" public.executions ", []database.QueryParameter{
 		{Key: "current_element_id", Value: nextID},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
-		{Key: "id", Value: task.ExecutionID},
+		{Key: "id", Value: *task.ExecutionID},
 	})
 
 	// b. Mark task as completed
@@ -93,17 +97,17 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "completed"},
 		{Key: "completed_at", Value: time.Now()},
 	}, []database.QueryParameter{
-		{Key: "id", Value: task.ID},
+		{Key: "id", Value: task.ID.String()},
 	})
 
 	// c. Merge variables (upsert)
 	varJSON, _ := json.Marshal(currentVars)
 	tx.AddDeleteQuery("public.variables", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
+		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
 	})
 	tx.AddInsertQuery("public.variables", []database.QueryParameter{
 		{Key: "id", Value: uuid.New().String()},
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
+		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
 		{Key: "data", Value: varJSON},
 		{Key: "updated_at", Value: time.Now()},
 	})
@@ -113,7 +117,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "active"},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
-		{Key: "id", Value: *task.ExecutionID},
+		{Key: "id", Value: task.ExecutionID.String()},
 	})
 
 	// Execute all
@@ -130,8 +134,56 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	return rt.ExecuteExecution(ctx, *task.ExecutionID)
 }
 
+// Helper to finish process when no next node exists
+func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}) error {
+	tx := database.NewTransaction(s.db)
+
+	// Mark task as completed
+	tx.AddUpdateQuery("public.tasks", []database.QueryParameter{
+		{Key: "status", Value: "completed"},
+		{Key: "completed_at", Value: time.Now()},
+	}, []database.QueryParameter{
+		{Key: "id", Value: task.ID},
+	})
+
+	// Save final variables
+	varJSON, _ := json.Marshal(currentVars)
+	tx.AddDeleteQuery("public.variables", []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
+	})
+	tx.AddInsertQuery("public.variables", []database.QueryParameter{
+		{Key: "id", Value: uuid.New().String()},
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
+		{Key: "data", Value: varJSON},
+		{Key: "updated_at", Value: time.Now()},
+	})
+
+	// End process instance
+	tx.AddUpdateQuery("public.process_instances", []database.QueryParameter{
+		{Key: "status", Value: "completed"},
+		{Key: "ended_at", Value: time.Now()},
+	}, []database.QueryParameter{
+		{Key: "id", Value: task.ProcessInstanceID},
+	})
+
+	// Mark execution as completed
+	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
+		{Key: "status", Value: "completed"},
+		{Key: "is_active", Value: false},
+		{Key: "updated_at", Value: time.Now()},
+	}, []database.QueryParameter{
+		{Key: "id", Value: *task.ExecutionID},
+	})
+
+	_, success, err := tx.Execute()
+	if err != nil || !success {
+		return fmt.Errorf("transaction failed while ending process: %w", err)
+	}
+	return nil
+}
+
 // Helper to resolve next element (copied from runtime logic)
-func (s *TaskService) resolveNext(graph *engine.ProcessGraph, node *engine.Node, vars map[string]interface{}) (string, error) {
+func (s *TaskService) ResolveNext(graph *engine.ProcessGraph, node *engine.Node, vars map[string]interface{}) (string, error) {
 	if len(node.Outgoing) == 0 {
 		return "", fmt.Errorf("no outgoing flows")
 	}

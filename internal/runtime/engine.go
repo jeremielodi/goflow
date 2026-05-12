@@ -59,10 +59,22 @@ func EvaluateCondition(
 
 	expr = strings.TrimSpace(expr)
 
-	// remove leading "="
-	expr = strings.TrimPrefix(expr, "=")
+	// Strip Camunda 7 ${...} wrapper
+	// ${amount > 1000} → amount > 1000
+	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
+		expr = expr[2 : len(expr)-1]
+		expr = strings.TrimSpace(expr)
+	}
 
-	// remove surrounding quotes
+	// Strip FEEL = prefix
+	// =amount > 1000 → amount > 1000
+	if strings.HasPrefix(expr, "=") {
+		expr = strings.TrimPrefix(expr, "=")
+		expr = strings.TrimSpace(expr)
+	}
+
+	// Strip surrounding quotes
+	// "amount > 1000" → amount > 1000
 	if len(expr) > 1 {
 		if (expr[0] == '"' && expr[len(expr)-1] == '"') ||
 			(expr[0] == '\'' && expr[len(expr)-1] == '\'') {
@@ -70,7 +82,10 @@ func EvaluateCondition(
 		}
 	}
 
+	// --------------------------------------------------------
 	// Convert FEEL-like syntax to CEL
+	// --------------------------------------------------------
+
 	expr = convertFEELToCEL(expr)
 
 	// --------------------------------------------------------
@@ -102,7 +117,8 @@ func EvaluateCondition(
 
 	if issues != nil && issues.Err() != nil {
 		return false, fmt.Errorf(
-			"condition compilation error: %w",
+			"condition compilation error for '%s': %w",
+			expr,
 			issues.Err(),
 		)
 	}
@@ -138,7 +154,10 @@ func EvaluateCondition(
 	result, ok := out.Value().(bool)
 	if !ok {
 		return false, fmt.Errorf(
-			"condition did not return boolean",
+			"condition '%s' did not return boolean, got %T: %v",
+			expr,
+			out.Value(),
+			out.Value(),
 		)
 	}
 
@@ -219,36 +238,116 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		case engine.StartEventType, engine.ExclusiveGatewayType:
 			next, err := r.resolveNext(ctx, node, variables, exec.ProcessInstanceID)
 			if err != nil {
+				fmt.Println("1", err.Error())
 				return err
 			}
 			err = r.updateExecution(ctx, exec.ID, next, variables)
 			if err != nil {
+				fmt.Println("2", err.Error())
 				return err
 			}
 			currentID = next
 			// ✅ continue loop (do not return)
 
 		case engine.ServiceTaskType:
-			fmt.Printf("Executing service task: %s\n", node.Name)
-			next, err := r.resolveNext(ctx, node, variables, exec.ProcessInstanceID)
+
+			// Move token to current service task node
+			err := r.updateExecution(
+				ctx,
+				exec.ID,
+				node.ID,
+				variables,
+			)
 			if err != nil {
 				return err
 			}
-			err = r.updateExecution(ctx, exec.ID, next, variables)
+
+			if node.JobType == nil {
+				return fmt.Errorf(
+					"service task %s has no job type",
+					node.ID,
+				)
+			}
+
+			payload, _ := json.Marshal(variables)
+
+			_, err = r.DB.ExecContext(ctx, `
+					INSERT INTO public.jobs (
+						id,
+						process_instance_id,
+						execution_id,
+						job_type,
+						status,
+						payload,
+						created_at
+					)
+					VALUES (
+						$1,
+						$2,
+						$3,
+						$4,
+						'pending',
+						$5,
+						NOW()
+					)
+				`,
+				uuid.New(),
+				exec.ProcessInstanceID,
+				exec.ID,
+				*node.JobType,
+				payload,
+			)
+
 			if err != nil {
 				return err
 			}
-			currentID = next
+
+			// Execution waits for worker completion
+			_, err = r.DB.ExecContext(ctx, `
+				UPDATE public.executions
+				SET status = 'waiting',
+					updated_at = NOW()
+				WHERE id = $1
+			`, exec.ID)
+
+			return err
 			// ✅ continue loop
-
 		case engine.UserTaskType:
-			taskID, err := r.createUserTask(ctx, exec.ProcessInstanceID, exec.ID, node, variables)
+
+			err := r.updateExecution(
+				ctx,
+				exec.ID,
+				node.ID,
+				variables,
+			)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("UserTask '%s' created, task id = %s\n", node.Name, taskID)
-			return nil // stop, waiting for user action
 
+			_, err = r.createUserTask(
+				ctx,
+				exec.ProcessInstanceID,
+				exec.ID,
+				node,
+				variables,
+			)
+
+			if err != nil {
+				return err
+			}
+
+			_, err = r.DB.ExecContext(ctx, `
+				UPDATE public.executions
+				SET status = 'waiting',
+					updated_at = NOW()
+				WHERE id = $1
+			`, exec.ID)
+
+			if err != nil {
+				return err
+			}
+
+			return nil
 		case engine.EndEventType:
 			_, err := r.DB.ExecContext(ctx, `
                 UPDATE public.process_instances
@@ -263,7 +362,6 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
                 SET status = 'completed', is_active = false, updated_at = $1
                 WHERE id = $2
             `, time.Now(), exec.ID)
-			fmt.Println("Process completed.")
 			return nil
 
 		default:
@@ -357,10 +455,14 @@ func (r *Runtime) updateExecution(ctx context.Context, execID uuid.UUID, newElem
 			merged[k] = v
 		}
 		newJSON, _ := json.Marshal(merged)
+
 		_, err = tx.ExecContext(ctx, `
-            INSERT INTO public.variables (id, process_instance_id, data, updated_at)
-            VALUES ($1, $2, $3, $4)
-        `, uuid.New(), instanceID, newJSON, time.Now())
+			UPDATE public.variables
+			SET data = $1,
+				updated_at = $2
+			WHERE process_instance_id = $3
+		`, newJSON, time.Now(), instanceID)
+
 		if err != nil {
 			return fmt.Errorf("5. update failed %s", err.Error())
 		}

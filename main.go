@@ -29,7 +29,7 @@ func main() {
 	processDefinitionCtrl := api.NewProcessDefinitionController(db, &rootDirPath)
 	processInstanceCtrl := api.NewProcessInstanceController(db)
 	taskCtrl := api.NewTaskController(db, &rootDirPath)
-
+	externalTaskCtrl := api.NewExternalTaskController(db)
 	app := fiber.New()
 
 	// Deploy BPMN
@@ -39,6 +39,10 @@ func main() {
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 	app.Get("/tasks", taskCtrl.GetTasks)
 	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
+
+	app.Post("/engine-rest/external-task/fetchAndLock", externalTaskCtrl.FetchAndLock)
+	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
+	app.Post("/engine-rest/external-task/:id/failure", externalTaskCtrl.HandleFailure)
 
 	app.Listen(":8080")
 }
