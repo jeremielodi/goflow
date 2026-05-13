@@ -188,6 +188,13 @@ type Runtime struct {
 	DB    *sqlx.DB
 }
 
+func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB) *Runtime {
+	return &Runtime{
+		Graph: Graph,
+		DB:    DB,
+	}
+}
+
 // ------------------------------------------------------------
 // EvaluateCondition (unchanged from your version, but moved to a helper file)
 // ------------------------------------------------------------
@@ -236,7 +243,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 		switch node.Type {
 		case engine.StartEventType, engine.ExclusiveGatewayType:
-			next, err := r.resolveNext(ctx, node, variables, exec.ProcessInstanceID)
+			next, err := r.ResolveNext(ctx, node, variables)
 			if err != nil {
 				fmt.Println("1", err.Error())
 				return err
@@ -373,7 +380,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 // ------------------------------------------------------------
 // Helper: resolveNext (similar to your resolveNext but persists condition evaluation)
 // ------------------------------------------------------------
-func (r *Runtime) resolveNext(ctx context.Context, node *engine.Node, variables map[string]interface{}, instanceID uuid.UUID) (string, error) {
+func (r *Runtime) ResolveNext(ctx context.Context, node *engine.Node, variables map[string]interface{}) (string, error) {
 	if len(node.Outgoing) == 0 {
 		return "", fmt.Errorf("node %s has no outgoing flows", node.ID)
 	}

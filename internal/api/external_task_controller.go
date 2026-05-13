@@ -278,7 +278,8 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	}
 
 	// 7. Resolve next node
-	nextID, err := resolveNextNode(&graph, serviceNode, existingVars)
+	_runtime := runtime.NewRuntime(&graph, ctrl.db)
+	nextID, err := _runtime.ResolveNext(c.Context(), serviceNode, existingVars)
 	if err != nil {
 		log.Printf("Error resolving next node: %v", err)
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
@@ -351,42 +352,4 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "failure recorded, job will be retried"})
-}
-
-// Helper resolveNextNode (copied from earlier)
-func resolveNextNode(graph *engine.ProcessGraph, node *engine.Node, vars map[string]interface{}) (string, error) {
-	if len(node.Outgoing) == 0 {
-		return "", fmt.Errorf("no outgoing flows")
-	}
-	if len(node.Outgoing) == 1 {
-		flow := node.Outgoing[0]
-		if flow.Condition != "" {
-			ok, err := runtime.EvaluateCondition(flow.Condition, vars)
-			if err != nil {
-				return "", err
-			}
-			if !ok {
-				return "", fmt.Errorf("condition false on single outgoing flow")
-			}
-		}
-		return flow.TargetRef, nil
-	}
-	// exclusive gateway
-	var selected *engine.Flow
-	for _, flow := range node.Outgoing {
-		ok, err := runtime.EvaluateCondition(flow.Condition, vars)
-		if err != nil {
-			return "", err
-		}
-		if ok {
-			if selected != nil {
-				return "", fmt.Errorf("multiple conditions true")
-			}
-			selected = &flow
-		}
-	}
-	if selected == nil {
-		return "", fmt.Errorf("no matching condition")
-	}
-	return selected.TargetRef, nil
 }

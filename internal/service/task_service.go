@@ -72,7 +72,10 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	}
 
 	// Try to resolve next node; if no outgoing flows, process ends here
-	nextID, err := s.ResolveNext(&graph, userNode, currentVars)
+	// nextID, err := s.ResolveNext(&graph, userNode, currentVars)
+	_runtime := runtime.NewRuntime(&graph, s.db)
+	nextID, err := _runtime.ResolveNext(ctx, userNode, currentVars)
+
 	if err != nil {
 		// No outgoing flows → process completed after this user task
 		if err.Error() == "no outgoing flows" {
@@ -97,17 +100,17 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "completed"},
 		{Key: "completed_at", Value: time.Now()},
 	}, []database.QueryParameter{
-		{Key: "id", Value: task.ID.String()},
+		{Key: "id", Value: task.ID},
 	})
 
 	// c. Merge variables (upsert)
 	varJSON, _ := json.Marshal(currentVars)
 	tx.AddDeleteQuery("public.variables", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 	})
 	tx.AddInsertQuery("public.variables", []database.QueryParameter{
 		{Key: "id", Value: uuid.New().String()},
-		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "data", Value: varJSON},
 		{Key: "updated_at", Value: time.Now()},
 	})
@@ -117,7 +120,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "active"},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
-		{Key: "id", Value: task.ExecutionID.String()},
+		{Key: "id", Value: task.ExecutionID},
 	})
 
 	// Execute all
@@ -180,42 +183,4 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 		return fmt.Errorf("transaction failed while ending process: %w", err)
 	}
 	return nil
-}
-
-// Helper to resolve next element (copied from runtime logic)
-func (s *TaskService) ResolveNext(graph *engine.ProcessGraph, node *engine.Node, vars map[string]interface{}) (string, error) {
-	if len(node.Outgoing) == 0 {
-		return "", fmt.Errorf("no outgoing flows")
-	}
-	if len(node.Outgoing) == 1 {
-		flow := node.Outgoing[0]
-		if flow.Condition != "" {
-			ok, err := runtime.EvaluateCondition(flow.Condition, vars)
-			if err != nil {
-				return "", err
-			}
-			if !ok {
-				return "", fmt.Errorf("condition false on single outgoing flow")
-			}
-		}
-		return flow.TargetRef, nil
-	}
-	// exclusive gateway
-	var selected *engine.Flow
-	for _, flow := range node.Outgoing {
-		ok, err := runtime.EvaluateCondition(flow.Condition, vars)
-		if err != nil {
-			return "", err
-		}
-		if ok {
-			if selected != nil {
-				return "", fmt.Errorf("multiple conditions true")
-			}
-			selected = &flow
-		}
-	}
-	if selected == nil {
-		return "", fmt.Errorf("no matching condition")
-	}
-	return selected.TargetRef, nil
 }
