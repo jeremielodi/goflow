@@ -44,19 +44,13 @@ CREATE TYPE deployment_status AS ENUM (
 -- Represents application users
 -- =========================================================
 CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    email TEXT UNIQUE NOT NULL,
-
-    full_name TEXT,
-
-    password_hash TEXT NOT NULL,
-
-    is_active BOOLEAN NOT NULL DEFAULT true,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique user identifier
+    email TEXT UNIQUE NOT NULL, -- User's email address (login)
+    full_name TEXT, -- User's full display name
+    password_hash TEXT NOT NULL, -- Hashed password for authentication
+    is_active BOOLEAN NOT NULL DEFAULT true, -- Whether user account is active
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- Account creation timestamp
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last profile update timestamp
 );
 
 CREATE INDEX idx_users_email
@@ -68,15 +62,12 @@ ON users(email);
 -- Similar to Camunda deployments
 -- =========================================================
 CREATE TABLE deployments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    name TEXT NOT NULL,
-
-    deployed_by UUID NULL REFERENCES users(id),
-
-    status deployment_status NOT NULL DEFAULT 'active',
-    tenant_id TEXT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique deployment identifier
+    name TEXT NOT NULL, -- Human-readable deployment name
+    deployed_by UUID NULL REFERENCES users(id), -- User who deployed (nullable)
+    status deployment_status NOT NULL DEFAULT 'active', -- Current deployment status
+    tenant_id TEXT NULL, -- Multi-tenancy identifier
+    created_at TIMESTAMP NOT NULL DEFAULT NOW() -- Deployment creation timestamp
 );
 
 -- =========================================================
@@ -88,40 +79,19 @@ CREATE TABLE deployments (
 -- Parse once during deployment and persist metadata.
 -- =========================================================
 CREATE TABLE process_definitions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    deployment_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique process definition identifier
+    deployment_id UUID NOT NULL -- References the deployment containing this definition
         REFERENCES deployments(id)
         ON DELETE CASCADE,
-
-    process_key TEXT NOT NULL,
-
-    tenant_id TEXT NULL,
-    
-    process_name TEXT NULL,
-
-    version INTEGER NOT NULL DEFAULT 1,
-
-    engine_type TEXT NOT NULL DEFAULT 'unknown'
-
-    is_active BOOLEAN NOT NULL DEFAULT true,
-
-    -- Original BPMN XML uploaded from Camunda Modeler
-    bpmn_xml TEXT NOT NULL,
-
-    -- Parsed process graph/cache
-    -- Example:
-    -- {
-    --   "nodes": {
-    --      "StartEvent_1": {
-    --          "type": "startEvent"
-    --      }
-    --   }
-    -- }
-    parsed_graph JSONB NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
+    process_key TEXT NOT NULL, -- Unique technical key for the process
+    tenant_id TEXT NULL, -- Multi-tenancy identifier
+    process_name TEXT NULL, -- Human-readable process name
+    version INTEGER NOT NULL DEFAULT 1, -- Version number (increments on changes)
+    engine_type TEXT NOT NULL DEFAULT 'unknown', -- Type of BPMN engine (for compatibility)
+    is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this version is active for new instances
+    bpmn_xml TEXT NOT NULL, -- Original BPMN XML uploaded from Camunda Modeler
+    parsed_graph JSONB NULL, -- Parsed process graph/cache with node structure
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- Definition creation timestamp
     UNIQUE(process_key, version)
 );
 
@@ -136,19 +106,14 @@ ON process_definitions(deployment_id);
 -- Runtime instance of a process definition
 -- =========================================================
 CREATE TABLE process_instances (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_definition_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique process instance identifier
+    process_definition_id UUID NOT NULL -- References the process definition being executed
         REFERENCES process_definitions(id),
-
-    status process_instance_status NOT NULL DEFAULT 'running',
-
-    started_by UUID NULL
+    status process_instance_status NOT NULL DEFAULT 'running', -- Current lifecycle state
+    started_by UUID NULL -- User who started this instance
         REFERENCES users(id),
-
-    started_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    ended_at TIMESTAMP NULL
+    started_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When the instance began
+    ended_at TIMESTAMP NULL -- When the instance terminated/completed (NULL if running)
 );
 
 CREATE INDEX idx_process_instances_definition_id
@@ -167,26 +132,17 @@ ON process_instances(status);
 -- Parallel gateways later create multiple executions.
 -- =========================================================
 CREATE TABLE executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique execution token identifier
+    process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    -- BPMN node currently being executed
-    current_element_id TEXT NOT NULL,
-
-    -- Supports future parallel gateways
-    parent_execution_id UUID NULL
+    current_element_id TEXT NOT NULL, -- BPMN node ID currently being executed
+    parent_execution_id UUID NULL -- Supports future parallel gateways (hierarchy)
         REFERENCES executions(id),
-
-    status execution_status NOT NULL DEFAULT 'active',
-
-    is_active BOOLEAN NOT NULL DEFAULT true,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    status execution_status NOT NULL DEFAULT 'active', -- Current execution state
+    is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this token is still active
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When execution started
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last state change timestamp
 );
 
 CREATE INDEX idx_executions_process_instance_id
@@ -203,36 +159,23 @@ ON executions(is_active);
 -- Human workflow/tasklist layer
 -- =========================================================
 CREATE TABLE tasks (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique task identifier
+    process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    execution_id UUID NULL
+    execution_id UUID NULL -- Associated execution token
         REFERENCES executions(id)
         ON DELETE SET NULL,
-
-    -- BPMN userTask id
-    task_definition_key TEXT NOT NULL,
-
-    -- BPMN task name
-    task_name TEXT NULL,
-
-    assignee TEXT NULL,
-
-    candidate_group TEXT NULL,
-
-    status task_status NOT NULL DEFAULT 'created',
-
-    -- Dynamic form values submitted by users
-    form_data JSONB NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    claimed_at TIMESTAMP NULL,
-
-    completed_at TIMESTAMP NULL
+    task_definition_key TEXT NOT NULL, -- BPMN userTask element ID
+    task_name TEXT NULL, -- BPMN task name (human-readable)
+    assignee TEXT NULL, -- User assigned to this task
+    candidate_group TEXT NULL, -- Group that can claim this task
+    status task_status NOT NULL DEFAULT 'created', -- Task lifecycle state
+    form_data JSONB NULL, -- Dynamic form values submitted by users
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When task was created
+    updated_at  TIMESTAMP NOT NULL DEFAULT NULL,
+    claimed_at TIMESTAMP NULL, -- When user claimed the task
+    completed_at TIMESTAMP NULL -- When task was completed
 );
 
 CREATE INDEX idx_tasks_process_instance_id
@@ -254,19 +197,20 @@ ON tasks(status);
 -- Flexible JSONB structure similar to Camunda variables.
 -- =========================================================
 CREATE TABLE variables (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique variable set identifier
+    process_instance_id UUID NOT NULL -- Which process instance owns these variables
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    data JSONB NOT NULL,
-
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    data JSONB NOT NULL, -- JSON object containing all process variables
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last variable modification
 );
 
 CREATE INDEX idx_variables_process_instance_id
 ON variables(process_instance_id);
+
+ALTER TABLE public.variables 
+ADD CONSTRAINT unique_process_instance_variables 
+UNIQUE (process_instance_id);
 
 CREATE INDEX idx_variables_data
 ON variables
@@ -280,33 +224,23 @@ USING GIN(data);
 -- Workers poll and complete jobs.
 -- =========================================================
 CREATE TABLE jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique job identifier
+    process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    execution_id UUID NULL
+    execution_id UUID NULL -- Associated execution token
         REFERENCES executions(id)
         ON DELETE SET NULL,
-
-    job_type TEXT NOT NULL,
-
-    retries INTEGER NOT NULL DEFAULT 3,
-
-    status TEXT NOT NULL DEFAULT 'pending',
-
-    payload JSONB NULL,
-
-    error_message TEXT NULL,
-
-    locked_by TEXT NULL,
-
-    locked_until TIMESTAMP NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-
-    completed_at TIMESTAMP NULL
+    job_type TEXT NOT NULL, -- Type of service task (e.g., "http", "email")
+    retries INTEGER NOT NULL DEFAULT 3, -- Number of remaining retry attempts
+    status TEXT NOT NULL DEFAULT 'pending', -- Job state (pending/processing/completed/failed)
+    payload JSONB NULL, -- Job-specific input data
+    error_message TEXT NULL, -- Last error message if job failed
+    locked_by TEXT NULL, -- Worker ID that locked this job
+    locked_until TIMESTAMP NULL, -- When job lock expires
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When job was created
+    updated_at  TIMESTAMP NOT NULL DEFAULT NULL,
+    completed_at TIMESTAMP NULL -- When job finished successfully
 );
 
 CREATE INDEX idx_jobs_status
@@ -320,25 +254,18 @@ ON jobs(job_type);
 -- Used later for BPMN timers/events
 -- =========================================================
 CREATE TABLE timer_jobs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique timer identifier
+    process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    execution_id UUID NULL
+    execution_id UUID NULL -- Associated execution token
         REFERENCES executions(id)
         ON DELETE SET NULL,
-
-    event_type TEXT NOT NULL,
-
-    due_at TIMESTAMP NOT NULL,
-
-    payload JSONB NULL,
-
-    is_triggered BOOLEAN NOT NULL DEFAULT false,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    event_type TEXT NOT NULL, -- Type of timer (e.g., "intermediate", "boundary")
+    due_at TIMESTAMP NOT NULL, -- When this timer should trigger
+    payload JSONB NULL, -- Timer configuration (duration, cycle, etc.)
+    is_triggered BOOLEAN NOT NULL DEFAULT false, -- Whether timer has fired
+    created_at TIMESTAMP NOT NULL DEFAULT NOW() -- When timer was scheduled
 );
 
 CREATE INDEX idx_timer_jobs_due_at
@@ -352,26 +279,19 @@ ON timer_jobs(is_triggered);
 -- Enterprise-grade traceability
 -- =========================================================
 CREATE TABLE audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    process_instance_id UUID NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique audit entry identifier
+    process_instance_id UUID NULL -- Related process instance (if any)
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-
-    task_id UUID NULL
+    task_id UUID NULL -- Related task (if any)
         REFERENCES tasks(id)
         ON DELETE CASCADE,
-
-    user_id UUID NULL
+    user_id UUID NULL -- User who performed the action
         REFERENCES users(id),
-
-    action TEXT NOT NULL,
-
-    old_data JSONB NULL,
-
-    new_data JSONB NULL,
-
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    action TEXT NOT NULL, -- Type of action performed (e.g., "claim", "complete")
+    old_data JSONB NULL, -- Previous state before action
+    new_data JSONB NULL, -- New state after action
+    created_at TIMESTAMP NOT NULL DEFAULT NOW() -- When action occurred
 );
 
 CREATE INDEX idx_audit_logs_process_instance_id
@@ -379,6 +299,20 @@ ON audit_logs(process_instance_id);
 
 CREATE INDEX idx_audit_logs_task_id
 ON audit_logs(task_id);
+
+
+CREATE TABLE process_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique outbox message identifier
+    process_instance_id UUID NOT NULL, -- Related process instance
+    event_type TEXT NOT NULL, -- Type of event (e.g., "TaskCompleted", "GatewayTaken")
+    payload JSONB NOT NULL, -- Full event details as JSON
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When event was created
+    published_at TIMESTAMP, -- When event was published (NULL = pending)
+    version INTEGER DEFAULT 1 -- Optimistic locking version
+);
+
+CREATE INDEX idx_outbox_unpublished ON process_outbox(published_at) 
+    WHERE published_at IS NULL;
 
 -- =========================================================
 -- COMMENTS

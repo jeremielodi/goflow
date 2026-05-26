@@ -32,17 +32,21 @@ func main() {
 	externalTaskCtrl := api.NewExternalTaskController(db)
 	app := fiber.New()
 
-	// Deploy BPMN
-	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)    // C8
-	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN) // C7
-
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
+	})
+	// C8
+	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
-	app.Get("/tasks", taskCtrl.GetTasks)
-	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
 
+	// C7
+	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/external-task/fetchAndLock", externalTaskCtrl.FetchAndLock)
 	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
 	app.Post("/engine-rest/external-task/:id/failure", externalTaskCtrl.HandleFailure)
+
+	app.Get("/tasks", taskCtrl.GetTasks)
+	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
 
 	app.Listen(":8080")
 }

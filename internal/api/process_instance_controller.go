@@ -14,11 +14,17 @@ import (
 )
 
 type ProcessInstanceController struct {
-	db *sqlx.DB
+	db                  *sqlx.DB
+	processRepo         *repository.ProcessRepository
+	processInstanceRepo *repository.ProcessInstanceRepository
 }
 
 func NewProcessInstanceController(db *sqlx.DB) *ProcessInstanceController {
-	return &ProcessInstanceController{db: db}
+	return &ProcessInstanceController{
+		db:                  db,
+		processRepo:         repository.NewProcessRepository(db),
+		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+	}
 }
 
 // ============================================================
@@ -32,24 +38,38 @@ type StartProcessRequest struct {
 func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 	processKey := c.Params("key")
 	if processKey == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "process key required"})
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "process key required",
+		})
 	}
 
 	var body StartProcessRequest
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid request body"})
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
 	}
 
-	// Load definition and graph
-	processRepo := repository.NewProcessRepository(pc.db)
-	def, err := processRepo.FindLatestProcessDefinitionByKey(processKey)
+	// Load definition and graph using repository
+	def, err := pc.processRepo.FindLatestProcessDefinitionByKey(processKey)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "process definition not found"})
+		return c.Status(404).JSON(fiber.Map{
+			"title":   "Not Found",
+			"message": "process definition not found",
+			"error":   err.Error(),
+		})
 	}
 
 	var graph engine.ProcessGraph
 	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to parse process graph"})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Internal Server Error",
+			"message": "failed to parse process graph",
+			"error":   err.Error(),
+		})
 	}
 
 	// Find start node
@@ -61,55 +81,60 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		}
 	}
 	if startNodeID == "" {
-		return c.Status(500).JSON(fiber.Map{"error": "no start event found"})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Configuration Error",
+			"message": "no start event found in process definition",
+		})
 	}
 
 	// Begin transaction
 	tx, err := pc.db.Beginx()
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "db transaction error"})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to begin database transaction",
+			"error":   err.Error(),
+		})
 	}
 	defer tx.Rollback()
 
-	// Create process instance
 	instanceID := uuid.New()
 	now := time.Now()
 
-	_, err = tx.Exec(`
-        INSERT INTO public.process_instances
-            (id, process_definition_id, status, started_at)
-        VALUES ($1, $2, 'running', $3)
-    `, instanceID, def.ID, now)
-	if err != nil {
+	// Create process instance using repository
+	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now); err != nil {
 		return c.Status(500).JSON(fiber.Map{
-			"erro":    err.Error(),
-			"message": "failed to create instance"})
+			"title":   "Database Error",
+			"message": "failed to create process instance",
+			"error":   err.Error(),
+		})
 	}
 
-	// Save variables
-	varData, _ := json.Marshal(body.Variables)
-	_, err = tx.Exec(`
-        INSERT INTO public.variables
-            (id, process_instance_id, data, updated_at)
-        VALUES ($1, $2, $3, $4)
-    `, uuid.New(), instanceID, varData, now)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to save variables"})
+	// Save variables using repository
+	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, body.Variables, now); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to save process variables",
+			"error":   err.Error(),
+		})
 	}
 
-	// Create initial execution
+	// Create initial execution using repository
 	execID := uuid.New()
-	_, err = tx.Exec(`
-        INSERT INTO public.executions
-            (id, process_instance_id, current_element_id, status, is_active, created_at, updated_at)
-        VALUES ($1, $2, $3, 'active', true, $4, $5)
-    `, execID, instanceID, startNodeID, now, now)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to create execution"})
+	if err := pc.processInstanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to create execution record",
+			"error":   err.Error(),
+		})
 	}
 
 	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to commit transaction"})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to commit transaction",
+			"error":   err.Error(),
+		})
 	}
 
 	// Run the runtime
@@ -120,9 +145,11 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 	ctx := c.Context()
 	err = rt.ExecuteExecution(ctx, execID)
 	if err != nil {
-		// Optionally mark instance as failed
-		return c.Status(500).JSON(fiber.Map{"content": "Execution error",
-			"error": err.Error()})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Execution Error",
+			"message": "failed to execute process",
+			"error":   err.Error(),
+		})
 	}
 
 	return c.JSON(fiber.Map{
@@ -130,6 +157,7 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		"executionId":       execID,
 		"processKey":        def.ProcessKey,
 		"version":           def.Version,
+		"message":           "process started successfully",
 	})
 }
 
@@ -138,16 +166,38 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 // POST /tasks/:id/complete
 // ============================================================
 func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
-	taskID, _ := uuid.Parse(c.Params("id"))
+	taskID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid task ID format",
+			"error":   err.Error(),
+		})
+	}
+
 	var req struct {
 		Variables map[string]interface{} `json:"variables"`
 	}
-	c.BodyParser(&req)
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+	}
 
 	svc := service.NewTaskService(pc.db)
-	err := svc.CompleteTask(c.Context(), taskID, req.Variables)
+	err = svc.CompleteTask(c.Context(), taskID, req.Variables)
 	if err != nil {
-		return c.JSON(fiber.Map{"title": "Error", "message": "Task not completed", "error": err.Error()})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Task Completion Error",
+			"message": "failed to complete task",
+			"error":   err.Error(),
+		})
 	}
-	return c.JSON(fiber.Map{"message": "completed"})
+
+	return c.JSON(fiber.Map{
+		"title":   "Success",
+		"message": "task completed successfully",
+	})
 }

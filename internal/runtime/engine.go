@@ -1,20 +1,15 @@
 package runtime
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/cel-go/cel"
-	"github.com/jeremielodi/goflow/internal/engine"
-	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/internal/repository"
-
-	"context"
-	"database/sql"
-	"encoding/json"
-
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -196,179 +191,196 @@ func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB) *Runtime {
 }
 
 // ------------------------------------------------------------
-// EvaluateCondition (unchanged from your version, but moved to a helper file)
-// ------------------------------------------------------------
-
-// ------------------------------------------------------------
 // ExecuteExecution starts or resumes from a given execution ID
 // ------------------------------------------------------------
 func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error {
-	// 1. Load execution, process instance, variables, and graph
-	var exec struct {
-		ID                uuid.UUID `db:"id"`
-		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
-		CurrentElementID  string    `db:"current_element_id"`
-		Status            string    `db:"status"`
-		IsActive          bool      `db:"is_active"`
-	}
-	err := r.DB.GetContext(ctx, &exec, `
-        SELECT id, process_instance_id, current_element_id, status, is_active
-        FROM public.executions
-        WHERE id = $1 AND is_active = true
-    `, execID)
+	engineRepo := repository.NewEngineRepository(r.DB)
+
+	// Get active execution
+	exec, err := engineRepo.GetActiveExecution(ctx, execID)
 	if err != nil {
 		return fmt.Errorf("failed to load execution: %w", err)
 	}
+	if exec == nil {
+		return fmt.Errorf("execution not found or not active")
+	}
 
-	// 2. Load process variables
-	var varsData []byte
-	err = r.DB.GetContext(ctx, &varsData, `
-        SELECT data FROM public.variables
-        WHERE process_instance_id = $1
-    `, exec.ProcessInstanceID)
-	if err != nil && err != sql.ErrNoRows {
+	// Get variables
+	variables, err := engineRepo.GetProcessVariables(exec.ProcessInstanceID)
+	if err != nil {
 		return fmt.Errorf("failed to load variables: %w", err)
 	}
-	variables := make(map[string]interface{})
-	if len(varsData) > 0 {
-		json.Unmarshal(varsData, &variables)
+
+	// Get process graph
+	graph, err := engineRepo.GetProcessGraphByInstanceID(exec.ProcessInstanceID)
+	if err != nil {
+		return fmt.Errorf("failed to load process graph: %w", err)
 	}
 
 	currentID := exec.CurrentElementID
 	for {
-		node, ok := r.Graph.Nodes[currentID]
-		if !ok {
-			return fmt.Errorf("node does not exist: %s", currentID)
+		node, err := engineRepo.GetNodeByID(graph, currentID)
+		if err != nil {
+			return err
 		}
 
 		switch node.Type {
 		case engine.StartEventType, engine.ExclusiveGatewayType:
 			next, err := r.ResolveNext(ctx, node, variables)
 			if err != nil {
-				fmt.Println("1", err.Error())
 				return err
 			}
-			err = r.updateExecution(ctx, exec.ID, next, variables)
+
+			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
-				fmt.Println("2", err.Error())
-				return err
+				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
+
+			err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next)
+			if err != nil {
+				tx.Rollback()
+				return fmt.Errorf("failed to update execution node: %w", err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
+
 			currentID = next
-			// ✅ continue loop (do not return)
 
 		case engine.ServiceTaskType:
+			// Begin transaction
+			tx, err := r.DB.BeginTxx(ctx, nil)
+			if err != nil {
+				return fmt.Errorf("failed to begin transaction: %w", err)
+			}
+			defer tx.Rollback()
 
 			// Move token to current service task node
-			err := r.updateExecution(
-				ctx,
-				exec.ID,
-				node.ID,
-				variables,
-			)
+			err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to update execution: %w", err)
 			}
 
+			// Validate job type
 			if node.JobType == nil {
-				return fmt.Errorf(
-					"service task %s has no job type",
-					node.ID,
-				)
+				return fmt.Errorf("service task %s has no job type", node.ID)
 			}
 
-			payload, _ := json.Marshal(variables)
-
-			_, err = r.DB.ExecContext(ctx, `
-					INSERT INTO public.jobs (
-						id,
-						process_instance_id,
-						execution_id,
-						job_type,
-						status,
-						payload,
-						created_at
-					)
-					VALUES (
-						$1,
-						$2,
-						$3,
-						$4,
-						'pending',
-						$5,
-						NOW()
-					)
-				`,
-				uuid.New(),
-				exec.ProcessInstanceID,
-				exec.ID,
-				*node.JobType,
-				payload,
-			)
-
+			// Prepare payload from variables
+			payload, err := json.Marshal(variables)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to marshal variables: %w", err)
 			}
 
-			// Execution waits for worker completion
-			_, err = r.DB.ExecContext(ctx, `
-				UPDATE public.executions
-				SET status = 'waiting',
-					updated_at = NOW()
-				WHERE id = $1
-			`, exec.ID)
+			// Create job
+			jobID := uuid.New()
+			err = engineRepo.CreateJobTx(tx, jobID, exec.ProcessInstanceID, exec.ID, *node.JobType, payload)
+			if err != nil {
+				return fmt.Errorf("failed to create job: %w", err)
+			}
 
-			return err
-			// ✅ continue loop
+			// Update execution status to waiting
+			err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+			if err != nil {
+				return fmt.Errorf("failed to update execution status: %w", err)
+			}
+
+			// Commit transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
+
+			// Log job creation
+			fmt.Printf("Job %s created for service task %s (type: %s)\n", jobID, node.ID, *node.JobType)
+
+			return nil
+
 		case engine.UserTaskType:
-
-			err := r.updateExecution(
-				ctx,
-				exec.ID,
-				node.ID,
-				variables,
-			)
+			// Begin transaction
+			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to begin transaction: %w", err)
+			}
+			defer tx.Rollback()
+
+			// Move token to current user task node
+			err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID)
+			if err != nil {
+				return fmt.Errorf("failed to update execution: %w", err)
 			}
 
-			_, err = r.createUserTask(
-				ctx,
-				exec.ProcessInstanceID,
-				exec.ID,
-				node,
-				variables,
-			)
-
-			if err != nil {
-				return err
+			// Resolve assignee and candidate group
+			var assignee *string
+			if node.AssigneeExpr != nil {
+				resolved := resolveExpression(*node.AssigneeExpr, variables)
+				if resolved != "" {
+					assignee = &resolved
+				}
 			}
 
-			_, err = r.DB.ExecContext(ctx, `
-				UPDATE public.executions
-				SET status = 'waiting',
-					updated_at = NOW()
-				WHERE id = $1
-			`, exec.ID)
+			var candidateGroup *string
+			if node.CandidateGroupExpr != nil {
+				resolved := resolveExpression(*node.CandidateGroupExpr, variables)
+				if resolved != "" {
+					candidateGroup = &resolved
+				}
+			}
 
+			// Create user task
+			taskID := uuid.New()
+			taskName := node.Name
+			err = engineRepo.CreateUserTaskTx(tx, &repository.UserTask{
+				ID:                taskID,
+				ProcessInstanceID: exec.ProcessInstanceID,
+				ExecutionID:       exec.ID,
+				TaskDefinitionKey: node.ID,
+				TaskName:          &taskName,
+				Assignee:          assignee,
+				CandidateGroup:    candidateGroup,
+			})
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to create user task: %w", err)
+			}
+
+			// Update execution status to waiting
+			err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+			if err != nil {
+				return fmt.Errorf("failed to update execution status: %w", err)
+			}
+
+			// Commit transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			return nil
+
 		case engine.EndEventType:
-			_, err := r.DB.ExecContext(ctx, `
-                UPDATE public.process_instances
-                SET status = 'completed', ended_at = $1
-                WHERE id = $2
-            `, time.Now(), exec.ProcessInstanceID)
+			// Begin transaction
+			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
-			_, err = r.DB.ExecContext(ctx, `
-                UPDATE public.executions
-                SET status = 'completed', is_active = false, updated_at = $1
-                WHERE id = $2
-            `, time.Now(), exec.ID)
+			defer tx.Rollback()
+
+			// Complete process instance
+			err = engineRepo.CompleteProcessInstanceTx(tx, exec.ProcessInstanceID)
+			if err != nil {
+				return fmt.Errorf("failed to complete process instance: %w", err)
+			}
+
+			// Complete execution
+			err = engineRepo.CompleteExecutionTx(tx, exec.ID)
+			if err != nil {
+				return fmt.Errorf("failed to complete execution: %w", err)
+			}
+
+			// Commit transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit transaction: %w", err)
+			}
+
 			return nil
 
 		default:
@@ -378,7 +390,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 }
 
 // ------------------------------------------------------------
-// Helper: resolveNext (similar to your resolveNext but persists condition evaluation)
+// Helper: ResolveNext (evaluates conditions to find next node)
 // ------------------------------------------------------------
 func (r *Runtime) ResolveNext(ctx context.Context, node *engine.Node, variables map[string]interface{}) (string, error) {
 	if len(node.Outgoing) == 0 {
@@ -418,110 +430,8 @@ func (r *Runtime) ResolveNext(ctx context.Context, node *engine.Node, variables 
 }
 
 // ------------------------------------------------------------
-// updateExecution moves token and optionally updates variables
+// Helper: resolveExpression resolves expression strings like ${variableName}
 // ------------------------------------------------------------
-func (r *Runtime) updateExecution(ctx context.Context, execID uuid.UUID, newElementID string, newVars map[string]interface{}) error {
-	tx, err := r.DB.BeginTxx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Update execution current element
-	_, err = tx.ExecContext(ctx, `
-        UPDATE public.executions
-        SET current_element_id = $1, updated_at = $2
-        WHERE id = $3
-    `, newElementID, time.Now(), execID)
-	if err != nil {
-		return fmt.Errorf("1. update failed %s", err.Error())
-	}
-
-	// If variables changed, merge them
-	if len(newVars) > 0 {
-		// First load current variables for this execution's instance
-		var instanceID uuid.UUID
-		err = tx.GetContext(ctx, &instanceID, `
-            SELECT process_instance_id FROM public.executions WHERE id = $1
-        `, execID)
-		if err != nil {
-			return fmt.Errorf("2. update failed %s", err.Error())
-		}
-		var existingData []byte
-		err = tx.GetContext(ctx, &existingData, `
-            SELECT data FROM public.variables WHERE process_instance_id = $1
-        `, instanceID)
-		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("2. update failed %s", err.Error())
-		}
-		merged := make(map[string]interface{})
-		if len(existingData) > 0 {
-			json.Unmarshal(existingData, &merged)
-		}
-		for k, v := range newVars {
-			merged[k] = v
-		}
-		newJSON, _ := json.Marshal(merged)
-
-		_, err = tx.ExecContext(ctx, `
-			UPDATE public.variables
-			SET data = $1,
-				updated_at = $2
-			WHERE process_instance_id = $3
-		`, newJSON, time.Now(), instanceID)
-
-		if err != nil {
-			return fmt.Errorf("5. update failed %s", err.Error())
-		}
-	}
-
-	return tx.Commit()
-}
-
-// ------------------------------------------------------------
-// createUserTask inserts a task and returns its ID
-// ------------------------------------------------------------
-func (r *Runtime) createUserTask(
-	ctx context.Context,
-	instanceID, execID uuid.UUID,
-	node *engine.Node,
-	vars map[string]interface{},
-) (uuid.UUID, error) {
-	// Resolve assignee
-	var assignee *string
-	if node.AssigneeExpr != nil {
-		resolved := resolveExpression(*node.AssigneeExpr, vars)
-		if resolved != "" {
-			assignee = &resolved
-		}
-	}
-
-	// Resolve candidate group
-	var candidateGroup *string
-	if node.CandidateGroupExpr != nil {
-		resolved := resolveExpression(*node.CandidateGroupExpr, vars)
-		if resolved != "" {
-			candidateGroup = &resolved
-		}
-	}
-
-	// Insert task into database (using TaskRepository)
-	task := models.Task{
-		ID:                uuid.New(),
-		ProcessInstanceID: instanceID,
-		ExecutionID:       &execID,
-		TaskDefinitionKey: node.ID,
-		TaskName:          &node.Name,
-		Assignee:          assignee,       // resolved string
-		CandidateGroup:    candidateGroup, // resolved string
-		Status:            "created",
-		CreatedAt:         time.Now(),
-	}
-	taskRepo := repository.NewTaskRepository(r.DB)
-	_, err := taskRepo.CreateTask(task)
-	return task.ID, err
-}
-
 func resolveExpression(expr string, vars map[string]interface{}) string {
 	expr = strings.TrimSpace(expr)
 	// If it looks like a variable reference: ${...}

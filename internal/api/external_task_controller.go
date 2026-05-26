@@ -1,25 +1,30 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jmoiron/sqlx"
 )
 
 type ExternalTaskController struct {
-	db *sqlx.DB
+	db                  *sqlx.DB
+	externalTaskRepo    *repository.ExternalTaskRepository
+	processInstanceRepo *repository.ProcessInstanceRepository
 }
 
 func NewExternalTaskController(db *sqlx.DB) *ExternalTaskController {
-	return &ExternalTaskController{db: db}
+	return &ExternalTaskController{
+		db:                  db,
+		externalTaskRepo:    repository.NewExternalTaskRepository(db),
+		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+	}
 }
 
 // FetchAndLockRequest matches Camunda 7 fetchAndLock request body
@@ -37,7 +42,6 @@ type CamundaVariable struct {
 	Type  string      `json:"type"`
 }
 
-// FetchAndLockResponse is a slice of external tasks
 type FetchAndLockResponse struct {
 	ID        string                     `json:"id"`
 	TopicName string                     `json:"topicName"`
@@ -46,7 +50,9 @@ type FetchAndLockResponse struct {
 	WorkerId  string                     `json:"workerId"`
 }
 
-// HandleFailureRequest matches Camunda 7 failure request
+type CompleteRequest struct {
+	Variables map[string]interface{} `json:"variables"`
+}
 
 type FailureRequest struct {
 	ErrorMessage string `json:"errorMessage"`
@@ -57,57 +63,68 @@ type FailureRequest struct {
 func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 	var req FetchAndLockRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
 	}
 
-	response := []FetchAndLockResponse{}
+	if req.MaxTasks <= 0 {
+		req.MaxTasks = 10 // default
+	}
 
+	// Prepare topic configs
+	topics := make([]repository.TopicConfig, len(req.Topics))
+	for i, topic := range req.Topics {
+		topics[i] = repository.TopicConfig{
+			TopicName:    topic.TopicName,
+			LockDuration: topic.LockDuration,
+		}
+	}
+
+	// Begin transaction
 	tx, err := ctrl.db.Beginx()
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to begin transaction",
+			"error":   err.Error(),
+		})
 	}
 	defer tx.Rollback()
 
-	for _, topic := range req.Topics {
-		var jobs []struct {
-			ID      uuid.UUID       `db:"id"`
-			Payload json.RawMessage `db:"payload"`
-			Retries int             `db:"retries"`
-			ExecID  uuid.UUID       `db:"execution_id"`
-		}
+	// Fetch and lock jobs using repository
+	topicJobs, err := ctrl.externalTaskRepo.FetchAndLockJobsTx(tx, topics, req.WorkerId, req.MaxTasks)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to fetch jobs",
+			"error":   err.Error(),
+		})
+	}
 
-		query := `
-			SELECT id, payload, retries, execution_id
-			FROM public.jobs
-			WHERE job_type = $1 AND status = 'pending'
-			  AND (locked_by IS NULL OR locked_until < NOW())
-			LIMIT $2
-			FOR UPDATE SKIP LOCKED
-		`
-		err = tx.Select(&jobs, query, topic.TopicName, req.MaxTasks)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-		}
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to commit transaction",
+			"error":   err.Error(),
+		})
+	}
 
-		for _, job := range jobs {
-			lockedUntil := time.Now().Add(time.Duration(topic.LockDuration) * time.Millisecond)
-
-			_, err = tx.Exec(`
-				UPDATE public.jobs
-				SET status = 'locked', locked_by = $1, locked_until = $2
-				WHERE id = $3
-			`, req.WorkerId, lockedUntil, job.ID)
-			if err != nil {
-				continue
-			}
-
+	// Build response
+	response := []FetchAndLockResponse{}
+	for _, topicJob := range topicJobs {
+		for _, job := range topicJob.Jobs {
+			// Parse variables from payload
 			rawVars := make(map[string]interface{})
 			if len(job.Payload) > 0 {
 				if err := json.Unmarshal(job.Payload, &rawVars); err != nil {
-					continue
+					log.Printf("Warning: failed to parse job payload for job %s: %v", job.ID, err)
 				}
 			}
 
+			// Convert to Camunda variable format
 			convertedVars := make(map[string]CamundaVariable)
 			for k, v := range rawVars {
 				convertedVars[k] = CamundaVariable{
@@ -115,17 +132,10 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 					Type:  getCamundaVariableType(v),
 				}
 			}
-			type ExternalTaskItem struct {
-				ID        string                     `json:"id"`
-				TopicName string                     `json:"topicName"`
-				Variables map[string]CamundaVariable `json:"variables"`
-				Retries   int                        `json:"retries"`
-				WorkerId  string                     `json:"workerId"`
-			}
 
 			response = append(response, FetchAndLockResponse{
 				ID:        job.ID.String(),
-				TopicName: topic.TopicName,
+				TopicName: topicJob.TopicName,
 				Variables: convertedVars,
 				Retries:   job.Retries,
 				WorkerId:  req.WorkerId,
@@ -133,11 +143,285 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	return c.JSON(response)
+}
+
+func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
+	jobID, err := uuid.Parse(c.Params("id"))
+
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid task id format",
+			"error":   err.Error(),
+		})
 	}
 
-	return c.JSON(response)
+	var req CompleteRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+	}
+
+	// Begin transaction
+	tx, err := ctrl.db.Beginx()
+	if err != nil {
+		fmt.Println("2. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to begin transaction",
+			"error":   err.Error(),
+		})
+	}
+	defer tx.Rollback()
+
+	// Get job with execution context
+	jobWithExec, err := ctrl.externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
+	if err != nil {
+		fmt.Println("3. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to fetch job details",
+			"error":   err.Error(),
+		})
+	}
+
+	if jobWithExec == nil {
+		return c.Status(404).JSON(fiber.Map{
+			"title":   "Not Found",
+			"message": "job not found",
+		})
+	}
+
+	if jobWithExec.Status != "locked" {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Invalid State",
+			"message": fmt.Sprintf("job cannot be completed, current status: %s", jobWithExec.Status),
+		})
+	}
+
+	// Merge variables
+	existingVars, err := ctrl.processInstanceRepo.GetVariables(jobWithExec.ProcessInstanceID)
+	if err != nil {
+		fmt.Println("5. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to fetch variables",
+			"error":   err.Error(),
+		})
+	}
+
+	// Merge new variables
+	for k, v := range req.Variables {
+		existingVars[k] = v
+	}
+
+	// Update variables
+	if err := ctrl.processInstanceRepo.UpsertVariablesTx(tx, jobWithExec.ProcessInstanceID, existingVars); err != nil {
+		fmt.Println("6. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to update variables",
+			"error":   err.Error(),
+		})
+	}
+
+	// Mark job as completed
+	if err := ctrl.externalTaskRepo.CompleteJobTx(tx, jobID); err != nil {
+		fmt.Println("7. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to complete job",
+			"error":   err.Error(),
+		})
+	}
+
+	// Load process graph
+	graphJSON, err := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID)
+	if err != nil {
+		fmt.Println("8. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to load process definition",
+			"error":   err.Error(),
+		})
+	}
+
+	var graph engine.ProcessGraph
+	if err := json.Unmarshal(graphJSON, &graph); err != nil {
+		fmt.Println("9. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Processing Error",
+			"message": "failed to parse process graph",
+			"error":   err.Error(),
+		})
+	}
+
+	// Get service task node
+	serviceNode, err := ctrl.externalTaskRepo.GetServiceTaskNode(&graph, jobWithExec.CurrentElementID)
+	if err != nil {
+		fmt.Println("10. ", err.Error())
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Configuration Error",
+			"message": "service task node not found",
+			"error":   err.Error(),
+		})
+	}
+
+	// If no outgoing flows, complete the process
+	if len(serviceNode.Outgoing) == 0 {
+
+		if err := ctrl.externalTaskRepo.CompleteProcessInstanceTx(tx, jobWithExec.ProcessInstanceID); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "failed to complete process instance",
+				"error":   err.Error(),
+			})
+		}
+
+		if err := ctrl.externalTaskRepo.CompleteExecutionTx(tx, jobWithExec.ExecutionID); err != nil {
+			fmt.Println("12. ", err.Error())
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "failed to complete execution",
+				"error":   err.Error(),
+			})
+		}
+
+		if err := tx.Commit(); err != nil {
+			fmt.Println("14. ", err.Error())
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "failed to commit transaction",
+				"error":   err.Error(),
+			})
+		}
+
+		return c.JSON(fiber.Map{
+			"title":   "Success",
+			"message": "process completed",
+			"jobId":   jobID,
+		})
+	}
+
+	// Resolve next node
+	rt := runtime.NewRuntime(&graph, ctrl.db)
+	nextNodeID, err := rt.ResolveNext(c.Context(), serviceNode, existingVars)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Execution Error",
+			"message": "failed to resolve next node",
+			"error":   err.Error(),
+		})
+	}
+
+	// Move execution to next node
+	if err := ctrl.externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, jobWithExec.ExecutionID, nextNodeID); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to update execution",
+			"error":   err.Error(),
+		})
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to commit transaction",
+			"error":   err.Error(),
+		})
+	}
+
+	// Resume execution outside transaction
+	rt = &runtime.Runtime{Graph: &graph, DB: ctrl.db}
+	if err := rt.ExecuteExecution(c.Context(), jobWithExec.ExecutionID); err != nil {
+		log.Printf("Execution resume error: %v", err)
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Execution Error",
+			"message": "failed to resume process execution",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"title":   "Success",
+		"message": "job completed successfully",
+	})
+}
+
+func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
+	jobID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid task id format",
+			"error":   err.Error(),
+		})
+	}
+
+	var req FailureRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+	}
+
+	tx, err := ctrl.db.Beginx()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to begin transaction",
+			"error":   err.Error(),
+		})
+	}
+	defer tx.Rollback()
+
+	// Decrement retries
+	newRetries := req.Retries - 1
+
+	if newRetries <= 0 {
+		// No more retries - mark as failed permanently
+		if err := ctrl.externalTaskRepo.FailJobPermanentlyTx(tx, jobID, req.ErrorMessage); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "failed to mark job as failed",
+				"error":   err.Error(),
+			})
+		}
+	} else {
+		// Reset job for retry
+		if err := ctrl.externalTaskRepo.ResetJobForRetryTx(tx, jobID, newRetries, req.ErrorMessage); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "failed to reset job for retry",
+				"error":   err.Error(),
+			})
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": "failed to commit transaction",
+			"error":   err.Error(),
+		})
+	}
+
+	message := "failure recorded, job will be retried"
+	if newRetries <= 0 {
+		message = "job marked as failed permanently"
+	}
+
+	return c.JSON(fiber.Map{
+		"title":   "Success",
+		"message": message,
+	})
 }
 
 // Helper to map Go types to Camunda variable types
@@ -152,204 +436,4 @@ func getCamundaVariableType(v interface{}) string {
 	default:
 		return "Object"
 	}
-}
-
-// CompleteTask handles POST /engine-rest/external-task/:id/complete
-type CompleteRequest struct {
-	Variables map[string]interface{} `json:"variables"`
-}
-
-func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
-	jobID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid task id"})
-	}
-
-	var req CompleteRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// Start explicit transaction
-	tx, err := ctrl.db.Beginx()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to start transaction"})
-	}
-	defer tx.Rollback() // will rollback if we don't commit
-
-	// 1. Get job, execution, process instance, and current status
-	var execID, instanceID uuid.UUID
-	var serviceTaskID string
-	var jobStatus string
-	err = tx.QueryRow(`
-        SELECT j.execution_id, j.process_instance_id, e.current_element_id, j.status
-        FROM public.jobs j
-        JOIN public.executions e ON e.id = j.execution_id
-        WHERE j.id = $1
-    `, jobID).Scan(&execID, &instanceID, &serviceTaskID, &jobStatus)
-	if err != nil {
-		log.Printf("Error fetching job: %v", err)
-		return c.Status(404).JSON(fiber.Map{"error": "job not found"})
-	}
-
-	if jobStatus != "locked" {
-		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("job not locked, status=%s", jobStatus)})
-	}
-
-	// 2. Merge variables
-	var existingVars map[string]interface{}
-	var data []byte
-	err = tx.Get(&data, `SELECT data FROM public.variables WHERE process_instance_id = $1`, instanceID)
-	if err != nil && err != sql.ErrNoRows {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch variables"})
-	}
-	if len(data) > 0 {
-		json.Unmarshal(data, &existingVars)
-	} else {
-		existingVars = make(map[string]interface{})
-	}
-	for k, v := range req.Variables {
-		existingVars[k] = v
-	}
-
-	newVarsJSON, _ := json.Marshal(existingVars)
-	// 3. Update variables (delete then insert – works without unique constraint)
-	_, err = tx.Exec(`DELETE FROM public.variables WHERE process_instance_id = $1`, instanceID)
-	if err != nil {
-		log.Printf("Error deleting old variables: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": "failed to delete old variables"})
-	}
-	_, err = tx.Exec(`
-    INSERT INTO public.variables (id, process_instance_id, data, updated_at)
-    VALUES ($1, $2, $3, NOW())
-	`, uuid.New(), instanceID, newVarsJSON)
-	if err != nil {
-		log.Printf("Error inserting new variables: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": "failed to insert variables"})
-	}
-
-	// 4. Mark job as completed
-	_, err = tx.Exec(`
-        UPDATE public.jobs
-        SET status = 'completed', completed_at = NOW()
-        WHERE id = $1
-    `, jobID)
-	if err != nil {
-		log.Printf("Error updating job: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": "failed to complete job"})
-	}
-
-	// 5. Load graph
-	var defID uuid.UUID
-	err = tx.Get(&defID, `SELECT process_definition_id FROM public.process_instances WHERE id = $1`, instanceID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "process instance not found"})
-	}
-	var graphJSON []byte
-	err = tx.Get(&graphJSON, `SELECT parsed_graph FROM public.process_definitions WHERE id = $1`, defID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "process definition not found"})
-	}
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(graphJSON, &graph); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to parse graph"})
-	}
-
-	serviceNode, ok := graph.Nodes[serviceTaskID]
-	if !ok {
-		return c.Status(500).JSON(fiber.Map{"error": "service task node not found"})
-	}
-
-	// 6. If no outgoing flows, end process instance
-	if len(serviceNode.Outgoing) == 0 {
-		_, err = tx.Exec(`UPDATE public.process_instances SET status = 'completed', ended_at = NOW() WHERE id = $1`, instanceID)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "failed to end process"})
-		}
-		_, err = tx.Exec(`UPDATE public.executions SET status = 'completed', is_active = false WHERE id = $1`, execID)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "failed to complete execution"})
-		}
-		if err := tx.Commit(); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "commit failed"})
-		}
-
-		return c.JSON(fiber.Map{"message": "process completed", "jobId": jobID})
-	}
-
-	// 7. Resolve next node
-	_runtime := runtime.NewRuntime(&graph, ctrl.db)
-	nextID, err := _runtime.ResolveNext(c.Context(), serviceNode, existingVars)
-	if err != nil {
-		log.Printf("Error resolving next node: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// 8. Move execution token
-	_, err = tx.Exec(`
-        UPDATE public.executions
-        SET current_element_id = $1, status = 'active', updated_at = NOW()
-        WHERE id = $2
-    `, nextID, execID)
-	if err != nil {
-		log.Printf("Error moving execution: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": "failed to move execution"})
-	}
-
-	// 9. Commit transaction
-	if err := tx.Commit(); err != nil {
-		log.Printf("Commit failed: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": "commit failed"})
-	}
-
-	// 10. Resume execution (outside transaction)
-	rt := &runtime.Runtime{Graph: &graph, DB: ctrl.db}
-	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {
-		log.Printf("Execution resume error: %v", err)
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	log.Printf("Job %s completed and execution moved to %s", jobID, nextID)
-	return c.JSON(fiber.Map{"message": "job completed"})
-}
-
-func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
-	jobID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid task id"})
-	}
-
-	var req FailureRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// Decrement retries
-	newRetries := req.Retries - 1
-	if newRetries <= 0 {
-		// No more retries → mark job as failed permanently
-		_, err = ctrl.db.Exec(`
-            UPDATE public.jobs
-            SET status = 'failed', error_message = $1
-            WHERE id = $2
-        `, req.ErrorMessage, jobID)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-		}
-		// Optionally set execution to failed or terminate process instance
-		// For now, just return success
-		return c.JSON(fiber.Map{"message": "job marked as failed"})
-	}
-
-	// Reset job to pending with decremented retries
-	_, err = ctrl.db.Exec(`
-        UPDATE public.jobs
-        SET retries = $1, status = 'pending', locked_by = NULL, locked_until = NULL, error_message = $2
-        WHERE id = $3
-    `, newRetries, req.ErrorMessage, jobID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(fiber.Map{"message": "failure recorded, job will be retried"})
 }

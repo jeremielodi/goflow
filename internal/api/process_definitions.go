@@ -29,9 +29,6 @@ func NewProcessDefinitionController(db *sqlx.DB, rootDirPath *string) *ProcessDe
 	}
 }
 
-// Simple in-memory repo (replace later with PostgreSQL repo)
-var processDefinitions = map[string]ProcessDefinition{}
-
 type ProcessDefinition struct {
 	ID        string
 	Key       string

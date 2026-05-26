@@ -23,7 +23,7 @@ func NewTaskController(db *sqlx.DB, rootDirPath *string) *TaskController {
 func (tc *TaskController) GetTasks(c *fiber.Ctx) error {
 	assignee := c.Query("assignee")
 	group := c.Query("candidateGroup")
-	status := c.Query("sttaus")
+	status := c.Query("status")
 	processInstanceId := c.Query("processInstanceId")
 	repo := repository.NewTaskRepository(tc.db)
 	var params = map[string]interface{}{}

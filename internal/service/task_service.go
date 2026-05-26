@@ -123,6 +123,22 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "id", Value: task.ExecutionID},
 	})
 
+	eventPayload := map[string]interface{}{
+		"task_id":      task.ID,
+		"task_key":     task.TaskDefinitionKey,
+		"assignee":     task.Assignee,
+		"variables":    currentVars,
+		"completed_at": time.Now(),
+	}
+
+	eventPayloadJson, _ := json.Marshal(eventPayload)
+
+	tx.AddInsertQuery("public.process_outbox", []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
+		{Key: "event_type", Value: "TaskComplete"},
+		{Key: "payload", Value: eventPayloadJson},
+	})
+
 	// Execute all
 	_, success, err := tx.Execute()
 	if err != nil || !success {
@@ -176,6 +192,22 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
 		{Key: "id", Value: *task.ExecutionID},
+	})
+
+	eventPayload := map[string]interface{}{
+		"task_id":      task.ID,
+		"task_key":     task.TaskDefinitionKey,
+		"assignee":     task.Assignee,
+		"variables":    currentVars,
+		"completed_at": time.Now(),
+	}
+
+	eventPayloadJson, _ := json.Marshal(eventPayload)
+
+	tx.AddInsertQuery("public.process_outbox", []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
+		{Key: "event_type", Value: "TaskComplete"},
+		{Key: "payload", Value: eventPayloadJson},
 	})
 
 	_, success, err := tx.Execute()
