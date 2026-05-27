@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/parser"
 	"github.com/jeremielodi/goflow/internal/runtime"
@@ -84,7 +85,7 @@ func main1() {
 		case engine.ServiceTaskType:
 			fmt.Printf("Executing service task: %s\n", node.Name)
 
-			next, err := rt.ResolveNext(node, variables)
+			next, err := common.ResolveNext(node, variables)
 			if err != nil {
 				fmt.Println("Error:", err)
 				return
@@ -98,7 +99,7 @@ func main1() {
 		case engine.ExclusiveGatewayType:
 			fmt.Println("Evaluating gateway...")
 
-			next, err := rt.ResolveNext(node, variables)
+			next, err := common.ResolveNext(node, variables)
 			if err != nil {
 				fmt.Println("Gateway error:", err)
 				return

@@ -6,6 +6,10 @@ import (
 	"github.com/jeremielodi/goflow/internal/parser"
 )
 
+type ProcessGraph struct {
+	Nodes map[string]*Node
+}
+
 // ============================================================
 // Build a graph from a single parser.Process (core builder)
 // ============================================================
@@ -23,7 +27,6 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		node := &Node{
 			ID:   s.ID,
 			Type: StartEventType,
-			
 		}
 
 		// Check for timer definition
@@ -145,6 +148,48 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		target.Incoming = append(target.Incoming, f.SourceRef)
 	}
 
+	// ---- Add outgoing edges from Boundary Events ----
+	for _, b := range process.BoundaryTimerEvents {
+		// Find the boundary event node
+		boundaryNode, ok := nodeMap[b.ID]
+		if !ok {
+			continue
+		}
+
+		// Add edge from attached node to boundary event
+		// This allows the timer to be triggered from the attached task
+		if b.AttachedToRef != "" {
+			// Add incoming reference from attached node
+			attachedNode, attachedOk := nodeMap[b.AttachedToRef]
+			if attachedOk {
+				// Create a flow from attached node to boundary event
+				flow := Flow{
+					ID:        b.ID + "_boundary_flow",
+					SourceRef: b.AttachedToRef,
+					TargetRef: b.ID,
+					Condition: "",
+				}
+				attachedNode.Outgoing = append(attachedNode.Outgoing, flow)
+				boundaryNode.Incoming = append(boundaryNode.Incoming, b.AttachedToRef)
+			}
+		}
+
+		// Add edges from boundary event to its targets from SequenceFlows
+		for _, flow := range process.SequenceFlows {
+			if flow.SourceRef == b.ID {
+				if targetNode, ok := nodeMap[flow.TargetRef]; ok {
+					newFlow := Flow{
+						ID:        flow.ID,
+						SourceRef: b.ID,
+						TargetRef: flow.TargetRef,
+						Condition: flow.Condition,
+					}
+					boundaryNode.Outgoing = append(boundaryNode.Outgoing, newFlow)
+					targetNode.Incoming = append(targetNode.Incoming, b.ID)
+				}
+			}
+		}
+	}
 	// Validate parallel gateways
 	for _, node := range graph.Nodes {
 		if node.Type == ParallelGatewayType {

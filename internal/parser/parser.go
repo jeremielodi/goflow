@@ -1,6 +1,98 @@
 package parser
 
-import "encoding/xml"
+import (
+	"encoding/json"
+	"encoding/xml"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Process struct {
+	ID                      string                   `xml:"id,attr"`
+	IsExecutable            bool                     `xml:"isExecutable,attr"`
+	Name                    string                   `xml:"name,attr"`
+	StartEvents             []StartEvent             `xml:"startEvent"`
+	UserTasks               []UserTask               `xml:"userTask"`
+	ServiceTasks            []ServiceTask            `xml:"serviceTask"`
+	EndEvents               []EndEvent               `xml:"endEvent"`
+	ExclusiveGateways       []ExclusiveGateway       `xml:"exclusiveGateway"`
+	ParallelGateways        []ParallelGateway        `xml:"parallelGateway"`
+	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
+	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
+	IntermediateTimerEvents []IntermediateTimerEvent
+	BoundaryTimerEvents     []BoundaryTimerEvent
+	BoundaryEvents          []BoundaryEvent `xml:"boundaryEvent"`
+}
+
+type IntermediateTimerEvent struct {
+	ID              string
+	Name            string
+	TimerDefinition *TimerDefinition
+}
+
+type BoundaryTimerEvent struct {
+	ID              string
+	AttachedToRef   string
+	CancelActivity  bool
+	TimerDefinition *TimerDefinition
+}
+
+// TimerDefinition represents BPMN timer event definition
+type TimerDefinition struct {
+	RawXML       string
+	TimeDuration string // PT1M, PT1H, PT1D, etc.
+	TimeDate     string // 2024-12-31T23:59:59
+	TimeCycle    string // R/PT1M, R/PT24H, etc.
+}
+
+type ProcessDefinitionInfo struct {
+	ID           string `json:"id"`
+	Key          string `json:"key"`
+	Version      int    `json:"version"`
+	ResourceName string `json:"resourceName"`
+}
+
+// Deployment model (matches table columns)
+type Deployment struct {
+	ID         uuid.UUID  `db:"id"`
+	Name       string     `db:"name"`
+	DeployedBy *uuid.UUID `db:"deployed_by"`
+	Status     string     `db:"status"` // "active" | "inactive"
+	CreatedAt  time.Time  `db:"created_at"`
+}
+
+// DeploymentCreateModel for INSERT
+type DeploymentCreateModel struct {
+	Name       string
+	DeployedBy *uuid.UUID
+	Status     string
+}
+
+// ProcessDefinition model
+type ProcessDefinition struct {
+	ID           uuid.UUID       `db:"id"`
+	DeploymentID uuid.UUID       `db:"deployment_id"`
+	ProcessKey   string          `db:"process_key"`
+	ProcessName  *string         `db:"process_name"`
+	Version      int             `db:"version"`
+	IsActive     bool            `db:"is_active"`
+	BpmnXML      string          `db:"bpmn_xml"`
+	ParsedGraph  json.RawMessage `db:"parsed_graph"` // JSONB
+	EngineType   string          `db:"engine_type"`
+	CreatedAt    time.Time       `db:"created_at"`
+}
+
+// ProcessDefinitionCreateModel for INSERT
+type ProcessDefinitionCreateModel struct {
+	DeploymentID uuid.UUID
+	ProcessKey   string
+	ProcessName  *string
+	Version      int
+	IsActive     bool
+	BpmnXML      string
+	ParsedGraph  json.RawMessage
+}
 
 type Definitions struct {
 	XMLName   xml.Name  `xml:"definitions"`
@@ -104,6 +196,8 @@ type BoundaryEvent struct {
 	ID                     string                  `xml:"id,attr"`
 	AttachedToRef          string                  `xml:"attachedToRef,attr"`
 	CancelActivity         bool                    `xml:"cancelActivity,attr"`
+	Name                   string                  `xml:"name,attr"`
+	Outgoing               []string                `xml:"outgoing"`
 	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
 	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
 	TimerDefinition        *TimerDefinition        `xml:"-"`
@@ -225,6 +319,7 @@ func ParseBPMN(data []byte) (*Definitions, error) {
 			}
 		}
 	}
+	PopulateTimerEvents(&defs)
 
 	return &defs, nil
 }
@@ -252,4 +347,37 @@ func getStringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func PopulateTimerEvents(defs *Definitions) {
+	for i := range defs.Processes {
+		process := &defs.Processes[i]
+
+		// Clear existing slices
+		process.IntermediateTimerEvents = []IntermediateTimerEvent{}
+		process.BoundaryTimerEvents = []BoundaryTimerEvent{}
+
+		// Process Intermediate Catch Events (standalone timer events)
+		for _, event := range process.IntermediateCatchEvents {
+			if event.TimerDefinition != nil && event.TimerDefinition.RawXML != "" {
+				process.IntermediateTimerEvents = append(process.IntermediateTimerEvents, IntermediateTimerEvent{
+					ID:              event.ID,
+					Name:            event.ID,
+					TimerDefinition: event.TimerDefinition,
+				})
+			}
+		}
+
+		// Process Boundary Events (timer attached to task)
+		for _, event := range process.BoundaryEvents {
+			if event.TimerDefinition != nil && event.TimerDefinition.RawXML != "" {
+				process.BoundaryTimerEvents = append(process.BoundaryTimerEvents, BoundaryTimerEvent{
+					ID:              event.ID,
+					AttachedToRef:   event.AttachedToRef,
+					CancelActivity:  event.CancelActivity,
+					TimerDefinition: event.TimerDefinition,
+				})
+			}
+		}
+	}
 }

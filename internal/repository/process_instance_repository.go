@@ -136,7 +136,7 @@ type Execution struct {
 	CurrentElementID  string     `db:"current_element_id"`
 	Status            string     `db:"status"`
 	ParentExecutionID *uuid.UUID `db:"parent_execution_id"`
-	PathID            string     `db:"path_id"`
+	PathID            *string    `db:"path_id"`
 	IsActive          bool       `db:"is_active"`
 	CreatedAt         time.Time  `db:"created_at"`
 	UpdatedAt         time.Time  `db:"updated_at"`

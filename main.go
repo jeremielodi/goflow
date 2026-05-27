@@ -31,6 +31,7 @@ func main() {
 	if err != nil {
 		log.Fatalln("Postgres: ", err)
 	}
+	resumer := runtime.CreateResumer(db)
 
 	taskService := service.NewTaskService(db)
 	taskService.SetResumeExecutor(func(ctx context.Context, graph *engine.ProcessGraph, execID uuid.UUID) error {
@@ -45,6 +46,11 @@ func main() {
 	externalTaskCtrl := api.NewExternalTaskController(db)
 	auditController := api.NewAuditController(db)
 
+	// timer-----------------------------------------
+	timerScheduler := service.NewTimerScheduler(db, resumer)
+	go timerScheduler.Start(context.Background())
+	defer timerScheduler.Stop()
+	// </ timer-----------------------------------------
 	app := fiber.New()
 
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -55,6 +61,7 @@ func main() {
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 
 	// C7
+	app.Post("/engine-rest/v2/deployment/create", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/external-task/fetchAndLock", externalTaskCtrl.FetchAndLock)
 	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
@@ -62,10 +69,12 @@ func main() {
 
 	app.Get("/tasks", taskCtrl.GetTasks)
 	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
+	app.Get("/jobs", externalTaskCtrl.GetJobs)
 
 	// Audit endpoints
 	app.Get("/audit/process/:processId", auditController.GetProcessAuditLogs)
 	app.Get("/audit/task/:taskId", auditController.GetTaskAuditLogs)
 	app.Post("/audit/date-range", auditController.GetAuditLogsByDateRange)
+
 	app.Listen(":8080")
 }

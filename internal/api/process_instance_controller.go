@@ -29,6 +29,37 @@ func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService)
 	}
 }
 
+// Variable represents a typed variable from Camunda
+type Variable struct {
+	Value interface{} `json:"value"`
+	Type  string      `json:"type"`
+}
+
+// normalizeVariables converts both simple and typed formats to simple map[string]interface{}
+func normalizeVariables(variables map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for key, value := range variables {
+		// Check if it's the typed format: { value: xxx, type: "string" }
+		if varMap, ok := value.(map[string]interface{}); ok {
+			// Check if it has a "value" field (Camunda typed format)
+			if val, hasValue := varMap["value"]; hasValue {
+				result[key] = val
+				continue
+			}
+		}
+		// Check if it's a Variable struct (if passed as struct)
+		if varStruct, ok := value.(Variable); ok {
+			result[key] = varStruct.Value
+			continue
+		}
+		// Simple format - use as is
+		result[key] = value
+	}
+
+	return result
+}
+
 // ============================================================
 // START PROCESS
 // POST /process-definitions/:key/start
@@ -54,6 +85,9 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
+
+	// Normalize variables (supports both simple and typed formats)
+	normalizedVars := normalizeVariables(body.Variables)
 
 	// Load definition and graph using repository
 	def, err := pc.processRepo.FindLatestProcessDefinitionByKey(processKey)
@@ -112,8 +146,8 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	// Save variables using repository
-	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, body.Variables, now); err != nil {
+	// Save normalized variables using repository
+	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, normalizedVars, now); err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to save process variables",
@@ -139,8 +173,8 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	// Run the runtime - FIXED: Use the constructor
-	rt := runtime.NewRuntime(&graph, pc.db) // This properly initializes auditService
+	// Run the runtime
+	rt := runtime.NewRuntime(&graph, pc.db)
 	ctx := c.Context()
 	err = rt.ExecuteExecution(ctx, execID)
 	if err != nil {
@@ -166,13 +200,30 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 // ============================================================
 
 func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
-	taskID, _ := uuid.Parse(c.Params("id"))
+	taskID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid task ID",
+			"error":   err.Error(),
+		})
+	}
+
 	var req struct {
 		Variables map[string]interface{} `json:"variables"`
 	}
-	c.BodyParser(&req)
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+	}
 
-	err := pc.taskService.CompleteTask(c.Context(), taskID, req.Variables)
+	// Normalize variables (supports both simple and typed formats)
+	normalizedVars := normalizeVariables(req.Variables)
+
+	err = pc.taskService.CompleteTask(c.Context(), taskID, normalizedVars)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Error",
@@ -180,5 +231,7 @@ func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
-	return c.JSON(fiber.Map{"message": "completed"})
+	return c.JSON(fiber.Map{
+		"message": "task completed successfully",
+	})
 }

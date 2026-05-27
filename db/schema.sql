@@ -352,7 +352,8 @@ CREATE TABLE timer_jobs (
     due_at TIMESTAMP NOT NULL, -- When this timer should trigger
     payload JSONB NULL, -- Timer configuration (duration, cycle, etc.)
     is_triggered BOOLEAN NOT NULL DEFAULT false, -- Whether timer has fired
-    created_at TIMESTAMP NOT NULL DEFAULT NOW() -- When timer was scheduled
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When timer was scheduled
+    triggered_at TIMESTAMP NULL
 );
 
 CREATE INDEX idx_timer_jobs_due_at

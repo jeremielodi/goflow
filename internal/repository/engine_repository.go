@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 // Custom errors
 var (
 	ErrInvalidOutgoingFlows = errors.New("node has invalid number of outgoing flows")
+	ErrNodeNotFound         = errors.New("node not found in graph")
 )
 
 type EngineRepository struct {
@@ -49,7 +51,7 @@ func (r *EngineRepository) GetActiveExecutionWithTx(tx *sqlx.Tx, execID uuid.UUI
 func (r *EngineRepository) GetActiveExecution(ctx context.Context, execID uuid.UUID) (*Execution, error) {
 	var exec Execution
 	query := `
-		SELECT id, process_instance_id, current_element_id, status, is_active, created_at, updated_at
+		SELECT id, process_instance_id, current_element_id, status, is_active, parent_execution_id, path_id, created_at, updated_at
 		FROM public.executions
 		WHERE id = $1 AND is_active = true
 	`
@@ -63,17 +65,44 @@ func (r *EngineRepository) GetActiveExecution(ctx context.Context, execID uuid.U
 	return &exec, nil
 }
 
-func (r *EngineRepository) CountGatewayWaitingState(processInanceId *uuid.UUID, nodeId string) int {
+// CreateTimerJob creates a new timer job
+func (r *EngineRepository) CreateTimerJob(timer *models.TimerJob) error {
+	_, err := r.db.Exec(`
+		INSERT INTO public.timer_jobs 
+		(id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, false, NOW())
+	`, timer.ID, timer.ProcessInstanceID, timer.ExecutionID, timer.EventType, timer.DueAt, timer.Payload)
+	return err
+}
 
+// GetExecutionByID retrieves an execution by ID regardless of active status
+func (r *EngineRepository) GetExecutionByID(execID uuid.UUID) (*Execution, error) {
+	var exec Execution
+	query := `
+		SELECT id, process_instance_id, current_element_id, status, is_active, parent_execution_id, path_id, created_at, updated_at
+		FROM public.executions
+		WHERE id = $1
+	`
+	err := r.db.Get(&exec, query, execID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &exec, nil
+}
+
+func (r *EngineRepository) CountGatewayWaitingState(processInstanceId *uuid.UUID, nodeId string) int {
 	var count int
 	query := `
-			SELECT COUNT(*) 
-			FROM public.gateway_state 
-			WHERE process_instance_id = $1 
-			  AND gateway_id = $2 
-			  AND status = 'waiting'
-		`
-	r.db.Get(&count, query, processInanceId, nodeId)
+		SELECT COUNT(*) 
+		FROM public.gateway_state 
+		WHERE process_instance_id = $1 
+		  AND gateway_id = $2 
+		  AND status = 'waiting'
+	`
+	r.db.Get(&count, query, processInstanceId, nodeId)
 	return count
 }
 
@@ -113,13 +142,118 @@ func (r *EngineRepository) CreateGatewayStateTx(tx *sqlx.Tx, state *models.Gatew
 	return err
 }
 
-// CreateTimerJob creates a new timer job
-func (r *EngineRepository) CreateTimerJob(timer *models.TimerJob) error {
-	_, err := r.db.Exec(`
+// CreateTimerJobTx creates a new timer job within a transaction
+func (r *EngineRepository) CreateTimerJobTx(tx *sqlx.Tx, timer *models.TimerJob) error {
+	_, err := tx.Exec(`
+		INSERT INTO public.timer_jobs 
+		(id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, timer.ID, timer.ProcessInstanceID, timer.ExecutionID, timer.EventType, timer.DueAt, timer.Payload, false, time.Now())
+	return err
+}
+
+// CreateTimerTx creates a timer job
+func (r *EngineRepository) CreateTimerTx(tx *sqlx.Tx, timerID, processInstanceID uuid.UUID, executionID *uuid.UUID, nextNodeID string, dueAt time.Time, eventType string) error {
+	// Store the next node ID in payload (where to go after timer triggers)
+	payload := map[string]interface{}{
+		"nextNodeId": nextNodeID,
+		"eventType":  eventType,
+	}
+	payloadBytes, _ := json.Marshal(payload)
+
+	_, err := tx.Exec(`
 		INSERT INTO public.timer_jobs 
 		(id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, false, NOW())
-	`, timer.ID, timer.ProcessInstanceID, timer.ExecutionID, timer.EventType, timer.DueAt, timer.Payload)
+	`, timerID, processInstanceID, executionID, eventType, dueAt, payloadBytes)
+	return err
+}
+
+// GetDueTimers retrieves all timers that are due to be triggered
+func (r *EngineRepository) GetDueTimers(ctx context.Context, now time.Time) ([]models.TimerJob, error) {
+	var timers []models.TimerJob
+
+	query := `
+        SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at, triggered_at
+        FROM public.timer_jobs
+        WHERE is_triggered = false AND due_at <= $1
+        ORDER BY due_at ASC
+        LIMIT 100
+    `
+
+	err := r.db.SelectContext(ctx, &timers, query, now)
+
+	for _, t := range timers {
+		log.Printf("   - Timer %s: due_at=%s, triggered=%v", t.ID, t.DueAt, t.IsTriggered)
+	}
+
+	return timers, err
+}
+
+// GetDueTimersByInstance retrieves due timers for a specific process instance
+func (r *EngineRepository) GetDueTimersByInstance(instanceID uuid.UUID, now time.Time) ([]models.TimerJob, error) {
+	var timers []models.TimerJob
+
+	query := `
+		SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at, triggered_at
+		FROM public.timer_jobs
+		WHERE process_instance_id = $1 AND is_triggered = false AND due_at <= $2
+		ORDER BY due_at ASC
+	`
+
+	err := r.db.Select(&timers, query, instanceID, now)
+	return timers, err
+}
+
+// MarkTimerFired marks a timer as triggered
+func (r *EngineRepository) MarkTimerFired(ctx context.Context, timerID uuid.UUID) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE public.timer_jobs
+		SET is_triggered = true, triggered_at = NOW()
+		WHERE id = $1
+	`, timerID)
+	return err
+}
+
+// MarkTimerFiredTx marks a timer as triggered within a transaction
+func (r *EngineRepository) MarkTimerFiredTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.timer_jobs
+		SET is_triggered = true, triggered_at = NOW()
+		WHERE id = $1
+	`, timerID)
+	return err
+}
+
+// DeleteTimer removes a timer job
+func (r *EngineRepository) DeleteTimerTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE id = $1`, timerID)
+	return err
+}
+
+// DeleteTimersByExecution removes all timers for a specific execution
+func (r *EngineRepository) DeleteTimersByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
+	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE execution_id = $1`, executionID)
+	return err
+}
+
+// CancelUserTaskByExecution cancels any active user task for an execution
+func (r *EngineRepository) CancelUserTaskByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.tasks
+		SET status = 'canceled', updated_at = NOW()
+		WHERE execution_id = $1 AND status = 'created'
+	`, executionID)
+	return err
+}
+
+// CompleteUserTaskByExecution completes any active user task for an execution
+func (r *EngineRepository) CompleteUserTaskByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.tasks
+		SET status = 'completed', updated_at = NOW()
+		WHERE execution_id = $1 AND status = 'created'
+	`, executionID)
 	return err
 }
 
@@ -129,11 +263,11 @@ func (r *EngineRepository) UpdateGatewayJoinTx(tx *sqlx.Tx, gatewayID uuid.UUID,
 
 	// Get current state with lock
 	err := tx.Get(&currentState, `
-        SELECT id, expected_incoming, received_incoming, joined_flows, status
-        FROM public.gateway_state
-        WHERE id = $1 AND status = 'waiting'
-        FOR UPDATE
-    `, gatewayID)
+		SELECT id, expected_incoming, received_incoming, joined_flows, status
+		FROM public.gateway_state
+		WHERE id = $1 AND status = 'waiting'
+		FOR UPDATE
+	`, gatewayID)
 	if err != nil {
 		return err
 	}
@@ -150,20 +284,20 @@ func (r *EngineRepository) UpdateGatewayJoinTx(tx *sqlx.Tx, gatewayID uuid.UUID,
 	if newReceived == currentState.ExpectedIncoming {
 		// Gateway is complete
 		_, err = tx.Exec(`
-            UPDATE public.gateway_state
-            SET received_incoming = $1, 
-                joined_flows = $2, 
-                status = 'completed',
-                completed_at = NOW()
-            WHERE id = $3
-        `, newReceived, joinedFlowsJSON, gatewayID)
+			UPDATE public.gateway_state
+			SET received_incoming = $1, 
+				joined_flows = $2, 
+				status = 'completed',
+				completed_at = NOW()
+			WHERE id = $3
+		`, newReceived, joinedFlowsJSON, gatewayID)
 	} else {
 		// Still waiting for more flows
 		_, err = tx.Exec(`
-            UPDATE public.gateway_state
-            SET received_incoming = $1, joined_flows = $2
-            WHERE id = $3
-        `, newReceived, joinedFlowsJSON, gatewayID)
+			UPDATE public.gateway_state
+			SET received_incoming = $1, joined_flows = $2
+			WHERE id = $3
+		`, newReceived, joinedFlowsJSON, gatewayID)
 	}
 
 	return err
@@ -173,10 +307,10 @@ func (r *EngineRepository) UpdateGatewayJoinTx(tx *sqlx.Tx, gatewayID uuid.UUID,
 func (r *EngineRepository) GetChildExecutions(parentExecID uuid.UUID) ([]Execution, error) {
 	var executions []Execution
 	err := r.db.Select(&executions, `
-        SELECT id, process_instance_id, current_element_id, status, is_active, path_id
-        FROM public.executions
-        WHERE parent_execution_id = $1 AND is_active = true
-    `, parentExecID)
+		SELECT id, process_instance_id, current_element_id, status, is_active, path_id
+		FROM public.executions
+		WHERE parent_execution_id = $1 AND is_active = true
+	`, parentExecID)
 	return executions, err
 }
 
@@ -269,6 +403,16 @@ func (r *EngineRepository) CreateJobTx(tx *sqlx.Tx, jobID, processInstanceID, ex
 		{Key: "updated_at", Value: time.Now()},
 	})
 	return err
+}
+
+type UserTask struct {
+	ID                uuid.UUID
+	ProcessInstanceID uuid.UUID
+	ExecutionID       uuid.UUID
+	TaskDefinitionKey string
+	TaskName          *string
+	Assignee          *string
+	CandidateGroup    *string
 }
 
 // CreateUserTask creates a new user task
@@ -377,9 +521,19 @@ func (r *EngineRepository) MergeProcessVariablesTx(tx *sqlx.Tx, instanceID uuid.
 	return r.UpdateProcessVariablesTx(tx, instanceID, existingVars)
 }
 
+// MarkTimerTriggered marks a timer as triggered
+func (r *EngineRepository) MarkTimerTriggeredTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.timer_jobs
+		SET is_triggered = true, triggered_at = NOW()
+		WHERE id = $1
+	`, timerID)
+	return err
+}
+
 // GetProcessDefinitionByInstanceID retrieves the process definition for a process instance
-func (r *EngineRepository) GetProcessDefinitionByInstanceID(instanceID uuid.UUID) (*ProcessDefinition, error) {
-	var def ProcessDefinition
+func (r *EngineRepository) GetProcessDefinitionByInstanceID(instanceID uuid.UUID) (*models.ProcessDefinition, error) {
+	var def models.ProcessDefinition
 	query := `
 		SELECT pd.id, pd.process_key, pd.version, pd.parsed_graph, pd.created_at
 		FROM public.process_definitions pd
@@ -471,94 +625,65 @@ func (r *EngineRepository) GetSingleOutgoingFlow(node *engine.Node) (*engine.Flo
 	return &node.Outgoing[0], nil
 }
 
-// repository/engine_repository.go additions
-
-// CreateTimerJob creates a new timer job
-func (r *EngineRepository) CreateTimerJobTx(tx *sqlx.Tx, timer *models.TimerJob) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Insert("public.timer_jobs", []database.QueryParameter{
-		{Key: "id", Value: timer.ID},
-		{Key: "process_instance_id", Value: timer.ProcessInstanceID},
-		{Key: "execution_id", Value: timer.ExecutionID},
-		{Key: "event_type", Value: timer.EventType},
-		{Key: "due_at", Value: timer.DueAt},
-		{Key: "payload", Value: timer.Payload},
-		{Key: "is_triggered", Value: false},
-		{Key: "created_at", Value: time.Now()},
-	})
-	return err
+// GetServiceTaskNode finds a service task node by ID
+func (r *EngineRepository) GetServiceTaskNode(graph *engine.ProcessGraph, nodeID string) (*engine.Node, error) {
+	node, ok := graph.Nodes[nodeID]
+	if !ok {
+		return nil, ErrNodeNotFound
+	}
+	if node.Type != engine.ServiceTaskType {
+		return nil, errors.New("node is not a service task")
+	}
+	return node, nil
 }
 
-// GetDueTimers retrieves all timers that are due to be triggered
-func (r *EngineRepository) GetDueTimers(ctx context.Context) ([]models.TimerJob, error) {
-	var timers []models.TimerJob
-
-	query := `
-		SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at
-		FROM public.timer_jobs
-		WHERE is_triggered = false AND due_at <= NOW()
-		ORDER BY due_at ASC
-		LIMIT 100
-	`
-
-	err := r.db.SelectContext(ctx, &timers, query)
-	return timers, err
-}
-
-// GetDueTimersByInstance retrieves due timers for a specific process instance
-func (r *EngineRepository) GetDueTimersByInstance(instanceID uuid.UUID) ([]models.TimerJob, error) {
-	var timers []models.TimerJob
-
-	query := `
-		SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at
-		FROM public.timer_jobs
-		WHERE process_instance_id = $1 AND is_triggered = false AND due_at <= NOW()
-		ORDER BY due_at ASC
-	`
-
-	err := r.db.Select(&timers, query, instanceID)
-	return timers, err
-}
-
-// MarkTimerTriggered marks a timer as triggered
-func (r *EngineRepository) MarkTimerTriggeredTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+// CompleteJob marks a job as completed
+func (r *EngineRepository) CompleteJobTx(tx *sqlx.Tx, jobID uuid.UUID) error {
 	_, err := tx.Exec(`
-		UPDATE public.timer_jobs
-		SET is_triggered = true, triggered_at = NOW()
+		UPDATE public.jobs
+		SET status = 'completed', updated_at = NOW()
 		WHERE id = $1
-	`, timerID)
+	`, jobID)
 	return err
 }
 
-// DeleteTimer removes a timer job
-func (r *EngineRepository) DeleteTimerTx(tx *sqlx.Tx, timerID uuid.UUID) error {
-	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE id = $1`, timerID)
-	return err
+// GetJobByID retrieves a job by ID
+func (r *EngineRepository) GetJobByID(jobID uuid.UUID) (*models.Job, error) {
+	var job models.Job
+	err := r.db.Get(&job, `
+		SELECT id, process_instance_id, execution_id, job_type, status, payload, retries, created_at, updated_at
+		FROM public.jobs
+		WHERE id = $1
+	`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
 }
 
-// DeleteTimersByExecution removes all timers for a specific execution
-func (r *EngineRepository) DeleteTimersByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
-	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE execution_id = $1`, executionID)
-	return err
+// GetAvailableJobsByTopic retrieves pending jobs for a topic
+func (r *EngineRepository) GetAvailableJobsByTopic(topic string, limit int) ([]models.Job, error) {
+	var jobs []models.Job
+	err := r.db.Select(&jobs, `
+		SELECT id, process_instance_id, execution_id, job_type, status, payload, retries, created_at, updated_at
+		FROM public.jobs
+		WHERE job_type = $1 AND status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT $2
+	`, topic, limit)
+	return jobs, err
 }
 
-// UserTask represents a user task for creation
-type UserTask struct {
-	ID                uuid.UUID
-	ProcessInstanceID uuid.UUID
-	ExecutionID       uuid.UUID
-	TaskDefinitionKey string
-	TaskName          *string
-	Assignee          *string
-	CandidateGroup    *string
-}
-
-// ProcessDefinition represents a process definition
-type ProcessDefinition struct {
-	ID          uuid.UUID       `db:"id"`
-	ProcessKey  string          `db:"process_key"`
-	Version     int             `db:"version"`
-	ParsedGraph json.RawMessage `db:"parsed_graph"`
-	CreatedAt   time.Time       `db:"created_at"`
+// LockJob locks a job for a worker
+func (r *EngineRepository) LockJob(jobID uuid.UUID, workerID string, lockDuration int64) (bool, error) {
+	result, err := r.db.Exec(`
+		UPDATE public.jobs
+		SET status = 'locked', locked_by = $1, locked_until = NOW() + ($2 * interval '1 millisecond'), updated_at = NOW()
+		WHERE id = $3 AND status = 'pending'
+	`, workerID, lockDuration, jobID)
+	if err != nil {
+		return false, err
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
 }

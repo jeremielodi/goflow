@@ -1,4 +1,3 @@
-// runtime/timer_handler.go
 package runtime
 
 import (
@@ -145,9 +144,6 @@ func (t *TimerHandler) HandleBoundaryTimerEvent(
 	if err != nil {
 		return fmt.Errorf("failed to create boundary timer: %w", err)
 	}
-
-	log.Printf("Boundary timer created for execution %s, due at %s, interrupting: %v",
-		attachedToExecID, dueAt, timerNode.CancelActivity)
 
 	return tx.Commit()
 }

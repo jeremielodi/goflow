@@ -240,10 +240,11 @@ func (s *AuditService) LogTimerCreated(processInstanceID uuid.UUID, executionID 
 	return s.auditRepo.CreateAuditLog(log)
 }
 
-// LogTimerTriggered logs when a timer fires
-func (s *AuditService) LogTimerTriggered(processInstanceID uuid.UUID, timerID uuid.UUID) error {
+// LogTimerTriggered logs when a timer triggers
+func (s *AuditService) LogTimerTriggered(processInstanceID uuid.UUID, timerID uuid.UUID, timerType string) error {
 	newData, _ := json.Marshal(map[string]interface{}{
 		"timerId":     timerID,
+		"timerType":   timerType,
 		"triggeredAt": time.Now(),
 	})
 

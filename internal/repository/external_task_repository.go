@@ -268,6 +268,14 @@ func (r *ExternalTaskRepository) CreateJob(job *models.Job) (sql.Result, error) 
 	})
 }
 
+func (r *ExternalTaskRepository) GetNodeByID(graph *engine.ProcessGraph, nodeID string) (*engine.Node, error) {
+	node, ok := graph.Nodes[nodeID]
+	if !ok {
+		return nil, fmt.Errorf("node %s not found in graph", nodeID)
+	}
+	return node, nil
+}
+
 // GetPendingJobsByType retrieves pending jobs by type
 func (r *ExternalTaskRepository) GetPendingJobsByType(jobType string, limit int) ([]models.Job, error) {
 	var jobs []models.Job
@@ -317,6 +325,5 @@ type LockedJob struct {
 
 // Custom errors
 var (
-	ErrNodeNotFound   = errors.New("node not found in graph")
 	ErrNotServiceTask = errors.New("node is not a service task")
 )

@@ -2,12 +2,34 @@
 package common
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/jeremielodi/goflow/internal/engine"
 )
+
+var (
+	// Compilation cache to avoid re-compiling same expressions
+	compilationCache     = make(map[string]*cachedProgram)
+	compilationCacheLock sync.RWMutex
+
+	// Simple CEL environment - NO custom functions
+	commonEnvOptions = []cel.EnvOption{
+		cel.HomogeneousAggregateLiterals(),
+		cel.EagerlyValidateDeclarations(true),
+	}
+)
+
+type cachedProgram struct {
+	program cel.Program
+	env     *cel.Env
+	expr    string
+}
 
 // EvaluateCondition translates BPMN FEEL-like syntax into CEL
 // and evaluates it against runtime variables.
@@ -21,185 +43,257 @@ func EvaluateCondition(
 		return true, nil
 	}
 
-	// --------------------------------------------------------
 	// Normalize BPMN syntax
-	// --------------------------------------------------------
+	normalized, err := normalizeExpression(expr)
+	if err != nil {
+		return false, err
+	}
 
+	// Generate cache key
+	cacheKey := generateCacheKey(normalized, variables)
+
+	// Try to get from cache
+	cached := getCachedProgram(cacheKey)
+	if cached != nil {
+		return executeProgram(cached.program, variables, normalized)
+	}
+
+	// Build CEL environment with variable names
+	envOptions := make([]cel.EnvOption, 0, len(commonEnvOptions)+len(variables))
+	envOptions = append(envOptions, commonEnvOptions...)
+
+	for variableName := range variables {
+		envOptions = append(envOptions, cel.Variable(variableName, cel.DynType))
+	}
+
+	env, err := cel.NewEnv(envOptions...)
+	if err != nil {
+		return false, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
+	// Compile expression
+	ast, issues := env.Compile(normalized)
+	if issues != nil && issues.Err() != nil {
+		return false, fmt.Errorf("condition compilation error for '%s': %w", normalized, issues.Err())
+	}
+
+	// Create executable program
+	prg, err := env.Program(ast)
+	if err != nil {
+		return false, fmt.Errorf("failed to create CEL program: %w", err)
+	}
+
+	// Cache the program
+	setCachedProgram(cacheKey, &cachedProgram{
+		program: prg,
+		env:     env,
+		expr:    normalized,
+	})
+
+	return executeProgram(prg, variables, normalized)
+}
+
+// normalizeExpression normalizes BPMN/FEEL expression to CEL syntax
+func normalizeExpression(expr string) (string, error) {
 	expr = strings.TrimSpace(expr)
 
 	// Strip Camunda 7 ${...} wrapper
-	// ${amount > 1000} → amount > 1000
 	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
 		expr = expr[2 : len(expr)-1]
 		expr = strings.TrimSpace(expr)
 	}
 
 	// Strip FEEL = prefix
-	// =amount > 1000 → amount > 1000
 	if strings.HasPrefix(expr, "=") {
 		expr = strings.TrimPrefix(expr, "=")
 		expr = strings.TrimSpace(expr)
 	}
 
 	// Strip surrounding quotes
-	// "amount > 1000" → amount > 1000
-	if len(expr) > 1 {
-		if (expr[0] == '"' && expr[len(expr)-1] == '"') ||
-			(expr[0] == '\'' && expr[len(expr)-1] == '\'') {
-			expr = expr[1 : len(expr)-1]
-		}
+	if (strings.HasPrefix(expr, "\"") && strings.HasSuffix(expr, "\"")) ||
+		(strings.HasPrefix(expr, "'") && strings.HasSuffix(expr, "'")) {
+		expr = expr[1 : len(expr)-1]
 	}
 
-	// --------------------------------------------------------
-	// Convert FEEL-like syntax to CEL
-	// --------------------------------------------------------
+	return convertFEELToCEL(expr), nil
+}
 
-	expr = convertFEELToCEL(expr)
+// convertFEELToCEL converts BPMN FEEL syntax to CEL syntax
+func convertFEELToCEL(expr string) string {
+	// Convert single quotes to double quotes for strings
+	expr = regexp.MustCompile(`'([^']*)'`).ReplaceAllString(expr, `"$1"`)
 
-	// --------------------------------------------------------
-	// Build CEL environment dynamically
-	// --------------------------------------------------------
+	// Logical operators
+	expr = strings.ReplaceAll(expr, " and ", " && ")
+	expr = strings.ReplaceAll(expr, " AND ", " && ")
+	expr = strings.ReplaceAll(expr, " or ", " || ")
+	expr = strings.ReplaceAll(expr, " OR ", " || ")
 
-	envOptions := []cel.EnvOption{}
+	// Equality operators
+	expr = strings.ReplaceAll(expr, " = ", " == ")
+	expr = strings.ReplaceAll(expr, " != ", " != ")
+	expr = strings.ReplaceAll(expr, " <> ", " != ")
 
-	for variableName := range variables {
-		envOptions = append(
-			envOptions,
-			cel.Variable(variableName, cel.DynType),
-		)
-	}
+	// NOT operator
+	expr = strings.ReplaceAll(expr, " not ", " !")
+	expr = strings.ReplaceAll(expr, " NOT ", " !")
+	expr = strings.ReplaceAll(expr, "not(", "!(")
+	expr = strings.ReplaceAll(expr, "NOT(", "!(")
 
-	env, err := cel.NewEnv(envOptions...)
-	if err != nil {
-		return false, fmt.Errorf(
-			"failed to create CEL environment: %w",
-			err,
-		)
-	}
+	// Null checks
+	expr = strings.ReplaceAll(expr, " is null", " == null")
+	expr = strings.ReplaceAll(expr, " IS NULL", " == null")
+	expr = strings.ReplaceAll(expr, " is not null", " != null")
+	expr = strings.ReplaceAll(expr, " IS NOT NULL", " != null")
 
-	// --------------------------------------------------------
-	// Compile expression
-	// --------------------------------------------------------
+	// Clean up multiple spaces
+	expr = regexp.MustCompile(`\s+`).ReplaceAllString(expr, " ")
 
-	ast, issues := env.Compile(expr)
+	return strings.TrimSpace(expr)
+}
 
-	if issues != nil && issues.Err() != nil {
-		return false, fmt.Errorf(
-			"condition compilation error for '%s': %w",
-			expr,
-			issues.Err(),
-		)
-	}
-
-	// --------------------------------------------------------
-	// Create executable program
-	// --------------------------------------------------------
-
-	prg, err := env.Program(ast)
-	if err != nil {
-		return false, fmt.Errorf(
-			"failed to create CEL program: %w",
-			err,
-		)
-	}
-
-	// --------------------------------------------------------
-	// Execute condition
-	// --------------------------------------------------------
-
+// executeProgram executes a CEL program with given variables
+func executeProgram(prg cel.Program, variables map[string]interface{}, originalExpr string) (bool, error) {
 	out, _, err := prg.Eval(variables)
 	if err != nil {
-		return false, fmt.Errorf(
-			"condition evaluation error: %w",
-			err,
-		)
+		return false, fmt.Errorf("condition evaluation error for '%s': %w", originalExpr, err)
 	}
-
-	// --------------------------------------------------------
-	// Convert result
-	// --------------------------------------------------------
 
 	result, ok := out.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf(
-			"condition '%s' did not return boolean, got %T: %v",
-			expr,
-			out.Value(),
-			out.Value(),
-		)
+		return false, fmt.Errorf("condition '%s' did not return boolean, got %T: %v",
+			originalExpr, out.Value(), out.Value())
 	}
 
 	return result, nil
 }
 
-// convertFEELToCEL converts simple BPMN FEEL syntax into CEL syntax.
-func convertFEELToCEL(expr string) string {
-	replacer := strings.NewReplacer(
-		" and ", " && ",
-		" or ", " || ",
-		" = ", " == ",
-		" not ", " !",
-		" true", " true",
-		" false", " false",
-	)
+// generateCacheKey creates a unique key for caching compiled expressions
+func generateCacheKey(expr string, variables map[string]interface{}) string {
+	hash := sha256.New()
+	hash.Write([]byte(expr))
 
-	return replacer.Replace(expr)
+	for varName := range variables {
+		hash.Write([]byte(varName))
+	}
+
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
-// ResolveNext resolves the next node based on conditions
+// getCachedProgram retrieves a cached program
+func getCachedProgram(key string) *cachedProgram {
+	compilationCacheLock.RLock()
+	defer compilationCacheLock.RUnlock()
+	return compilationCache[key]
+}
+
+// setCachedProgram stores a program in cache
+func setCachedProgram(key string, prog *cachedProgram) {
+	compilationCacheLock.Lock()
+	defer compilationCacheLock.Unlock()
+
+	if len(compilationCache) > 1000 {
+		for k := range compilationCache {
+			delete(compilationCache, k)
+			break
+		}
+	}
+	compilationCache[key] = prog
+}
+
+// ResolveNext resolves the next node based on node type and conditions
 func ResolveNext(node *engine.Node, variables map[string]interface{}) (string, error) {
 	if len(node.Outgoing) == 0 {
 		return "", fmt.Errorf("node %s has no outgoing flows", node.ID)
 	}
-	
-	if len(node.Outgoing) == 1 {
-		flow := node.Outgoing[0]
-		if flow.Condition != "" {
-			ok, err := EvaluateCondition(flow.Condition, variables)
+
+	// For UserTask and ServiceTask, filter out boundary event flows
+	if node.Type == engine.UserTaskType || node.Type == engine.ServiceTaskType {
+		var normalFlows []engine.Flow
+		for _, flow := range node.Outgoing {
+			// Skip flows that go to boundary events
+			if strings.Contains(strings.ToLower(flow.TargetRef), "timer") ||
+				strings.Contains(strings.ToLower(flow.TargetRef), "boundary") {
+				continue
+			}
+			normalFlows = append(normalFlows, flow)
+		}
+
+		if len(normalFlows) == 0 {
+			return "", fmt.Errorf("task %s has no normal outgoing flows (only boundary events)", node.ID)
+		}
+
+		if len(normalFlows) > 1 {
+			return "", fmt.Errorf("task %s has multiple outgoing flows (%d)", node.ID, len(normalFlows))
+		}
+
+		return normalFlows[0].TargetRef, nil
+	}
+
+	// For ExclusiveGateway, evaluate conditions
+	if node.Type == engine.ExclusiveGatewayType {
+		var selected *engine.Flow
+		for _, flow := range node.Outgoing {
+			condition := strings.TrimSpace(flow.Condition)
+
+			// Empty condition = always true
+			if condition == "" {
+				if selected != nil {
+					return "", fmt.Errorf("multiple conditions true on exclusive gateway: flow %s and %s both have no condition", selected.ID, flow.ID)
+				}
+				selected = &flow
+				continue
+			}
+
+			ok, err := EvaluateCondition(condition, variables)
 			if err != nil {
-				return "", fmt.Errorf("condition evaluation failed: %w", err)
+				return "", fmt.Errorf("condition evaluation failed for flow %s: %w", flow.ID, err)
 			}
-			if !ok {
-				return "", fmt.Errorf("condition false on single outgoing flow")
+			if ok {
+				if selected != nil {
+					return "", fmt.Errorf("multiple conditions true on exclusive gateway: flow %s and %s", selected.ID, flow.ID)
+				}
+				selected = &flow
 			}
 		}
-		return flow.TargetRef, nil
-	}
-	
-	// Exclusive gateway
-	var selected *engine.Flow
-	for _, flow := range node.Outgoing {
-		ok, err := EvaluateCondition(flow.Condition, variables)
-		if err != nil {
-			return "", err
+
+		if selected == nil {
+			return "", fmt.Errorf("no matching condition on exclusive gateway")
 		}
-		if ok {
-			if selected != nil {
-				return "", fmt.Errorf("multiple conditions true on exclusive gateway")
-			}
-			selected = &flow
+		return selected.TargetRef, nil
+	}
+
+	// For ParallelGateway, return first outgoing
+	if node.Type == engine.ParallelGatewayType {
+		if len(node.Outgoing) == 0 {
+			return "", fmt.Errorf("parallel gateway %s has no outgoing flows", node.ID)
 		}
+		return node.Outgoing[0].TargetRef, nil
 	}
-	
-	if selected == nil {
-		return "", fmt.Errorf("no matching condition on exclusive gateway")
+
+	// Default: single outgoing flow expected
+	if len(node.Outgoing) > 1 {
+		return "", fmt.Errorf("node %s of type %s has multiple outgoing flows (%d), expected 1", node.ID, node.Type, len(node.Outgoing))
 	}
-	
-	return selected.TargetRef, nil
+	return node.Outgoing[0].TargetRef, nil
 }
 
 // ResolveExpression resolves expression strings like ${variableName}
 func ResolveExpression(expr string, vars map[string]interface{}) string {
 	expr = strings.TrimSpace(expr)
-	// If it looks like a variable reference: ${...}
 	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
-		key := expr[2 : len(expr)-1] // extract variable name
+		key := expr[2 : len(expr)-1]
 		if val, ok := vars[key]; ok {
 			return fmt.Sprintf("%v", val)
 		}
-		// fallback: return empty if variable not found
 		return ""
 	}
-	// Otherwise treat as literal string
 	return expr
+}
+
+// ClearConditionCache clears the compilation cache
+func ClearConditionCache() {
+	compilationCacheLock.Lock()
+	defer compilationCacheLock.Unlock()
+	compilationCache = make(map[string]*cachedProgram)
 }

@@ -1,5 +1,3 @@
-// runtime/parallel_gateway_executor.go
-
 package runtime
 
 import (
@@ -68,7 +66,7 @@ func (p *ParallelGatewayExecutor) ExecuteFork(
 			CurrentElementID:  flow.TargetRef,
 			Status:            "active",
 			IsActive:          true,
-			PathID:            pathID,
+			PathID:            &pathID,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create child execution: %w", err)
@@ -141,7 +139,7 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 		}
 
 		// Create gateway state
-		joinedFlows := []string{exec.PathID}
+		joinedFlows := []string{*exec.PathID}
 		joinedFlowsJSON, _ := json.Marshal(joinedFlows)
 
 		gatewayState = models.GatewayState{
@@ -162,7 +160,7 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 		// Update existing gateway state
 		var joinedFlows []string
 		json.Unmarshal(gatewayState.JoinedFlows, &joinedFlows)
-		joinedFlows = append(joinedFlows, exec.PathID)
+		joinedFlows = append(joinedFlows, *exec.PathID)
 		joinedFlowsJSON, _ := json.Marshal(joinedFlows)
 
 		newReceived := gatewayState.ReceivedIncoming + 1
@@ -319,7 +317,7 @@ func (p *ParallelGatewayExecutor) ResumeParentExecution(
 		}
 	}
 
-	fmt.Printf("Parent execution %s resumed, moving to node %s\n", parentExecID, nextNodeID)
+	// fmt.Printf("Parent execution %s resumed, moving to node %s\n", parentExecID, nextNodeID)
 
 	return tx.Commit()
 }

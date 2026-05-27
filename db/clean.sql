@@ -5,3 +5,4 @@ delete from process_outbox;
 delete from variables;
 delete from process_instances;
 delete from executions;
+delete from deployments;

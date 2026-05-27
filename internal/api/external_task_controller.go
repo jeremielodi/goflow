@@ -7,7 +7,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jmoiron/sqlx"
@@ -58,6 +60,38 @@ type FailureRequest struct {
 	ErrorMessage string `json:"errorMessage"`
 	Retries      int    `json:"retries"`
 	RetryTimeout int    `json:"retryTimeout"`
+}
+
+// normalizeVariables converts both simple and typed formats to simple map[string]interface{}
+func normalizeVariablesForExternal(variables map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+
+	for key, value := range variables {
+		// Check if it's the typed format: { value: xxx, type: "string" }
+		if varMap, ok := value.(map[string]interface{}); ok {
+			if val, hasValue := varMap["value"]; hasValue {
+				// Typed format
+				result[key] = val
+				continue
+			}
+		}
+		// Simple format
+		result[key] = value
+	}
+
+	return result
+}
+
+// formatVariablesForResponse converts internal variables to Camunda typed format
+func formatVariablesForResponse(variables map[string]interface{}) map[string]CamundaVariable {
+	result := make(map[string]CamundaVariable)
+	for k, v := range variables {
+		result[k] = CamundaVariable{
+			Value: v,
+			Type:  getCamundaVariableType(v),
+		}
+	}
+	return result
 }
 
 func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
@@ -124,14 +158,8 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 				}
 			}
 
-			// Convert to Camunda variable format
-			convertedVars := make(map[string]CamundaVariable)
-			for k, v := range rawVars {
-				convertedVars[k] = CamundaVariable{
-					Value: v,
-					Type:  getCamundaVariableType(v),
-				}
-			}
+			// Convert to Camunda variable format (typed)
+			convertedVars := formatVariablesForResponse(rawVars)
 
 			response = append(response, FetchAndLockResponse{
 				ID:        job.ID.String(),
@@ -165,6 +193,9 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
+
+	// Normalize variables (supports both simple and typed formats)
+	normalizedVars := normalizeVariablesForExternal(req.Variables)
 
 	// Begin transaction
 	tx, err := ctrl.db.Beginx()
@@ -214,8 +245,8 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Merge new variables
-	for k, v := range req.Variables {
+	// Merge normalized variables
+	for k, v := range normalizedVars {
 		existingVars[k] = v
 	}
 
@@ -260,61 +291,80 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get service task node
-	serviceNode, err := ctrl.externalTaskRepo.GetServiceTaskNode(&graph, jobWithExec.CurrentElementID)
+	// Get the current node (could be service task OR boundary event)
+	currentNode, err := ctrl.externalTaskRepo.GetNodeByID(&graph, jobWithExec.CurrentElementID)
 	if err != nil {
 		fmt.Println("10. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Configuration Error",
-			"message": "service task node not found",
+			"message": "current node not found",
 			"error":   err.Error(),
 		})
 	}
 
-	// If no outgoing flows, complete the process
-	if len(serviceNode.Outgoing) == 0 {
+	var nextNodeID string
 
-		if err := ctrl.externalTaskRepo.CompleteProcessInstanceTx(tx, jobWithExec.ProcessInstanceID); err != nil {
+	// Handle different node types
+	switch currentNode.Type {
+	case engine.ServiceTaskType:
+		// This is a regular service task
+		if len(currentNode.Outgoing) == 0 {
+			// No outgoing flows - complete the process
+			if err := ctrl.externalTaskRepo.CompleteProcessInstanceTx(tx, jobWithExec.ProcessInstanceID); err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"title":   "Database Error",
+					"message": "failed to complete process instance",
+					"error":   err.Error(),
+				})
+			}
+			if err := ctrl.externalTaskRepo.CompleteExecutionTx(tx, jobWithExec.ExecutionID); err != nil {
+				fmt.Println("12. ", err.Error())
+				return c.Status(500).JSON(fiber.Map{
+					"title":   "Database Error",
+					"message": "failed to complete execution",
+					"error":   err.Error(),
+				})
+			}
+			if err := tx.Commit(); err != nil {
+				fmt.Println("14. ", err.Error())
+				return c.Status(500).JSON(fiber.Map{
+					"title":   "Database Error",
+					"message": "failed to commit transaction",
+					"error":   err.Error(),
+				})
+			}
+			return c.JSON(fiber.Map{
+				"title":   "Success",
+				"message": "process completed",
+				"jobId":   jobID,
+			})
+		}
+		nextNodeID, err = common.ResolveNext(currentNode, existingVars)
+		if err != nil {
 			return c.Status(500).JSON(fiber.Map{
-				"title":   "Database Error",
-				"message": "failed to complete process instance",
+				"title":   "Execution Error",
+				"message": "failed to resolve next node",
 				"error":   err.Error(),
 			})
 		}
 
-		if err := ctrl.externalTaskRepo.CompleteExecutionTx(tx, jobWithExec.ExecutionID); err != nil {
-			fmt.Println("12. ", err.Error())
+	case engine.BoundaryTimerEventType:
+		// This is a boundary timer event - follow its outgoing flow
+		if len(currentNode.Outgoing) == 0 {
 			return c.Status(500).JSON(fiber.Map{
-				"title":   "Database Error",
-				"message": "failed to complete execution",
-				"error":   err.Error(),
+				"title":   "Configuration Error",
+				"message": "boundary event has no outgoing flow",
+				"error":   "no outgoing flow",
 			})
 		}
+		nextNodeID = currentNode.Outgoing[0].TargetRef
+		// log.Printf("Boundary event %s completed, moving to node %s", currentNode.ID, nextNodeID)
 
-		if err := tx.Commit(); err != nil {
-			fmt.Println("14. ", err.Error())
-			return c.Status(500).JSON(fiber.Map{
-				"title":   "Database Error",
-				"message": "failed to commit transaction",
-				"error":   err.Error(),
-			})
-		}
-
-		return c.JSON(fiber.Map{
-			"title":   "Success",
-			"message": "process completed",
-			"jobId":   jobID,
-		})
-	}
-
-	// Resolve next node
-	rt := runtime.NewRuntime(&graph, ctrl.db)
-	nextNodeID, err := rt.ResolveNext(c.Context(), serviceNode, existingVars)
-	if err != nil {
+	default:
 		return c.Status(500).JSON(fiber.Map{
-			"title":   "Execution Error",
-			"message": "failed to resolve next node",
-			"error":   err.Error(),
+			"title":   "Configuration Error",
+			"message": fmt.Sprintf("node %s is not a service task or boundary event, type: %s", currentNode.ID, currentNode.Type),
+			"error":   "invalid node type",
 		})
 	}
 
@@ -337,7 +387,7 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	}
 
 	// Resume execution outside transaction
-	rt = &runtime.Runtime{Graph: &graph, DB: ctrl.db}
+	rt := runtime.NewRuntime(&graph, ctrl.db)
 	if err := rt.ExecuteExecution(c.Context(), jobWithExec.ExecutionID); err != nil {
 		log.Printf("Execution resume error: %v", err)
 		return c.Status(500).JSON(fiber.Map{
@@ -436,4 +486,35 @@ func getCamundaVariableType(v interface{}) string {
 	default:
 		return "Object"
 	}
+}
+
+// GetJobs handles GET /jobs - returns jobs for a process instance
+func (ctrl *ExternalTaskController) GetJobs(c *fiber.Ctx) error {
+	processInstanceID := c.Query("processInstanceId")
+	topic := c.Query("topic")
+
+	// process_order
+	// process_order
+	var jobs []models.Job
+	query := `SELECT id, process_instance_id, execution_id, job_type, status, payload, retries, created_at, updated_at FROM public.jobs WHERE status = 'pending'`
+
+	if processInstanceID != "" {
+		pid, err := uuid.Parse(processInstanceID)
+		if err == nil {
+			query += " AND process_instance_id = $1"
+			if topic != "" {
+				query += " AND job_type = $2"
+				ctrl.db.Select(&jobs, query, pid, topic)
+			} else {
+				ctrl.db.Select(&jobs, query, pid)
+			}
+		}
+	} else if topic != "" {
+		query += " AND job_type = $1"
+		ctrl.db.Select(&jobs, query, topic)
+	} else {
+		ctrl.db.Select(&jobs, query)
+	}
+
+	return c.JSON(jobs)
 }
