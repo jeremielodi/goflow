@@ -38,6 +38,16 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		register(node)
 	}
 
+	// ---- Generic Tasks (treat as UserTasks) ----
+	for _, t := range process.Tasks {
+		node := &Node{
+			ID:   t.ID,
+			Name: t.Name,
+			Type: UserTaskType, // Treat generic tasks as UserTasks
+		}
+		register(node)
+	}
+
 	// ---- User Tasks (assignee & candidate groups) ----
 	for _, t := range process.UserTasks {
 		node := &Node{
@@ -128,7 +138,7 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		register(node)
 	}
 
-	// ---- Sequence Flows ----
+	// ---- Add incoming/outgoing edges from Sequence Flows ----
 	for _, f := range process.SequenceFlows {
 		source, ok := nodeMap[f.SourceRef]
 		if !ok {
@@ -148,6 +158,162 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		target.Incoming = append(target.Incoming, f.SourceRef)
 	}
 
+	// ---- Add incoming/outgoing edges for Generic Tasks ----
+	for _, task := range process.Tasks {
+		for _, incoming := range task.Incoming {
+			if source, ok := nodeMap[incoming]; ok {
+				// Check if flow already exists to avoid duplicates
+				found := false
+				for _, existingFlow := range source.Outgoing {
+					if existingFlow.TargetRef == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        incoming + "_to_" + task.ID,
+						SourceRef: incoming,
+						TargetRef: task.ID,
+						Condition: "",
+					}
+					source.Outgoing = append(source.Outgoing, flow)
+				}
+			}
+			if targetNode, ok := nodeMap[task.ID]; ok {
+				// Check if incoming already exists
+				found := false
+				for _, existingIncoming := range targetNode.Incoming {
+					if existingIncoming == incoming {
+						found = true
+						break
+					}
+				}
+				if !found {
+					targetNode.Incoming = append(targetNode.Incoming, incoming)
+				}
+			}
+		}
+		for _, outgoing := range task.Outgoing {
+			if target, ok := nodeMap[outgoing]; ok {
+				// Check if flow already exists to avoid duplicates
+				found := false
+				for _, existingFlow := range target.Incoming {
+					if existingFlow == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        task.ID + "_to_" + outgoing,
+						SourceRef: task.ID,
+						TargetRef: outgoing,
+						Condition: "",
+					}
+					if sourceNode, ok := nodeMap[task.ID]; ok {
+						sourceNode.Outgoing = append(sourceNode.Outgoing, flow)
+					}
+					target.Incoming = append(target.Incoming, task.ID)
+				}
+			}
+		}
+	}
+
+	// ---- Add incoming/outgoing edges for User Tasks ----
+	for _, task := range process.UserTasks {
+		for _, incoming := range task.Incoming {
+			if source, ok := nodeMap[incoming]; ok {
+				found := false
+				for _, existingFlow := range source.Outgoing {
+					if existingFlow.TargetRef == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        incoming + "_to_" + task.ID,
+						SourceRef: incoming,
+						TargetRef: task.ID,
+						Condition: "",
+					}
+					source.Outgoing = append(source.Outgoing, flow)
+				}
+			}
+		}
+		for _, outgoing := range task.Outgoing {
+			if target, ok := nodeMap[outgoing]; ok {
+				found := false
+				for _, existingFlow := range target.Incoming {
+					if existingFlow == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        task.ID + "_to_" + outgoing,
+						SourceRef: task.ID,
+						TargetRef: outgoing,
+						Condition: "",
+					}
+					if sourceNode, ok := nodeMap[task.ID]; ok {
+						sourceNode.Outgoing = append(sourceNode.Outgoing, flow)
+					}
+					target.Incoming = append(target.Incoming, task.ID)
+				}
+			}
+		}
+	}
+
+	// ---- Add incoming/outgoing edges for Service Tasks ----
+	for _, task := range process.ServiceTasks {
+		for _, incoming := range task.Incoming {
+			if source, ok := nodeMap[incoming]; ok {
+				found := false
+				for _, existingFlow := range source.Outgoing {
+					if existingFlow.TargetRef == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        incoming + "_to_" + task.ID,
+						SourceRef: incoming,
+						TargetRef: task.ID,
+						Condition: "",
+					}
+					source.Outgoing = append(source.Outgoing, flow)
+				}
+			}
+		}
+		for _, outgoing := range task.Outgoing {
+			if target, ok := nodeMap[outgoing]; ok {
+				found := false
+				for _, existingFlow := range target.Incoming {
+					if existingFlow == task.ID {
+						found = true
+						break
+					}
+				}
+				if !found {
+					flow := Flow{
+						ID:        task.ID + "_to_" + outgoing,
+						SourceRef: task.ID,
+						TargetRef: outgoing,
+						Condition: "",
+					}
+					if sourceNode, ok := nodeMap[task.ID]; ok {
+						sourceNode.Outgoing = append(sourceNode.Outgoing, flow)
+					}
+					target.Incoming = append(target.Incoming, task.ID)
+				}
+			}
+		}
+	}
+
 	// ---- Add outgoing edges from Boundary Events ----
 	for _, b := range process.BoundaryTimerEvents {
 		// Find the boundary event node
@@ -162,15 +328,25 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			// Add incoming reference from attached node
 			attachedNode, attachedOk := nodeMap[b.AttachedToRef]
 			if attachedOk {
-				// Create a flow from attached node to boundary event
-				flow := Flow{
-					ID:        b.ID + "_boundary_flow",
-					SourceRef: b.AttachedToRef,
-					TargetRef: b.ID,
-					Condition: "",
+				// Check if flow already exists
+				found := false
+				for _, existingFlow := range attachedNode.Outgoing {
+					if existingFlow.TargetRef == b.ID {
+						found = true
+						break
+					}
 				}
-				attachedNode.Outgoing = append(attachedNode.Outgoing, flow)
-				boundaryNode.Incoming = append(boundaryNode.Incoming, b.AttachedToRef)
+				if !found {
+					// Create a flow from attached node to boundary event
+					flow := Flow{
+						ID:        b.ID + "_boundary_flow",
+						SourceRef: b.AttachedToRef,
+						TargetRef: b.ID,
+						Condition: "",
+					}
+					attachedNode.Outgoing = append(attachedNode.Outgoing, flow)
+					boundaryNode.Incoming = append(boundaryNode.Incoming, b.AttachedToRef)
+				}
 			}
 		}
 
@@ -178,18 +354,29 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		for _, flow := range process.SequenceFlows {
 			if flow.SourceRef == b.ID {
 				if targetNode, ok := nodeMap[flow.TargetRef]; ok {
-					newFlow := Flow{
-						ID:        flow.ID,
-						SourceRef: b.ID,
-						TargetRef: flow.TargetRef,
-						Condition: flow.Condition,
+					// Check if flow already exists
+					found := false
+					for _, existingFlow := range boundaryNode.Outgoing {
+						if existingFlow.TargetRef == flow.TargetRef {
+							found = true
+							break
+						}
 					}
-					boundaryNode.Outgoing = append(boundaryNode.Outgoing, newFlow)
-					targetNode.Incoming = append(targetNode.Incoming, b.ID)
+					if !found {
+						newFlow := Flow{
+							ID:        flow.ID,
+							SourceRef: b.ID,
+							TargetRef: flow.TargetRef,
+							Condition: flow.Condition,
+						}
+						boundaryNode.Outgoing = append(boundaryNode.Outgoing, newFlow)
+						targetNode.Incoming = append(targetNode.Incoming, b.ID)
+					}
 				}
 			}
 		}
 	}
+
 	// Validate parallel gateways
 	for _, node := range graph.Nodes {
 		if node.Type == ParallelGatewayType {

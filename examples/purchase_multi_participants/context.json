@@ -11,6 +11,12 @@
       "name": "PRF Process Test",
       "filePath": "./prf_with_participants.bpmn",
       "deployedAt": "2026-05-27T16:24:02.796Z"
+    },
+    {
+      "id": "e740ecb5-2ec3-4cd6-9b48-da13562904b6",
+      "name": "PRF Process Test",
+      "filePath": "./prf_with_participants.bpmn",
+      "deployedAt": "2026-05-27T18:19:50.638Z"
     }
   ],
   "processes": [
@@ -116,8 +122,10 @@
       "source": "worker",
       "id": 3,
       "startedAt": "2026-05-27T16:24:05.533Z",
-      "status": "started",
-      "tasks": []
+      "status": "notifying_supervisor",
+      "tasks": [],
+      "lastWorkerTask": "prf_notify_supervisor",
+      "updatedAt": "2026-05-27T18:19:52.867Z"
     },
     {
       "processKey": "prf_process_supervisor",
@@ -227,11 +235,163 @@
       "updatedAt": "2026-05-27T16:24:14.595Z",
       "currentTask": "Task_AccountantPay",
       "completedAt": "2026-05-27T16:24:14.594Z"
+    },
+    {
+      "processKey": "prf_process_requester",
+      "processInstanceId": "11dddd31-629a-4b24-966e-8395affa33a4",
+      "variables": {
+        "document_uuid": "102",
+        "project": "GF",
+        "maker_name": "JOHAN",
+        "total_amount": 500,
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "approver": "Joe",
+        "accountant": "MUSASA"
+      },
+      "metadata": {
+        "testName": "PRF Full Flow",
+        "environment": "development",
+        "requester": "Ousman KULIBALI"
+      },
+      "status": "completed",
+      "tasks": [
+        {
+          "taskId": "7ae6ca79-126a-47cd-bfac-94d37e07af84",
+          "taskDefinitionKey": "Task_CreatePRF",
+          "assignee": null,
+          "status": "completed",
+          "variables": {},
+          "completedAt": "2026-05-27T18:19:50.691Z"
+        },
+        {
+          "taskId": "6a98d470-e430-4db6-a499-714b403e2d8c",
+          "taskDefinitionKey": "Task_SignPRF",
+          "assignee": "JOHAN",
+          "status": "completed",
+          "variables": {},
+          "completedAt": "2026-05-27T18:19:52.729Z"
+        }
+      ],
+      "id": 7,
+      "startedAt": "2026-05-27T18:19:50.663Z",
+      "currentTask": "Task_SignPRF",
+      "completedAt": "2026-05-27T18:20:01.920Z",
+      "updatedAt": "2026-05-27T18:20:01.920Z"
+    },
+    {
+      "processKey": "prf_process_supervisor",
+      "processInstanceId": "39c2e461-f813-4cd2-bf6f-2f90e291e8ea",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "total_amount": 500
+      },
+      "startedBy": "worker",
+      "parentTaskId": "20f268b4-b31c-4667-8de8-cabacf9da12f",
+      "id": 8,
+      "startedAt": "2026-05-27T18:19:54.014Z",
+      "status": "completed",
+      "tasks": [
+        {
+          "taskId": "a541a373-3e7c-40af-ae1d-9da0f7757374",
+          "taskDefinitionKey": "Task_SupervisorReview",
+          "assignee": "NELSON NDEFU",
+          "status": "completed",
+          "variables": {
+            "supervisor_reviewed": true
+          },
+          "completedAt": "2026-05-27T18:19:57.801Z"
+        }
+      ],
+      "supervisor": "NELSON NDEFU",
+      "updatedAt": "2026-05-27T18:20:01.921Z",
+      "currentTask": "Task_SupervisorReview",
+      "completedAt": "2026-05-27T18:20:01.920Z"
+    },
+    {
+      "processKey": "prf_process_approver",
+      "processInstanceId": "ff96198e-ed5e-4fae-bc06-d54b2c67acd8",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "supervisor_reviewed": true,
+        "total_amount": 500
+      },
+      "startedBy": "worker",
+      "parentTaskId": "aec1011e-ac35-4d49-8528-a7a5297e8ef0",
+      "id": 9,
+      "startedAt": "2026-05-27T18:19:59.146Z",
+      "status": "completed",
+      "tasks": [
+        {
+          "taskId": "01975f5e-f2d0-4c95-a84a-615fe2743dec",
+          "taskDefinitionKey": "Task_ApproverApproved",
+          "assignee": "Joe",
+          "status": "completed",
+          "variables": {
+            "approver_approved": true
+          },
+          "completedAt": "2026-05-27T18:19:59.872Z"
+        }
+      ],
+      "approver": "Joe",
+      "updatedAt": "2026-05-27T18:20:01.921Z",
+      "currentTask": "Task_ApproverApproved",
+      "completedAt": "2026-05-27T18:20:01.921Z"
+    },
+    {
+      "processKey": "prf_process_accountant",
+      "processInstanceId": "5f883040-b03b-4404-8e46-f4e41054620a",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "approver_approved": true,
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "supervisor_reviewed": true,
+        "total_amount": 500
+      },
+      "startedBy": "worker",
+      "parentTaskId": "c2d25769-c393-4f98-92b2-a9afc7142b89",
+      "id": 10,
+      "startedAt": "2026-05-27T18:20:01.063Z",
+      "status": "completed",
+      "tasks": [
+        {
+          "taskId": "176309d2-04a8-4797-9c59-97d9db15f575",
+          "taskDefinitionKey": "Task_AccountantPay",
+          "assignee": "MUSASA",
+          "status": "completed",
+          "variables": {
+            "accountant_approved": true,
+            "paymentProcessed": true
+          },
+          "completedAt": "2026-05-27T18:20:01.919Z"
+        }
+      ],
+      "accountant": "MUSASA",
+      "updatedAt": "2026-05-27T18:20:01.922Z",
+      "currentTask": "Task_AccountantPay",
+      "completedAt": "2026-05-27T18:20:01.922Z"
     }
   ],
   "relationships": [],
-  "lastUpdated": "2026-05-27T16:24:14.595Z",
-  "totalProcesses": 6,
+  "lastUpdated": "2026-05-27T18:20:01.922Z",
+  "totalProcesses": 10,
   "workerTasks": [
     {
       "topic": "prf_notify_supervisor",
@@ -283,6 +443,57 @@
         "total_amount": 500
       },
       "processedAt": "2026-05-27T16:24:13.710Z"
+    },
+    {
+      "topic": "prf_notify_supervisor",
+      "taskId": "20f268b4-b31c-4667-8de8-cabacf9da12f",
+      "status": "completed",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "total_amount": 500
+      },
+      "processedAt": "2026-05-27T18:19:53.978Z"
+    },
+    {
+      "topic": "prf_notify_approver",
+      "taskId": "aec1011e-ac35-4d49-8528-a7a5297e8ef0",
+      "status": "completed",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "supervisor_reviewed": true,
+        "total_amount": 500
+      },
+      "processedAt": "2026-05-27T18:19:59.118Z"
+    },
+    {
+      "topic": "prf_notify_accountant",
+      "taskId": "c2d25769-c393-4f98-92b2-a9afc7142b89",
+      "status": "completed",
+      "variables": {
+        "accountant": "MUSASA",
+        "approver": "Joe",
+        "approver_approved": true,
+        "document_uuid": "102",
+        "maker_name": "JOHAN",
+        "project": "GF",
+        "requester": "Ousman KULIBALI",
+        "supervisor": "NELSON NDEFU",
+        "supervisor_reviewed": true,
+        "total_amount": 500
+      },
+      "processedAt": "2026-05-27T18:20:01.040Z"
     }
   ]
 }

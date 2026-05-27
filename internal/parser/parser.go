@@ -14,6 +14,7 @@ type Process struct {
 	Name                    string                   `xml:"name,attr"`
 	StartEvents             []StartEvent             `xml:"startEvent"`
 	UserTasks               []UserTask               `xml:"userTask"`
+	Tasks                   []Task                   `xml:"task"`
 	ServiceTasks            []ServiceTask            `xml:"serviceTask"`
 	EndEvents               []EndEvent               `xml:"endEvent"`
 	ExclusiveGateways       []ExclusiveGateway       `xml:"exclusiveGateway"`
