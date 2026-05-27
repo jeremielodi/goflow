@@ -112,6 +112,7 @@ CREATE TABLE process_instances (
     status process_instance_status NOT NULL DEFAULT 'running', -- Current lifecycle state
     started_by UUID NULL -- User who started this instance
         REFERENCES users(id),
+    transaction_scope_id UUID,
     started_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When the instance began
     ended_at TIMESTAMP NULL -- When the instance terminated/completed (NULL if running)
 );
@@ -121,6 +122,86 @@ ON process_instances(process_definition_id);
 
 CREATE INDEX idx_process_instances_status
 ON process_instances(status);
+
+
+
+
+-- Need to track gateway state
+CREATE TABLE gateway_state (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
+    gateway_id TEXT NOT NULL, -- BPMN element ID
+    expected_incoming INTEGER NOT NULL, -- How many incoming flows expected
+    received_incoming INTEGER DEFAULT 0, -- How many received
+    joined_flows JSONB DEFAULT '[]', -- Which flows have joined
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    UNIQUE(process_instance_id, gateway_id)
+);
+
+-- Event subprocess tracking
+CREATE TABLE event_subprocesses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
+    parent_execution_id UUID REFERENCES executions(id),
+    event_type TEXT NOT NULL, -- message, timer, error, etc.
+    event_key TEXT, -- Message name or error code
+    is_interrupting BOOLEAN DEFAULT true,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    triggered_at TIMESTAMP
+);
+
+-- Event subscriptions
+CREATE TABLE event_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
+    execution_id UUID REFERENCES executions(id),
+    event_type TEXT NOT NULL, -- message, signal, error
+    event_name TEXT NOT NULL, -- Specific event identifier
+    correlation_key TEXT, -- For message correlation
+    correlation_id UUID,
+    message_payload JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    consumed_at TIMESTAMP
+);
+
+CREATE INDEX idx_event_subscriptions_lookup 
+ON event_subscriptions(event_type, event_name, correlation_key) 
+WHERE consumed_at IS NULL;
+
+
+CREATE TABLE message_buffer (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_name TEXT NOT NULL,
+    correlation_key TEXT,
+    payload JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMP,
+    processing_error TEXT
+);
+
+CREATE INDEX idx_message_buffer_correlation 
+ON message_buffer(message_name, correlation_key) 
+WHERE processed_at IS NULL;
+
+-- Boundary event attachments
+CREATE TABLE boundary_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
+    attached_to_id TEXT NOT NULL, -- BPMN element ID this attaches to
+    execution_id UUID REFERENCES executions(id),
+    event_type TEXT NOT NULL, -- timer, error, message, signal
+    event_config JSONB, -- Timer duration, error code, etc.
+    is_interrupting BOOLEAN DEFAULT true,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    triggered_at TIMESTAMP
+);
+
+CREATE INDEX idx_boundary_events_active 
+ON boundary_events(process_instance_id, attached_to_id) 
+WHERE is_active = true;
 
 -- =========================================================
 -- EXECUTIONS (TOKENS)
@@ -141,6 +222,9 @@ CREATE TABLE executions (
         REFERENCES executions(id),
     status execution_status NOT NULL DEFAULT 'active', -- Current execution state
     is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this token is still active
+    path_id TEXT,
+    gateway_join_id UUID REFERENCES gateway_state(id),
+    branch_variables JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When execution started
     updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last state change timestamp
 );
@@ -154,6 +238,9 @@ ON executions(current_element_id);
 CREATE INDEX idx_executions_is_active
 ON executions(is_active);
 
+CREATE INDEX idx_executions_parent_gateway 
+ON executions(parent_execution_id, gateway_join_id) 
+WHERE is_active = true;
 -- =========================================================
 -- TASKS
 -- Human workflow/tasklist layer
@@ -313,6 +400,7 @@ CREATE TABLE process_outbox (
 
 CREATE INDEX idx_outbox_unpublished ON process_outbox(published_at) 
     WHERE published_at IS NULL;
+
 
 -- =========================================================
 -- COMMENTS

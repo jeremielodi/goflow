@@ -1,3 +1,4 @@
+// service/task_service.go
 package service
 
 import (
@@ -7,21 +8,26 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
-	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
 
 type TaskService struct {
-	db       *sqlx.DB
-	taskRepo *repository.TaskRepository
-	procRepo *repository.ProcessRepository
-	instRepo *repository.ProcessInstanceRepository
+	db             *sqlx.DB
+	taskRepo       *repository.TaskRepository
+	procRepo       *repository.ProcessRepository
+	instRepo       *repository.ProcessInstanceRepository
+	resumeExecutor ResumeExecutionFunc // Callback for resuming execution
 }
 
+// ResumeExecutionFunc is a function type for resuming execution
+type ResumeExecutionFunc func(ctx context.Context, graph *engine.ProcessGraph, execID uuid.UUID) error
+
+// NewTaskService creates a new TaskService
 func NewTaskService(db *sqlx.DB) *TaskService {
 	return &TaskService{
 		db:       db,
@@ -29,6 +35,11 @@ func NewTaskService(db *sqlx.DB) *TaskService {
 		procRepo: repository.NewProcessRepository(db),
 		instRepo: repository.NewProcessInstanceRepository(db),
 	}
+}
+
+// SetResumeExecutor sets the callback function for resuming execution
+func (s *TaskService) SetResumeExecutor(fn ResumeExecutionFunc) {
+	s.resumeExecutor = fn
 }
 
 // CompleteTask handles the full task completion flow with a transaction.
@@ -71,14 +82,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		return fmt.Errorf("user task node not found")
 	}
 
-	// Try to resolve next node; if no outgoing flows, process ends here
-	// nextID, err := s.ResolveNext(&graph, userNode, currentVars)
-	_runtime := runtime.NewRuntime(&graph, s.db)
-	nextID, err := _runtime.ResolveNext(ctx, userNode, currentVars)
-
+	// Use common.ResolveNext to find the next node
+	nextID, err := common.ResolveNext(userNode, currentVars)
 	if err != nil {
 		// No outgoing flows → process completed after this user task
-		if err.Error() == "no outgoing flows" {
+		if err.Error() == "node has no outgoing flows" {
 			return s.completeProcessAndTask(task, currentVars)
 		}
 		return fmt.Errorf("failed to resolve next node: %w", err)
@@ -88,7 +96,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	tx := database.NewTransaction(s.db)
 
 	// a. Move execution token
-	tx.AddUpdateQuery(" public.executions ", []database.QueryParameter{
+	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
 		{Key: "current_element_id", Value: nextID},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
@@ -145,12 +153,12 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		return fmt.Errorf("transaction failed: %w", err)
 	}
 
-	// 6. Resume runtime
-	rt := &runtime.Runtime{
-		Graph: &graph,
-		DB:    s.db,
+	// 6. Resume execution using the callback function
+	if s.resumeExecutor != nil {
+		return s.resumeExecutor(ctx, &graph, *task.ExecutionID)
 	}
-	return rt.ExecuteExecution(ctx, *task.ExecutionID)
+
+	return fmt.Errorf("resume executor not set")
 }
 
 // Helper to finish process when no next node exists

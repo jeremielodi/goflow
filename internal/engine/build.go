@@ -18,12 +18,21 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		nodeMap[n.ID] = n
 	}
 
-	// ---- Start Events ----
+	// ---- Start Events (including timer start) ----
 	for _, s := range process.StartEvents {
-		register(&Node{
+		node := &Node{
 			ID:   s.ID,
 			Type: StartEventType,
-		})
+			
+		}
+
+		// Check for timer definition
+		if s.TimerDefinition != nil && s.TimerDefinition.RawXML != "" {
+			node.TimerDefinition = s.TimerDefinition.RawXML
+			node.Type = StartTimerEventType
+		}
+
+		register(node)
 	}
 
 	// ---- User Tasks (assignee & candidate groups) ----
@@ -81,6 +90,41 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		})
 	}
 
+	// ---- Parallel Gateways ----
+	for _, g := range process.ParallelGateways {
+		register(&Node{
+			ID:   g.ID,
+			Type: ParallelGatewayType,
+		})
+	}
+
+	// ---- Intermediate Timer Events ----
+	for _, t := range process.IntermediateTimerEvents {
+		node := &Node{
+			ID:   t.ID,
+			Name: t.Name,
+			Type: IntermediateTimerEventType,
+		}
+		if t.TimerDefinition != nil && t.TimerDefinition.RawXML != "" {
+			node.TimerDefinition = t.TimerDefinition.RawXML
+		}
+		register(node)
+	}
+
+	// ---- Boundary Timer Events ----
+	for _, b := range process.BoundaryTimerEvents {
+		node := &Node{
+			ID:             b.ID,
+			Type:           BoundaryTimerEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.CancelActivity,
+		}
+		if b.TimerDefinition != nil && b.TimerDefinition.RawXML != "" {
+			node.TimerDefinition = b.TimerDefinition.RawXML
+		}
+		register(node)
+	}
+
 	// ---- Sequence Flows ----
 	for _, f := range process.SequenceFlows {
 		source, ok := nodeMap[f.SourceRef]
@@ -101,7 +145,50 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		target.Incoming = append(target.Incoming, f.SourceRef)
 	}
 
+	// Validate parallel gateways
+	for _, node := range graph.Nodes {
+		if node.Type == ParallelGatewayType {
+			if err := validateParallelGateway(node); err != nil {
+				return nil, fmt.Errorf("invalid parallel gateway %s: %w", node.ID, err)
+			}
+		}
+
+		// Validate boundary timer events
+		if node.Type == BoundaryTimerEventType {
+			if node.AttachedToRef == "" {
+				return nil, fmt.Errorf("boundary timer event %s has no attachedToRef", node.ID)
+			}
+		}
+	}
+
 	return graph, nil
+}
+
+// validateParallelGateway ensures the gateway has proper fork/join structure
+func validateParallelGateway(node *Node) error {
+	incomingCount := len(node.Incoming)
+	outgoingCount := len(node.Outgoing)
+
+	if incomingCount == 1 && outgoingCount > 1 {
+		// This is a fork - valid
+		return nil
+	}
+
+	if incomingCount > 1 && outgoingCount == 1 {
+		// This is a join - valid
+		return nil
+	}
+
+	if incomingCount == 1 && outgoingCount == 1 {
+		return fmt.Errorf("parallel gateway with single incoming and outgoing flow should be exclusive gateway")
+	}
+
+	// Can also be both (fork and join) - rare but valid
+	if incomingCount > 1 && outgoingCount > 1 {
+		return nil // Fork AND join in one gateway
+	}
+
+	return fmt.Errorf("invalid parallel gateway configuration: incoming=%d, outgoing=%d", incomingCount, outgoingCount)
 }
 
 // ============================================================

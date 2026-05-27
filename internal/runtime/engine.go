@@ -8,8 +8,10 @@ import (
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -179,14 +181,16 @@ func convertFEELToCEL(expr string) string {
 // ------------------------------------------------------------
 
 type Runtime struct {
-	Graph *engine.ProcessGraph
-	DB    *sqlx.DB
+	Graph        *engine.ProcessGraph
+	DB           *sqlx.DB
+	auditService *service.AuditService
 }
 
 func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB) *Runtime {
 	return &Runtime{
-		Graph: Graph,
-		DB:    DB,
+		Graph:        Graph,
+		DB:           DB,
+		auditService: service.NewAuditService(DB),
 	}
 }
 
@@ -226,7 +230,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 		switch node.Type {
 		case engine.StartEventType, engine.ExclusiveGatewayType:
-			next, err := r.ResolveNext(ctx, node, variables)
+			next, err := common.ResolveNext(node, variables)
 			if err != nil {
 				return err
 			}
@@ -247,6 +251,8 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			}
 
 			currentID = next
+
+			r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, currentID, next, variables)
 
 		case engine.ServiceTaskType:
 			// Begin transaction
@@ -291,9 +297,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
-			// Log job creation
-			fmt.Printf("Job %s created for service task %s (type: %s)\n", jobID, node.ID, *node.JobType)
-
+			r.auditService.LogJobCreated(exec.ProcessInstanceID, jobID, *node.JobType)
 			return nil
 
 		case engine.UserTaskType:
@@ -353,9 +357,77 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
-
+			r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
 			return nil
 
+		case engine.ParallelGatewayType:
+			// Create parallel gateway executor
+			parallelExecutor := NewParallelGatewayExecutor(r.DB)
+
+			// Check if this is a fork or join
+			if r.isForkGateway(node, exec) {
+				// Fork: Create child executions
+				err := parallelExecutor.ExecuteFork(ctx, exec.ID, node, variables)
+				if err != nil {
+					return fmt.Errorf("failed to execute parallel fork: %w", err)
+				}
+				// Log gateway fork
+				r.auditService.LogGatewayForked(exec.ProcessInstanceID, node.ID, len(node.Outgoing))
+				return nil // Parent waits, children continue
+			} else {
+				// For join, we need to get the expected count from the gateway state
+				tx, err := r.DB.BeginTxx(ctx, nil)
+				if err != nil {
+					return fmt.Errorf("failed to begin transaction: %w", err)
+				}
+
+				// Get the gateway state to know expected count
+				var gatewayState struct {
+					ExpectedIncoming int
+					ReceivedIncoming int
+				}
+
+				err = tx.Get(&gatewayState, `
+			SELECT expected_incoming, received_incoming
+			FROM public.gateway_state
+			WHERE process_instance_id = $1 AND gateway_id = $2 AND status = 'waiting'
+		`, exec.ProcessInstanceID, node.ID)
+
+				expectedCount := 0
+				receivedCount := 0
+
+				if err == nil {
+					expectedCount = gatewayState.ExpectedIncoming
+					receivedCount = gatewayState.ReceivedIncoming
+				}
+				tx.Rollback()
+
+				// Execute join
+				err = parallelExecutor.ExecuteJoin(ctx, exec.ID, node)
+				if err != nil {
+					return fmt.Errorf("failed to execute parallel join: %w", err)
+				}
+
+				// Get updated counts after join
+				var finalState struct {
+					ReceivedIncoming int
+				}
+				err = r.DB.Get(&finalState, `
+			SELECT received_incoming
+			FROM public.gateway_state
+			WHERE process_instance_id = $1 AND gateway_id = $2
+			ORDER BY created_at DESC
+			LIMIT 1
+		`, exec.ProcessInstanceID, node.ID)
+
+				if err == nil {
+					receivedCount = finalState.ReceivedIncoming
+				}
+
+				// Log gateway join
+				r.auditService.LogGatewayJoined(exec.ProcessInstanceID, node.ID, expectedCount, receivedCount)
+				return nil
+			}
 		case engine.EndEventType:
 			// Begin transaction
 			tx, err := r.DB.BeginTxx(ctx, nil)
@@ -387,6 +459,30 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return fmt.Errorf("unknown node type: %s", node.Type)
 		}
 	}
+}
+
+// isForkGateway determines if a parallel gateway is a fork or join
+func (r *Runtime) isForkGateway(node *engine.Node, exec *repository.Execution) bool {
+	// A gateway is a fork if:
+	// 1. It has multiple outgoing flows (splitting)
+	// 2. It has no parent execution (root level) OR
+	//    It's the first time we're visiting this gateway
+
+	// Check number of outgoing flows
+	if len(node.Outgoing) > 1 {
+		// No parent execution means this is a root fork
+		if exec.ParentExecutionID == nil {
+			return true
+		}
+		engineRepo := repository.NewEngineRepository(r.DB)
+		// Check if this gateway already has a waiting state (means we're joining)
+		var count = engineRepo.CountGatewayWaitingState(exec.ParentExecutionID, node.ID)
+		// If no waiting gateway state, this is a fork
+		return count == 0
+	}
+
+	// Single outgoing flow - this is likely a join
+	return false
 }
 
 // ------------------------------------------------------------

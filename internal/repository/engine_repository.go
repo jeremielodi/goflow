@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
@@ -24,6 +25,24 @@ type EngineRepository struct {
 
 func NewEngineRepository(db *sqlx.DB) *EngineRepository {
 	return &EngineRepository{db: db}
+}
+
+// GetActiveExecutionWithTx retrieves an active execution within a transaction
+func (r *EngineRepository) GetActiveExecutionWithTx(tx *sqlx.Tx, execID uuid.UUID) (*Execution, error) {
+	var exec Execution
+	query := `
+		SELECT id, process_instance_id, current_element_id, status, is_active, parent_execution_id, path_id, created_at, updated_at
+		FROM public.executions
+		WHERE id = $1 AND is_active = true
+	`
+	err := tx.Get(&exec, query, execID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &exec, nil
 }
 
 // GetActiveExecution retrieves an active execution by ID
@@ -44,6 +63,20 @@ func (r *EngineRepository) GetActiveExecution(ctx context.Context, execID uuid.U
 	return &exec, nil
 }
 
+func (r *EngineRepository) CountGatewayWaitingState(processInanceId *uuid.UUID, nodeId string) int {
+
+	var count int
+	query := `
+			SELECT COUNT(*) 
+			FROM public.gateway_state 
+			WHERE process_instance_id = $1 
+			  AND gateway_id = $2 
+			  AND status = 'waiting'
+		`
+	r.db.Get(&count, query, processInanceId, nodeId)
+	return count
+}
+
 // GetProcessVariables retrieves variables for a process instance
 func (r *EngineRepository) GetProcessVariables(instanceID uuid.UUID) (map[string]interface{}, error) {
 	var data []byte
@@ -62,6 +95,104 @@ func (r *EngineRepository) GetProcessVariables(instanceID uuid.UUID) (map[string
 		}
 	}
 	return variables, nil
+}
+
+func (r *EngineRepository) CreateGatewayStateTx(tx *sqlx.Tx, state *models.GatewayState) error {
+	adapter := database.NewDabaseAdapter(r.db)
+
+	_, err := adapter.Insert("public.gateway_state", []database.QueryParameter{
+		{Key: "id", Value: state.ID},
+		{Key: "process_instance_id", Value: state.ProcessInstanceID},
+		{Key: "gateway_id", Value: state.GatewayID},
+		{Key: "expected_incoming", Value: state.ExpectedIncoming},
+		{Key: "received_incoming", Value: state.ReceivedIncoming},
+		{Key: "joined_flows", Value: state.JoinedFlows},
+		{Key: "status", Value: state.Status},
+		{Key: "created_at", Value: time.Now()},
+	})
+	return err
+}
+
+// CreateTimerJob creates a new timer job
+func (r *EngineRepository) CreateTimerJob(timer *models.TimerJob) error {
+	_, err := r.db.Exec(`
+		INSERT INTO public.timer_jobs 
+		(id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, false, NOW())
+	`, timer.ID, timer.ProcessInstanceID, timer.ExecutionID, timer.EventType, timer.DueAt, timer.Payload)
+	return err
+}
+
+// UpdateGatewayJoin updates the join count for a gateway
+func (r *EngineRepository) UpdateGatewayJoinTx(tx *sqlx.Tx, gatewayID uuid.UUID, flowID string) error {
+	var currentState models.GatewayState
+
+	// Get current state with lock
+	err := tx.Get(&currentState, `
+        SELECT id, expected_incoming, received_incoming, joined_flows, status
+        FROM public.gateway_state
+        WHERE id = $1 AND status = 'waiting'
+        FOR UPDATE
+    `, gatewayID)
+	if err != nil {
+		return err
+	}
+
+	newReceived := currentState.ReceivedIncoming + 1
+
+	// Update joined flows
+	var joinedFlows []string
+	json.Unmarshal(currentState.JoinedFlows, &joinedFlows)
+	joinedFlows = append(joinedFlows, flowID)
+	joinedFlowsJSON, _ := json.Marshal(joinedFlows)
+
+	// Check if all flows have joined
+	if newReceived == currentState.ExpectedIncoming {
+		// Gateway is complete
+		_, err = tx.Exec(`
+            UPDATE public.gateway_state
+            SET received_incoming = $1, 
+                joined_flows = $2, 
+                status = 'completed',
+                completed_at = NOW()
+            WHERE id = $3
+        `, newReceived, joinedFlowsJSON, gatewayID)
+	} else {
+		// Still waiting for more flows
+		_, err = tx.Exec(`
+            UPDATE public.gateway_state
+            SET received_incoming = $1, joined_flows = $2
+            WHERE id = $3
+        `, newReceived, joinedFlowsJSON, gatewayID)
+	}
+
+	return err
+}
+
+// GetChildExecutions gets all child executions for a parent
+func (r *EngineRepository) GetChildExecutions(parentExecID uuid.UUID) ([]Execution, error) {
+	var executions []Execution
+	err := r.db.Select(&executions, `
+        SELECT id, process_instance_id, current_element_id, status, is_active, path_id
+        FROM public.executions
+        WHERE parent_execution_id = $1 AND is_active = true
+    `, parentExecID)
+	return executions, err
+}
+
+// CompleteChildExecution marks a child execution as completed
+func (r *EngineRepository) CompleteChildExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
+	adapter := database.NewDabaseAdapter(r.db)
+
+	_, err := adapter.Update("public.executions",
+		[]database.QueryParameter{
+			{Key: "status", Value: "completed"},
+			{Key: "is_active", Value: false},
+			{Key: "updated_at", Value: time.Now()},
+		},
+		database.QueryParameter{Key: "id", Value: execID},
+	)
+	return err
 }
 
 // UpdateExecutionNode updates the current node of an execution
@@ -338,6 +469,78 @@ func (r *EngineRepository) GetSingleOutgoingFlow(node *engine.Node) (*engine.Flo
 		return nil, ErrInvalidOutgoingFlows
 	}
 	return &node.Outgoing[0], nil
+}
+
+// repository/engine_repository.go additions
+
+// CreateTimerJob creates a new timer job
+func (r *EngineRepository) CreateTimerJobTx(tx *sqlx.Tx, timer *models.TimerJob) error {
+	adapter := database.NewDabaseAdapter(r.db)
+
+	_, err := adapter.Insert("public.timer_jobs", []database.QueryParameter{
+		{Key: "id", Value: timer.ID},
+		{Key: "process_instance_id", Value: timer.ProcessInstanceID},
+		{Key: "execution_id", Value: timer.ExecutionID},
+		{Key: "event_type", Value: timer.EventType},
+		{Key: "due_at", Value: timer.DueAt},
+		{Key: "payload", Value: timer.Payload},
+		{Key: "is_triggered", Value: false},
+		{Key: "created_at", Value: time.Now()},
+	})
+	return err
+}
+
+// GetDueTimers retrieves all timers that are due to be triggered
+func (r *EngineRepository) GetDueTimers(ctx context.Context) ([]models.TimerJob, error) {
+	var timers []models.TimerJob
+
+	query := `
+		SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at
+		FROM public.timer_jobs
+		WHERE is_triggered = false AND due_at <= NOW()
+		ORDER BY due_at ASC
+		LIMIT 100
+	`
+
+	err := r.db.SelectContext(ctx, &timers, query)
+	return timers, err
+}
+
+// GetDueTimersByInstance retrieves due timers for a specific process instance
+func (r *EngineRepository) GetDueTimersByInstance(instanceID uuid.UUID) ([]models.TimerJob, error) {
+	var timers []models.TimerJob
+
+	query := `
+		SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at
+		FROM public.timer_jobs
+		WHERE process_instance_id = $1 AND is_triggered = false AND due_at <= NOW()
+		ORDER BY due_at ASC
+	`
+
+	err := r.db.Select(&timers, query, instanceID)
+	return timers, err
+}
+
+// MarkTimerTriggered marks a timer as triggered
+func (r *EngineRepository) MarkTimerTriggeredTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.timer_jobs
+		SET is_triggered = true, triggered_at = NOW()
+		WHERE id = $1
+	`, timerID)
+	return err
+}
+
+// DeleteTimer removes a timer job
+func (r *EngineRepository) DeleteTimerTx(tx *sqlx.Tx, timerID uuid.UUID) error {
+	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE id = $1`, timerID)
+	return err
+}
+
+// DeleteTimersByExecution removes all timers for a specific execution
+func (r *EngineRepository) DeleteTimersByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
+	_, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE execution_id = $1`, executionID)
+	return err
 }
 
 // UserTask represents a user task for creation

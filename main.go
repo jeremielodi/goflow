@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/api"
+	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jeremielodi/goflow/pkg/database"
 )
@@ -26,10 +31,20 @@ func main() {
 	if err != nil {
 		log.Fatalln("Postgres: ", err)
 	}
+
+	taskService := service.NewTaskService(db)
+	taskService.SetResumeExecutor(func(ctx context.Context, graph *engine.ProcessGraph, execID uuid.UUID) error {
+		rt := runtime.NewRuntime(graph, db)
+		return rt.ExecuteExecution(ctx, execID)
+	})
+
 	processDefinitionCtrl := api.NewProcessDefinitionController(db, &rootDirPath)
-	processInstanceCtrl := api.NewProcessInstanceController(db)
+	processInstanceCtrl := api.NewProcessInstanceController(db, taskService)
 	taskCtrl := api.NewTaskController(db, &rootDirPath)
+
 	externalTaskCtrl := api.NewExternalTaskController(db)
+	auditController := api.NewAuditController(db)
+
 	app := fiber.New()
 
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -48,5 +63,9 @@ func main() {
 	app.Get("/tasks", taskCtrl.GetTasks)
 	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
 
+	// Audit endpoints
+	app.Get("/audit/process/:processId", auditController.GetProcessAuditLogs)
+	app.Get("/audit/task/:taskId", auditController.GetTaskAuditLogs)
+	app.Post("/audit/date-range", auditController.GetAuditLogsByDateRange)
 	app.Listen(":8080")
 }

@@ -15,13 +15,15 @@ import (
 
 type ProcessInstanceController struct {
 	db                  *sqlx.DB
+	taskService         *service.TaskService
 	processRepo         *repository.ProcessRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
 }
 
-func NewProcessInstanceController(db *sqlx.DB) *ProcessInstanceController {
+func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService) *ProcessInstanceController {
 	return &ProcessInstanceController{
 		db:                  db,
+		taskService:         taskService,
 		processRepo:         repository.NewProcessRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
 	}
@@ -137,11 +139,8 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	// Run the runtime
-	rt := &runtime.Runtime{
-		Graph: &graph,
-		DB:    pc.db,
-	}
+	// Run the runtime - FIXED: Use the constructor
+	rt := runtime.NewRuntime(&graph, pc.db) // This properly initializes auditService
 	ctx := c.Context()
 	err = rt.ExecuteExecution(ctx, execID)
 	if err != nil {
@@ -165,39 +164,21 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 // COMPLETE USER TASK
 // POST /tasks/:id/complete
 // ============================================================
-func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
-	taskID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"title":   "Validation Error",
-			"message": "invalid task ID format",
-			"error":   err.Error(),
-		})
-	}
 
+func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
+	taskID, _ := uuid.Parse(c.Params("id"))
 	var req struct {
 		Variables map[string]interface{} `json:"variables"`
 	}
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"title":   "Validation Error",
-			"message": "invalid request body",
-			"error":   err.Error(),
-		})
-	}
+	c.BodyParser(&req)
 
-	svc := service.NewTaskService(pc.db)
-	err = svc.CompleteTask(c.Context(), taskID, req.Variables)
+	err := pc.taskService.CompleteTask(c.Context(), taskID, req.Variables)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
-			"title":   "Task Completion Error",
-			"message": "failed to complete task",
+			"title":   "Error",
+			"message": "Task not completed",
 			"error":   err.Error(),
 		})
 	}
-
-	return c.JSON(fiber.Map{
-		"title":   "Success",
-		"message": "task completed successfully",
-	})
+	return c.JSON(fiber.Map{"message": "completed"})
 }

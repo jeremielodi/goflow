@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_OrderProcess" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.46.1" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd">
+  <bpmn:process id="OrderProcess" name="Order Process" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_Sales" name="Sales">
+        <bpmn:flowNodeRef>StartEvent_ReceiveOrder</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Activity_06dgwob</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Event_1yts3j6</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_OrderProcess" name="Order Process">
+        <bpmn:flowNodeRef>Activity_1nzs33z</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Event_06hh3uw</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_CheckCredit</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_CreditOk</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Warehouse" name="Warehouse">
+        <bpmn:flowNodeRef>Task_FulfillOrder</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_FulfilledOk</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="StartEvent_ReceiveOrder" name="event">
+      <bpmn:outgoing>Flow_0uio892</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_CheckCredit" name="Check Credit" camunda:type="external" camunda:topic="check_credit">
+      <bpmn:incoming>Flow_010ontn</bpmn:incoming>
+      <bpmn:outgoing>Flow_CheckCredit_Gateway</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_CheckCredit_Gateway" sourceRef="Task_CheckCredit" targetRef="Gateway_CreditOk" />
+    <bpmn:exclusiveGateway id="Gateway_CreditOk" name="Credit ok?">
+      <bpmn:incoming>Flow_CheckCredit_Gateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_CreditYes_FulfillOrder</bpmn:outgoing>
+      <bpmn:outgoing>Flow_CreditNo_SendInvoice</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Task_FulfillOrder" name="Fulfill Order" camunda:type="external" camunda:topic="fulfill_order">
+      <bpmn:incoming>Flow_CreditYes_FulfillOrder</bpmn:incoming>
+      <bpmn:outgoing>Flow_FulfillOrder_Gateway</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_CreditYes_FulfillOrder" sourceRef="Gateway_CreditOk" targetRef="Task_FulfillOrder">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${creditOk == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:exclusiveGateway id="Gateway_FulfilledOk" name="Fulfilled ok?">
+      <bpmn:incoming>Flow_FulfillOrder_Gateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_1ks2wv9</bpmn:outgoing>
+      <bpmn:outgoing>Flow_0y6k4gj</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="Flow_FulfillOrder_Gateway" sourceRef="Task_FulfillOrder" targetRef="Gateway_FulfilledOk" />
+    <bpmn:task id="Activity_06dgwob" name="Receive Order">
+      <bpmn:incoming>Flow_0uio892</bpmn:incoming>
+      <bpmn:outgoing>Flow_010ontn</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:sequenceFlow id="Flow_0uio892" sourceRef="StartEvent_ReceiveOrder" targetRef="Activity_06dgwob" />
+    <bpmn:sequenceFlow id="Flow_010ontn" sourceRef="Activity_06dgwob" targetRef="Task_CheckCredit" />
+    <bpmn:sequenceFlow id="Flow_CreditNo_SendInvoice" sourceRef="Gateway_CreditOk" targetRef="Event_1yts3j6">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${creditOk == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:endEvent id="Event_1yts3j6" name="order failed">
+      <bpmn:incoming>Flow_CreditNo_SendInvoice</bpmn:incoming>
+      <bpmn:incoming>Flow_0y6k4gj</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:task id="Activity_1nzs33z" name="send invoice">
+      <bpmn:incoming>Flow_1ks2wv9</bpmn:incoming>
+      <bpmn:outgoing>Flow_1s7x3ci</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:sequenceFlow id="Flow_1ks2wv9" sourceRef="Gateway_FulfilledOk" targetRef="Activity_1nzs33z">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${fulfilled == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:endEvent id="Event_06hh3uw" name="order complete">
+      <bpmn:incoming>Flow_1s7x3ci</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1s7x3ci" sourceRef="Activity_1nzs33z" targetRef="Event_06hh3uw" />
+    <bpmn:sequenceFlow id="Flow_0y6k4gj" sourceRef="Gateway_FulfilledOk" targetRef="Event_1yts3j6">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${fulfilled == faulse}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_OrderProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_OrderProcess" bpmnElement="OrderProcess">
+      <bpmndi:BPMNShape id="Lane_Warehouse_di" bpmnElement="Lane_Warehouse" isHorizontal="true">
+        <dc:Bounds x="100" y="370" width="1220" height="150" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_OrderProcess_di" bpmnElement="Lane_OrderProcess" isHorizontal="true">
+        <dc:Bounds x="100" y="170" width="1220" height="200" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Lane_Sales_di" bpmnElement="Lane_Sales" isHorizontal="true">
+        <dc:Bounds x="100" y="50" width="1220" height="120" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="StartEvent_ReceiveOrder_di" bpmnElement="StartEvent_ReceiveOrder">
+        <dc:Bounds x="160" y="90" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="165" y="133" width="27" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CheckCredit_di" bpmnElement="Task_CheckCredit">
+        <dc:Bounds x="340" y="210" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CreditOk_di" bpmnElement="Gateway_CreditOk" isMarkerVisible="true">
+        <dc:Bounds x="550" y="225" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="610" y="243" width="51" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_FulfillOrder_di" bpmnElement="Task_FulfillOrder">
+        <dc:Bounds x="525" y="410" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_FulfilledOk_di" bpmnElement="Gateway_FulfilledOk" isMarkerVisible="true">
+        <dc:Bounds x="765" y="425" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="760" y="485" width="59" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_06dgwob_di" bpmnElement="Activity_06dgwob">
+        <dc:Bounds x="340" y="68" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_1yts3j6_di" bpmnElement="Event_1yts3j6">
+        <dc:Bounds x="960" y="90" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="950" y="133" width="56" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Activity_1nzs33z_di" bpmnElement="Activity_1nzs33z">
+        <dc:Bounds x="890" y="240" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Event_06hh3uw_di" bpmnElement="Event_06hh3uw">
+        <dc:Bounds x="1102" y="262" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1083" y="305" width="74" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_CheckCredit_Gateway_di" bpmnElement="Flow_CheckCredit_Gateway">
+        <di:waypoint x="440" y="250" />
+        <di:waypoint x="550" y="250" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditYes_FulfillOrder_di" bpmnElement="Flow_CreditYes_FulfillOrder">
+        <di:waypoint x="575" y="275" />
+        <di:waypoint x="575" y="410" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_FulfillOrder_Gateway_di" bpmnElement="Flow_FulfillOrder_Gateway">
+        <di:waypoint x="625" y="450" />
+        <di:waypoint x="765" y="450" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0uio892_di" bpmnElement="Flow_0uio892">
+        <di:waypoint x="196" y="108" />
+        <di:waypoint x="340" y="108" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_010ontn_di" bpmnElement="Flow_010ontn">
+        <di:waypoint x="390" y="148" />
+        <di:waypoint x="390" y="210" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CreditNo_SendInvoice_di" bpmnElement="Flow_CreditNo_SendInvoice">
+        <di:waypoint x="575" y="225" />
+        <di:waypoint x="575" y="108" />
+        <di:waypoint x="960" y="108" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1ks2wv9_di" bpmnElement="Flow_1ks2wv9">
+        <di:waypoint x="815" y="450" />
+        <di:waypoint x="940" y="450" />
+        <di:waypoint x="940" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_1s7x3ci_di" bpmnElement="Flow_1s7x3ci">
+        <di:waypoint x="990" y="280" />
+        <di:waypoint x="1102" y="280" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0y6k4gj_di" bpmnElement="Flow_0y6k4gj">
+        <di:waypoint x="790" y="425" />
+        <di:waypoint x="790" y="108" />
+        <di:waypoint x="960" y="108" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

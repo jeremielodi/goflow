@@ -131,11 +131,13 @@ func (r *ProcessInstanceRepository) GetExecutionByID(execID uuid.UUID) (*Executi
 
 // Execution represents an execution record
 type Execution struct {
-	ID                uuid.UUID `db:"id"`
-	ProcessInstanceID uuid.UUID `db:"process_instance_id"`
-	CurrentElementID  string    `db:"current_element_id"`
-	Status            string    `db:"status"`
-	IsActive          bool      `db:"is_active"`
-	CreatedAt         time.Time `db:"created_at"`
-	UpdatedAt         time.Time `db:"updated_at"`
+	ID                uuid.UUID  `db:"id"`
+	ProcessInstanceID uuid.UUID  `db:"process_instance_id"`
+	CurrentElementID  string     `db:"current_element_id"`
+	Status            string     `db:"status"`
+	ParentExecutionID *uuid.UUID `db:"parent_execution_id"`
+	PathID            string     `db:"path_id"`
+	IsActive          bool       `db:"is_active"`
+	CreatedAt         time.Time  `db:"created_at"`
+	UpdatedAt         time.Time  `db:"updated_at"`
 }

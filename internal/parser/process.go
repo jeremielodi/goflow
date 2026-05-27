@@ -20,6 +20,30 @@ type Process struct {
 	ParallelGateways        []ParallelGateway        `xml:"parallelGateway"`
 	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
 	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
+	IntermediateTimerEvents []IntermediateTimerEvent
+	BoundaryTimerEvents     []BoundaryTimerEvent
+	BoundaryEvents          []BoundaryEvent `xml:"boundaryEvent"`
+}
+
+type IntermediateTimerEvent struct {
+	ID              string
+	Name            string
+	TimerDefinition *TimerDefinition
+}
+
+type BoundaryTimerEvent struct {
+	ID              string
+	AttachedToRef   string
+	CancelActivity  bool
+	TimerDefinition *TimerDefinition
+}
+
+// TimerDefinition represents BPMN timer event definition
+type TimerDefinition struct {
+	RawXML       string
+	TimeDuration string // PT1M, PT1H, PT1D, etc.
+	TimeDate     string // 2024-12-31T23:59:59
+	TimeCycle    string // R/PT1M, R/PT24H, etc.
 }
 
 type ProcessDefinitionInfo struct {
