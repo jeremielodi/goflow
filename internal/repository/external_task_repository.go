@@ -176,17 +176,25 @@ func (r *ExternalTaskRepository) UpdateJobStatusTx(tx *sqlx.Tx, jobID uuid.UUID,
 }
 
 // GetProcessDefinitionGraph retrieves the process graph for a process instance
+
+// GetProcessDefinitionGraphTx retrieves the process graph for a process instance
 func (r *ExternalTaskRepository) GetProcessDefinitionGraphTx(tx *sqlx.Tx, instanceID uuid.UUID) ([]byte, error) {
 	var graphJSON []byte
+	var err error
 
 	query := `
-		SELECT pd.parsed_graph
-		FROM public.process_definitions pd
-		JOIN public.process_instances pi ON pi.process_definition_id = pd.id
-		WHERE pi.id = $1
-	`
+        SELECT pd.parsed_graph
+        FROM public.process_definitions pd
+        JOIN public.process_instances pi ON pi.process_definition_id = pd.id
+        WHERE pi.id = $1
+    `
 
-	err := tx.Get(&graphJSON, query, instanceID)
+	if tx != nil {
+		err = tx.Get(&graphJSON, query, instanceID)
+	} else {
+		err = r.db.Get(&graphJSON, query, instanceID)
+	}
+
 	if err != nil {
 		return nil, err
 	}

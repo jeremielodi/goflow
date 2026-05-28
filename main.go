@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 
 func main() {
 
+	time.Local = time.UTC
 	// Get the root directory path of the application
 	rootDirPath, pathErr := os.Getwd()
 	if pathErr != nil {
@@ -46,7 +48,11 @@ func main() {
 	externalTaskCtrl := api.NewExternalTaskController(db)
 	auditController := api.NewAuditController(db)
 
+	multiInstanceController := api.NewMultiInstanceController(db)
 	// timer-----------------------------------------
+
+	timerController := api.NewTimerController(db)
+
 	timerScheduler := service.NewTimerScheduler(db, resumer)
 	go timerScheduler.Start(context.Background())
 	defer timerScheduler.Stop()
@@ -76,5 +82,8 @@ func main() {
 	app.Get("/audit/task/:taskId", auditController.GetTaskAuditLogs)
 	app.Post("/audit/date-range", auditController.GetAuditLogsByDateRange)
 
+	app.Get("/timers", timerController.GetTimers)
+	app.Get("/timers/:id", timerController.GetTimerByID)
+	app.Get("/multi-instance/execution/:instanceId", multiInstanceController.GetByProcessInstance)
 	app.Listen(":8080")
 }

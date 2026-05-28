@@ -3,6 +3,9 @@ package parser
 import (
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +24,15 @@ type Process struct {
 	ParallelGateways        []ParallelGateway        `xml:"parallelGateway"`
 	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
 	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
+	ScriptTasks             []ScriptTask             `xml:"scriptTask"`
 	IntermediateTimerEvents []IntermediateTimerEvent
 	BoundaryTimerEvents     []BoundaryTimerEvent
 	BoundaryEvents          []BoundaryEvent `xml:"boundaryEvent"`
+}
+
+type TimerCycle struct {
+	Remaining int           // Number of remaining repetitions (-1 = infinite)
+	Interval  time.Duration // Time between repetitions
 }
 
 type IntermediateTimerEvent struct {
@@ -132,6 +141,16 @@ type CamundaTaskDefinition struct {
 	Topic string `xml:"topic,attr"`
 }
 
+// MultiInstanceLoopCharacteristics represents BPMN multi-instance configuration
+type MultiInstanceLoopCharacteristics struct {
+	IsSequential        bool   `xml:"isSequential,attr"`
+	LoopCardinality     string `xml:"loopCardinality"`      // Expression like "3"
+	CompletionCondition string `xml:"completionCondition"`  // Expression like "${nrOfCompletedInstances >= 2}"
+	InputDataItem       string `xml:"inputDataItem"`        // Item name for each iteration
+	OutputDataItem      string `xml:"outputDataItem"`       // Item name for output collection
+	ElementVariable     string `xml:"elementVariable,attr"` // Variable name for current item
+}
+
 // ZeebeExtensions (for Camunda 8)
 type ZeebeExtensions struct {
 	TaskDefinition *ZeebeTaskDefinition `xml:"taskDefinition"`
@@ -147,15 +166,16 @@ type ZeebeAssignment struct {
 }
 
 type UserTask struct {
-	ID                     string             `xml:"id,attr"`
-	Name                   string             `xml:"name,attr"`
-	Incoming               []string           `xml:"incoming"`
-	Outgoing               []string           `xml:"outgoing"`
-	CamundaExt             *CamundaExtensions `xml:"extensionElements>camunda:taskListener?omitempty"`
-	CamundaAssignee        string             `xml:"http://camunda.org/schema/1.0/bpmn assignee,attr"`
-	CamundaCandidateGroups string             `xml:"http://camunda.org/schema/1.0/bpmn candidateGroups,attr"`
-	CamundaFormKey         string             `xml:"http://camunda.org/schema/1.0/bpmn formKey,attr"`
-	ZeebeExt               *ZeebeExtensions   `xml:"extensionElements>zeebe:assignment"?`
+	ID                     string                            `xml:"id,attr"`
+	Name                   string                            `xml:"name,attr"`
+	Incoming               []string                          `xml:"incoming"`
+	Outgoing               []string                          `xml:"outgoing"`
+	CamundaExt             *CamundaExtensions                `xml:"extensionElements>camunda:taskListener?omitempty"`
+	CamundaAssignee        string                            `xml:"http://camunda.org/schema/1.0/bpmn assignee,attr"`
+	CamundaCandidateGroups string                            `xml:"http://camunda.org/schema/1.0/bpmn candidateGroups,attr"`
+	CamundaFormKey         string                            `xml:"http://camunda.org/schema/1.0/bpmn formKey,attr"`
+	ZeebeExt               *ZeebeExtensions                  `xml:"extensionElements>zeebe:assignment"?`
+	MultiInstance          *MultiInstanceLoopCharacteristics `xml:"multiInstanceLoopCharacteristics"`
 }
 
 type ServiceTask struct {
@@ -169,8 +189,18 @@ type ServiceTask struct {
 
 	CamundaType  string `xml:"http://camunda.org/schema/1.0/bpmn type,attr"`
 	CamundaTopic string `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`
+
+	MultiInstance *MultiInstanceLoopCharacteristics `xml:"multiInstanceLoopCharacteristics"`
 }
 
+type ScriptTask struct {
+	ID           string   `xml:"id,attr"`
+	Name         string   `xml:"name,attr"`
+	ScriptFormat string   `xml:"scriptFormat,attr"`
+	Script       string   `xml:"script"`
+	Incoming     []string `xml:"incoming"`
+	Outgoing     []string `xml:"outgoing"`
+}
 type ExclusiveGateway struct {
 	ID       string   `xml:"id,attr"`
 	Incoming []string `xml:"incoming"`
@@ -348,6 +378,88 @@ func getStringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// ParseTimerCycle parses a BPMN timer cycle expression
+// Examples:
+//
+//	"R/PT1M"        -> infinite, interval 1 minute
+//	"R5/PT10S"      -> 5 repetitions, interval 10 seconds
+//	"R3/PT1H30M"    -> 3 repetitions, interval 1 hour 30 minutes
+func ParseTimerCycle(cycleStr string) (*TimerCycle, error) {
+	// Format: R{count}/{duration}
+	// count can be omitted for infinite (R/PT1M)
+
+	parts := strings.Split(cycleStr, "/")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid timer cycle format: %s", cycleStr)
+	}
+
+	// Parse repetition count
+	countPart := strings.TrimPrefix(parts[0], "R")
+	var remaining int = -1 // -1 = infinite
+
+	if countPart != "" {
+		count, err := strconv.Atoi(countPart)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cycle count: %s", countPart)
+		}
+		remaining = count
+	}
+
+	// Parse duration
+	durationStr := parts[1]
+	if !strings.HasPrefix(durationStr, "PT") {
+		return nil, fmt.Errorf("invalid duration format: %s", durationStr)
+	}
+
+	duration, err := parseDuration(durationStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse duration: %w", err)
+	}
+
+	return &TimerCycle{
+		Remaining: remaining,
+		Interval:  duration,
+	}, nil
+}
+
+// parseDuration parses ISO 8601 duration like PT1M, PT30S, PT1H30M
+func parseDuration(durationStr string) (time.Duration, error) {
+	durationStr = strings.TrimPrefix(durationStr, "PT")
+	var duration time.Duration
+
+	// Parse hours
+	if strings.Contains(durationStr, "H") {
+		hoursStr := strings.Split(durationStr, "H")[0]
+		if hours, err := strconv.Atoi(hoursStr); err == nil {
+			duration += time.Duration(hours) * time.Hour
+		}
+		durationStr = strings.TrimPrefix(durationStr, hoursStr+"H")
+	}
+
+	// Parse minutes
+	if strings.Contains(durationStr, "M") {
+		minsStr := strings.Split(durationStr, "M")[0]
+		if mins, err := strconv.Atoi(minsStr); err == nil {
+			duration += time.Duration(mins) * time.Minute
+		}
+		durationStr = strings.TrimPrefix(durationStr, minsStr+"M")
+	}
+
+	// Parse seconds
+	if strings.Contains(durationStr, "S") {
+		secsStr := strings.Split(durationStr, "S")[0]
+		if secs, err := strconv.Atoi(secsStr); err == nil {
+			duration += time.Duration(secs) * time.Second
+		}
+	}
+
+	if duration == 0 {
+		return 0, fmt.Errorf("invalid duration: no time component found")
+	}
+
+	return duration, nil
 }
 
 func PopulateTimerEvents(defs *Definitions) {

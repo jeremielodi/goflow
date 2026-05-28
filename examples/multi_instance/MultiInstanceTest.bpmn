@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" 
+                   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" 
+                   xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" 
+                   xmlns:di="http://www.omg.org/spec/DD/20100524/DI" 
+                   xmlns:camunda="http://camunda.org/schema/1.0/bpmn" 
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd"
+                   id="Definitions_MultiInstanceTest" 
+                   targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <bpmn:process id="MultiInstanceProcess" name="Multi-Instance Test Process" isExecutable="true">
+
+    <bpmn:startEvent id="StartEvent_Start" name="Start">
+      <bpmn:outgoing>Flow_StartToTask</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:sequenceFlow id="Flow_StartToTask" sourceRef="StartEvent_Start" targetRef="Task_ProcessItem" />
+
+    <!-- THIS IS THE CORRECT PATTERN: The task itself has multi-instance -->
+    <bpmn:serviceTask id="Task_ProcessItem" name="Process Item" camunda:type="external" camunda:topic="process_item">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+        <bpmn:loopCardinality>3</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+      <bpmn:incoming>Flow_StartToTask</bpmn:incoming>
+      <bpmn:outgoing>Flow_TaskToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:sequenceFlow id="Flow_TaskToEnd" sourceRef="Task_ProcessItem" targetRef="EndEvent_Complete" />
+
+    <bpmn:endEvent id="EndEvent_Complete" name="Complete">
+      <bpmn:incoming>Flow_TaskToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_MultiInstanceTest">
+    <bpmndi:BPMNPlane id="BPMNPlane_MultiInstanceTest" bpmnElement="MultiInstanceProcess">
+      
+      <bpmndi:BPMNShape id="StartEvent_Start_di" bpmnElement="StartEvent_Start">
+        <dc:Bounds x="100" y="100" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="121" y="143" width="24" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <bpmndi:BPMNShape id="Task_ProcessItem_di" bpmnElement="Task_ProcessItem">
+        <dc:Bounds x="200" y="80" width="120" height="80" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="236" y="118" width="48" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <bpmndi:BPMNShape id="EndEvent_Complete_di" bpmnElement="EndEvent_Complete">
+        <dc:Bounds x="400" y="100" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="387" y="143" width="62" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      
+      <bpmndi:BPMNEdge id="Flow_StartToTask_di" bpmnElement="Flow_StartToTask">
+        <di:waypoint x="136" y="118" />
+        <di:waypoint x="200" y="120" />
+      </bpmndi:BPMNEdge>
+      
+      <bpmndi:BPMNEdge id="Flow_TaskToEnd_di" bpmnElement="Flow_TaskToEnd">
+        <di:waypoint x="320" y="120" />
+        <di:waypoint x="400" y="118" />
+      </bpmndi:BPMNEdge>
+      
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+  
+</bpmn:definitions>

@@ -151,43 +151,124 @@ func (r *EngineRepository) CreateTimerJobTx(tx *sqlx.Tx, timer *models.TimerJob)
 	`, timer.ID, timer.ProcessInstanceID, timer.ExecutionID, timer.EventType, timer.DueAt, timer.Payload, false, time.Now())
 	return err
 }
-
-// CreateTimerTx creates a timer job
-func (r *EngineRepository) CreateTimerTx(tx *sqlx.Tx, timerID, processInstanceID uuid.UUID, executionID *uuid.UUID, nextNodeID string, dueAt time.Time, eventType string) error {
-	// Store the next node ID in payload (where to go after timer triggers)
-	payload := map[string]interface{}{
-		"nextNodeId": nextNodeID,
-		"eventType":  eventType,
-	}
-	payloadBytes, _ := json.Marshal(payload)
-
+func (r *EngineRepository) CreateTimerTx(tx *sqlx.Tx, timer *models.TimerJob) error {
 	_, err := tx.Exec(`
-		INSERT INTO public.timer_jobs 
-		(id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, false, NOW())
-	`, timerID, processInstanceID, executionID, eventType, dueAt, payloadBytes)
+        INSERT INTO public.timer_jobs 
+        (id, process_instance_id, execution_id, event_type, due_at, payload, 
+         is_triggered, created_at, cycle_count, total_cycles, repeat_interval)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, timer.ID, timer.ProcessInstanceID, timer.ExecutionID,
+		timer.EventType, timer.DueAt, timer.Payload, timer.IsTriggered,
+		timer.CreatedAt, timer.CycleCount, timer.TotalCycles, timer.RepeatInterval)
 	return err
 }
+
+// GetDueTimers retrieves all timers that are due to be triggered
+// repository/engine_repository.go
 
 // GetDueTimers retrieves all timers that are due to be triggered
 func (r *EngineRepository) GetDueTimers(ctx context.Context, now time.Time) ([]models.TimerJob, error) {
 	var timers []models.TimerJob
 
+	// Use database time for comparison - this ensures consistency
 	query := `
-        SELECT id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at, triggered_at
+        SELECT id, process_instance_id, execution_id, event_type, due_at, payload, 
+               is_triggered, created_at, triggered_at, cycle_count, total_cycles, repeat_interval
         FROM public.timer_jobs
-        WHERE is_triggered = false AND due_at <= $1
+        WHERE is_triggered = false AND due_at <= NOW()
         ORDER BY due_at ASC
         LIMIT 100
     `
 
-	err := r.db.SelectContext(ctx, &timers, query, now)
+	err := r.db.SelectContext(ctx, &timers, query)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, t := range timers {
 		log.Printf("   - Timer %s: due_at=%s, triggered=%v", t.ID, t.DueAt, t.IsTriggered)
 	}
 
 	return timers, err
+}
+
+func (r *EngineRepository) CreateTimerWithDurationSeconds(tx *sqlx.Tx, timerID, processInstanceID uuid.UUID, executionID *uuid.UUID, durationSeconds int, eventType string, payload []byte, cycleCount, totalCycles int, repeatInterval string) error {
+	_, err := tx.Exec(`
+        INSERT INTO public.timer_jobs 
+        (id, process_instance_id, execution_id, event_type, due_at, payload, 
+         is_triggered, created_at, cycle_count, total_cycles, repeat_interval)
+        VALUES ($1, $2, $3, $4, NOW() + ($5 || ' seconds')::interval, $6, false, NOW(), $7, $8, $9)
+    `, timerID, processInstanceID, executionID, eventType, durationSeconds, payload, cycleCount, totalCycles, repeatInterval)
+	return err
+}
+
+// GetMultiInstanceChildrenCount returns the count of completed child executions
+func (r *EngineRepository) GetMultiInstanceChildrenCount(parentExecutionID uuid.UUID, status string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM public.multi_instance_children WHERE parent_execution_id = $1`
+	if status != "" {
+		query += ` AND status = $2`
+		err := r.db.Get(&count, query, parentExecutionID, status)
+		return count, err
+	}
+	err := r.db.Get(&count, query, parentExecutionID)
+	return count, err
+}
+
+// CompleteMultiInstanceChild marks a child execution as completed
+func (r *EngineRepository) CompleteMultiInstanceChildTx(tx *sqlx.Tx, childExecutionID uuid.UUID) error {
+	_, err := tx.Exec(`
+        UPDATE public.multi_instance_children 
+        SET status = 'completed', completed_at = NOW() 
+        WHERE child_execution_id = $1
+    `, childExecutionID)
+	return err
+}
+
+func (r *EngineRepository) UpdateMultiInstanceProgressTx(tx *sqlx.Tx, miExecID uuid.UUID, completedCount int) error {
+	_, err := tx.Exec(`
+        UPDATE public.multi_instance_executions 
+        SET completed_count = $1, 
+            nr_of_completed_instances = $1, 
+            updated_at = NOW() 
+        WHERE id = $2
+    `, completedCount, miExecID)
+	return err
+}
+
+
+// GetMultiInstanceExecution retrieves a multi-instance execution by execution ID
+func (r *EngineRepository) GetMultiInstanceExecution(executionID uuid.UUID) (*models.MultiInstanceExecution, error) {
+	var miExec models.MultiInstanceExecution
+	query := `
+        SELECT id, process_instance_id, execution_id, activity_id, is_sequential, total_count, 
+               completed_count, nr_of_active_instances, nr_of_completed_instances, loop_counter, 
+               completion_condition, element_variable, input_collection, output_collection, status, 
+               created_at, updated_at 
+        FROM public.multi_instance_executions 
+        WHERE execution_id = $1 AND status = 'active'
+    `
+	err := r.db.Get(&miExec, query, executionID)
+	if err != nil {
+		return nil, err
+	}
+	return &miExec, nil
+}
+
+func (r *EngineRepository) GetMultiInstanceExecutionByParentId(parentExecID uuid.UUID) (*models.MultiInstanceExecution, error) {
+    var mi models.MultiInstanceExecution
+    err := r.db.Get(&mi, `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`, parentExecID)
+    return &mi, err
+}
+
+// CompleteMultiInstance marks the multi-instance execution as completed
+func (r *EngineRepository) CompleteMultiInstanceTx(tx *sqlx.Tx, miExecID uuid.UUID) error {
+	_, err := tx.Exec(`
+        UPDATE public.multi_instance_executions 
+        SET status = 'completed', updated_at = NOW() 
+        WHERE id = $1
+    `, miExecID)
+	return err
 }
 
 // GetDueTimersByInstance retrieves due timers for a specific process instance
@@ -244,6 +325,18 @@ func (r *EngineRepository) CancelUserTaskByExecutionTx(tx *sqlx.Tx, executionID 
 		SET status = 'canceled', updated_at = NOW()
 		WHERE execution_id = $1 AND status = 'created'
 	`, executionID)
+	return err
+}
+
+// internal/repository/engine_repository.go
+
+// CreateTimerWithCycleTx creates a timer job with cycle support
+func (r *EngineRepository) CreateTimerWithCycleTx(tx *sqlx.Tx, timerID, processInstanceID uuid.UUID, executionID *uuid.UUID, dueAt time.Time, eventType string, payload []byte, cycleCount, totalCycles int, repeatInterval string) error {
+	_, err := tx.Exec(`
+        INSERT INTO public.timer_jobs 
+        (id, process_instance_id, execution_id, event_type, due_at, payload, is_triggered, created_at, cycle_count, total_cycles, repeat_interval)
+        VALUES ($1, $2, $3, $4, $5, $6, false, NOW(), $7, $8, $9)
+    `, timerID, processInstanceID, executionID, eventType, dueAt, payload, cycleCount, totalCycles, repeatInterval)
 	return err
 }
 

@@ -353,8 +353,13 @@ CREATE TABLE timer_jobs (
     payload JSONB NULL, -- Timer configuration (duration, cycle, etc.)
     is_triggered BOOLEAN NOT NULL DEFAULT false, -- Whether timer has fired
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When timer was scheduled
-    triggered_at TIMESTAMP NULL
+    triggered_at TIMESTAMP NULL,
+    cycle_count INT DEFAULT 0,
+    total_cycles INT DEFAULT 1,
+    repeat_interval VARCHAR(50)
 );
+
+CREATE INDEX IF NOT EXISTS idx_timer_jobs_due_triggered ON public.timer_jobs(due_at, is_triggered);
 
 CREATE INDEX idx_timer_jobs_due_at
 ON timer_jobs(due_at);
@@ -402,6 +407,43 @@ CREATE TABLE process_outbox (
 CREATE INDEX idx_outbox_unpublished ON process_outbox(published_at) 
     WHERE published_at IS NULL;
 
+
+
+-- Multi-instance executions table
+CREATE TABLE IF NOT EXISTS public.multi_instance_executions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL REFERENCES public.process_instances(id) ON DELETE CASCADE,
+    execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    activity_id VARCHAR(255) NOT NULL,
+    is_sequential BOOLEAN NOT NULL DEFAULT false,
+    total_count INT NOT NULL DEFAULT 0,
+    completed_count INT NOT NULL DEFAULT 0,
+    nr_of_active_instances INT NOT NULL DEFAULT 0,
+    nr_of_completed_instances INT NOT NULL DEFAULT 0,
+    loop_counter INT NOT NULL DEFAULT 0,
+    completion_condition TEXT,
+    element_variable VARCHAR(255),
+    input_collection VARCHAR(255),
+    output_collection VARCHAR(255),
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Multi-instance children table
+CREATE TABLE IF NOT EXISTS public.multi_instance_children (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    child_execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    loop_index INT NOT NULL,
+    element_value TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+CREATE INDEX idx_multi_instance_execs_process ON public.multi_instance_executions(process_instance_id);
+CREATE INDEX idx_multi_instance_children_parent ON public.multi_instance_children(parent_execution_id);
 
 -- =========================================================
 -- COMMENTS

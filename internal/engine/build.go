@@ -66,6 +66,19 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		if t.ZeebeExt != nil && t.ZeebeExt.Assignment != nil && t.ZeebeExt.Assignment.Assignee != "" {
 			node.AssigneeExpr = &t.ZeebeExt.Assignment.Assignee
 		}
+
+		// ✅ Add multi-instance support
+		if t.MultiInstance != nil {
+			node.MultiInstance = &MultiInstanceConfig{
+				IsSequential:        t.MultiInstance.IsSequential,
+				LoopCardinality:     t.MultiInstance.LoopCardinality,
+				CompletionCondition: t.MultiInstance.CompletionCondition,
+				InputDataItem:       t.MultiInstance.InputDataItem,
+				OutputDataItem:      t.MultiInstance.OutputDataItem,
+				ElementVariable:     t.MultiInstance.ElementVariable,
+			}
+		}
+
 		register(node)
 	}
 
@@ -84,9 +97,34 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		if t.ZeebeExt != nil && t.ZeebeExt.TaskDefinition != nil && t.ZeebeExt.TaskDefinition.Type != "" {
 			node.JobType = &t.ZeebeExt.TaskDefinition.Type
 		}
+
+		// ✅ Add multi-instance support
+		if t.MultiInstance != nil {
+			node.MultiInstance = &MultiInstanceConfig{
+				IsSequential:        t.MultiInstance.IsSequential,
+				LoopCardinality:     t.MultiInstance.LoopCardinality,
+				CompletionCondition: t.MultiInstance.CompletionCondition,
+				InputDataItem:       t.MultiInstance.InputDataItem,
+				OutputDataItem:      t.MultiInstance.OutputDataItem,
+				ElementVariable:     t.MultiInstance.ElementVariable,
+			}
+		}
 		register(node)
 	}
 
+	for _, t := range process.ScriptTasks {
+    node := &Node{
+        ID:   t.ID,
+        Name: t.Name,
+        Type: ScriptTaskType,  // Add this constant
+    }
+    // Store script content for execution
+    if t.Script != "" {
+        node.Script = &t.Script
+        node.ScriptFormat = &t.ScriptFormat
+    }
+    register(node)
+}
 	// ---- End Events ----
 	for _, e := range process.EndEvents {
 		register(&Node{

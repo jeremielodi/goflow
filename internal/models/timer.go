@@ -17,6 +17,11 @@ type TimerJob struct {
 	IsTriggered       bool       `db:"is_triggered" json:"isTriggered"`
 	CreatedAt         time.Time  `db:"created_at" json:"createdAt"`
 	TriggeredAt       *time.Time `db:"triggered_at" json:"triggeredAt,omitempty"`
+
+	// New fields for timer cycles
+	CycleCount     int    `db:"cycle_count" json:"cycleCount"`         // Current cycle number
+	TotalCycles    int    `db:"total_cycles" json:"totalCycles"`       // Total cycles (-1 = infinite)
+	RepeatInterval string `db:"repeat_interval" json:"repeatInterval"` // ISO 8601 duration (e.g., PT1M)
 }
 
 type TimerDefinition struct {

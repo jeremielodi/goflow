@@ -6,3 +6,8 @@ delete from variables;
 delete from process_instances;
 delete from executions;
 delete from deployments;
+delete from process_definitions;
+delete from audit_logs;
+delete from public.timer_jobs;
+delete from public.multi_instance_children;
+delete from multi_instance_executions;

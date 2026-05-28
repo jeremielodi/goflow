@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:camunda="http://camunda.org/schema/1.0/bpmn" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="Definitions_TimerCycleTest" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Camunda Modeler" exporterVersion="5.46.1" xsi:schemaLocation="http://www.omg.org/spec/BPMN/20100524/MODEL BPMN20.xsd">
+  <bpmn:process id="TimerCycleProcess" name="Timer Cycle Test Process" isExecutable="true" camunda:historyTimeToLive="30">
+    <bpmn:startEvent id="StartEvent_Start" name="Start Process">
+      <bpmn:outgoing>Flow_StartToTask</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="Flow_StartToTask" sourceRef="StartEvent_Start" targetRef="Task_WaitForTimer" />
+    <bpmn:userTask id="Task_WaitForTimer" name="Waiting for Timer Cycles" camunda:assignee="test_user">
+      <bpmn:incoming>Flow_StartToTask</bpmn:incoming>
+      <bpmn:incoming>Flow_EscalateBackToTimer</bpmn:incoming>
+      <bpmn:outgoing>Flow_TaskToEnd</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="Timer_3x10s" name="Every 10s (3 times)" cancelActivity="false" attachedToRef="Task_WaitForTimer">
+      <bpmn:outgoing>Flow_TimerToEscalate</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerEventDef_3x10s">
+        <bpmn:timeCycle>R3/PT10S</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="Flow_TimerToEscalate" sourceRef="Timer_3x10s" targetRef="Task_Escalate" />
+    <bpmn:serviceTask id="Task_Escalate" name="Escalate Issue" camunda:type="external" camunda:topic="escalate_issue">
+      <bpmn:incoming>Flow_TimerToEscalate</bpmn:incoming>
+      <bpmn:outgoing>Flow_EscalateBackToTimer</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="Flow_EscalateBackToTimer" sourceRef="Task_Escalate" targetRef="Task_WaitForTimer" />
+    <bpmn:endEvent id="EndEvent_Complete" name="Completed Normally">
+      <bpmn:incoming>Flow_TaskToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_TaskToEnd" sourceRef="Task_WaitForTimer" targetRef="EndEvent_Complete">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${manualComplete == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TimerCycleTest">
+    <bpmndi:BPMNPlane id="BPMNPlane_TimerCycleTest" bpmnElement="TimerCycleProcess">
+      <bpmndi:BPMNShape id="StartEvent_Start_di" bpmnElement="StartEvent_Start">
+        <dc:Bounds x="100" y="100" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_WaitForTimer_di" bpmnElement="Task_WaitForTimer">
+        <dc:Bounds x="200" y="80" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_Escalate_di" bpmnElement="Task_Escalate">
+        <dc:Bounds x="200" y="300" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_Complete_di" bpmnElement="EndEvent_Complete">
+        <dc:Bounds x="562" y="106" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="553" y="142" width="54" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Timer_3x10s_di" bpmnElement="Timer_3x10s">
+        <dc:Bounds x="242" y="142" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="265" y="182" width="62" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartToTask_di" bpmnElement="Flow_StartToTask">
+        <di:waypoint x="136" y="118" />
+        <di:waypoint x="200" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TimerToEscalate_di" bpmnElement="Flow_TimerToEscalate">
+        <di:waypoint x="260" y="178" />
+        <di:waypoint x="260" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_EscalateBackToTimer_di" bpmnElement="Flow_EscalateBackToTimer">
+        <di:waypoint x="260" y="300" />
+        <di:waypoint x="260" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TaskToEnd_di" bpmnElement="Flow_TaskToEnd">
+        <di:waypoint x="320" y="123" />
+        <di:waypoint x="562" y="123" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

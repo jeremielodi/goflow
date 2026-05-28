@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -176,7 +177,6 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 
 func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	jobID, err := uuid.Parse(c.Params("id"))
-
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{
 			"title":   "Validation Error",
@@ -194,13 +194,10 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Normalize variables (supports both simple and typed formats)
 	normalizedVars := normalizeVariablesForExternal(req.Variables)
 
-	// Begin transaction
 	tx, err := ctrl.db.Beginx()
 	if err != nil {
-		fmt.Println("2. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to begin transaction",
@@ -212,7 +209,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	// Get job with execution context
 	jobWithExec, err := ctrl.externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
 	if err != nil {
-		fmt.Println("3. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to fetch job details",
@@ -237,7 +233,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	// Merge variables
 	existingVars, err := ctrl.processInstanceRepo.GetVariables(jobWithExec.ProcessInstanceID)
 	if err != nil {
-		fmt.Println("5. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to fetch variables",
@@ -245,14 +240,11 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Merge normalized variables
 	for k, v := range normalizedVars {
 		existingVars[k] = v
 	}
 
-	// Update variables
 	if err := ctrl.processInstanceRepo.UpsertVariablesTx(tx, jobWithExec.ProcessInstanceID, existingVars); err != nil {
-		fmt.Println("6. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to update variables",
@@ -262,7 +254,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 
 	// Mark job as completed
 	if err := ctrl.externalTaskRepo.CompleteJobTx(tx, jobID); err != nil {
-		fmt.Println("7. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to complete job",
@@ -270,10 +261,141 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Load process graph
-	graphJSON, err := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID)
+	// Store variables for goroutine before potential commit
+	processInstanceID := jobWithExec.ProcessInstanceID
+	executionID := jobWithExec.ExecutionID
+	currentElementID := jobWithExec.CurrentElementID
+
+	// Check if this is a multi-instance child
+	var isChild bool
+	var parentExecID uuid.UUID
+
+	err = tx.Get(&isChild, `
+		SELECT EXISTS(SELECT 1 FROM public.multi_instance_children WHERE child_execution_id = $1)
+	`, executionID)
+
+	if err == nil && isChild {
+		log.Printf("📦 Multi-instance child completed: %s", executionID)
+
+		// Mark child as completed
+		_, err = tx.Exec(`
+			UPDATE public.multi_instance_children 
+			SET status = 'completed', completed_at = NOW()
+			WHERE child_execution_id = $1
+		`, executionID)
+		if err != nil {
+			return err
+		}
+
+		// Get parent execution ID
+		err = tx.Get(&parentExecID, `
+			SELECT parent_execution_id FROM public.multi_instance_children 
+			WHERE child_execution_id = $1
+		`, executionID)
+		if err != nil {
+			return err
+		}
+
+		// Update completed count
+		_, err = tx.Exec(`
+			UPDATE public.multi_instance_executions 
+			SET completed_count = (
+				SELECT COUNT(*) FROM public.multi_instance_children 
+				WHERE parent_execution_id = $1 AND status = 'completed'
+			),
+			updated_at = NOW()
+			WHERE execution_id = $1
+		`, parentExecID)
+		if err != nil {
+			log.Printf("Warning: failed to update completed count: %v", err)
+		}
+
+		// Get current progress
+		var completedCount, totalCount int
+		tx.Get(&completedCount, `
+			SELECT COUNT(*) FROM public.multi_instance_children 
+			WHERE parent_execution_id = $1 AND status = 'completed'
+		`, parentExecID)
+		tx.Get(&totalCount, `
+			SELECT total_count FROM public.multi_instance_executions 
+			WHERE execution_id = $1
+		`, parentExecID)
+
+		log.Printf("📊 Multi-instance progress: %d/%d completed", completedCount, totalCount)
+
+		// Check if this is sequential
+		var isSequential bool
+		tx.Get(&isSequential, `
+			SELECT is_sequential FROM public.multi_instance_executions 
+			WHERE execution_id = $1
+		`, parentExecID)
+
+		if isSequential && completedCount < totalCount {
+			log.Printf("🔄 Sequential: Creating next child %d/%d", completedCount+1, totalCount)
+
+			// Get the activity_id
+			var activityID string
+			tx.Get(&activityID, `
+        SELECT activity_id FROM public.multi_instance_executions 
+        WHERE execution_id = $1
+    `, parentExecID)
+
+			// Set parent to active to create next child
+			_, err = tx.Exec(`
+        UPDATE public.executions 
+        SET current_element_id = $1, status = 'active', updated_at = NOW()
+        WHERE id = $2
+    `, activityID, parentExecID)
+			if err != nil {
+				log.Printf("Warning: failed to update parent: %v", err)
+			}
+
+			// Update loop counter
+			_, err = tx.Exec(`
+        UPDATE public.multi_instance_executions 
+        SET loop_counter = $1, updated_at = NOW()
+        WHERE execution_id = $2
+    `, completedCount+1, parentExecID)
+			if err != nil {
+				log.Printf("Warning: failed to update loop counter: %v", err)
+			}
+
+			// Continue with the rest of the function - don't return early
+			// The parent will be processed when the runtime continues
+		}
+
+		// Check if all children are complete
+		if completedCount >= totalCount && totalCount > 0 {
+			log.Printf("✅ All %d children completed", totalCount)
+
+			// Get next node for parent
+			var parentNodeID string
+			tx.Get(&parentNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, parentExecID)
+
+			// Load graph to find next node
+			graphJSON, err := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID)
+			if err == nil {
+				var graph engine.ProcessGraph
+				json.Unmarshal(graphJSON, &graph)
+
+				if parentNode, ok := graph.Nodes[parentNodeID]; ok && len(parentNode.Outgoing) > 0 {
+					nextNodeID := parentNode.Outgoing[0].TargetRef
+					_, err = tx.Exec(`
+						UPDATE public.executions 
+						SET current_element_id = $1, status = 'active', updated_at = NOW()
+						WHERE id = $2
+					`, nextNodeID, parentExecID)
+					if err != nil {
+						log.Printf("Warning: failed to move parent: %v", err)
+					}
+				}
+			}
+		}
+	}
+
+	// Load process graph for normal flow
+	graphJSON, err := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, processInstanceID)
 	if err != nil {
-		fmt.Println("8. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to load process definition",
@@ -283,7 +405,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 
 	var graph engine.ProcessGraph
 	if err := json.Unmarshal(graphJSON, &graph); err != nil {
-		fmt.Println("9. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Processing Error",
 			"message": "failed to parse process graph",
@@ -291,10 +412,8 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get the current node (could be service task OR boundary event)
-	currentNode, err := ctrl.externalTaskRepo.GetNodeByID(&graph, jobWithExec.CurrentElementID)
+	currentNode, err := ctrl.externalTaskRepo.GetNodeByID(&graph, currentElementID)
 	if err != nil {
-		fmt.Println("10. ", err.Error())
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Configuration Error",
 			"message": "current node not found",
@@ -304,34 +423,17 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 
 	var nextNodeID string
 
-	// Handle different node types
 	switch currentNode.Type {
 	case engine.ServiceTaskType:
-		// This is a regular service task
 		if len(currentNode.Outgoing) == 0 {
-			// No outgoing flows - complete the process
-			if err := ctrl.externalTaskRepo.CompleteProcessInstanceTx(tx, jobWithExec.ProcessInstanceID); err != nil {
-				return c.Status(500).JSON(fiber.Map{
-					"title":   "Database Error",
-					"message": "failed to complete process instance",
-					"error":   err.Error(),
-				})
+			if err := ctrl.externalTaskRepo.CompleteProcessInstanceTx(tx, processInstanceID); err != nil {
+				return err
 			}
-			if err := ctrl.externalTaskRepo.CompleteExecutionTx(tx, jobWithExec.ExecutionID); err != nil {
-				fmt.Println("12. ", err.Error())
-				return c.Status(500).JSON(fiber.Map{
-					"title":   "Database Error",
-					"message": "failed to complete execution",
-					"error":   err.Error(),
-				})
+			if err := ctrl.externalTaskRepo.CompleteExecutionTx(tx, executionID); err != nil {
+				return err
 			}
 			if err := tx.Commit(); err != nil {
-				fmt.Println("14. ", err.Error())
-				return c.Status(500).JSON(fiber.Map{
-					"title":   "Database Error",
-					"message": "failed to commit transaction",
-					"error":   err.Error(),
-				})
+				return err
 			}
 			return c.JSON(fiber.Map{
 				"title":   "Success",
@@ -341,15 +443,10 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		}
 		nextNodeID, err = common.ResolveNext(currentNode, existingVars)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"title":   "Execution Error",
-				"message": "failed to resolve next node",
-				"error":   err.Error(),
-			})
+			return err
 		}
 
 	case engine.BoundaryTimerEventType:
-		// This is a boundary timer event - follow its outgoing flow
 		if len(currentNode.Outgoing) == 0 {
 			return c.Status(500).JSON(fiber.Map{
 				"title":   "Configuration Error",
@@ -358,7 +455,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 			})
 		}
 		nextNodeID = currentNode.Outgoing[0].TargetRef
-		// log.Printf("Boundary event %s completed, moving to node %s", currentNode.ID, nextNodeID)
 
 	default:
 		return c.Status(500).JSON(fiber.Map{
@@ -368,33 +464,31 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	// Move execution to next node
-	if err := ctrl.externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, jobWithExec.ExecutionID, nextNodeID); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to update execution",
-			"error":   err.Error(),
-		})
+	if err := ctrl.externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, executionID, nextNodeID); err != nil {
+		return err
 	}
 
-	// Commit transaction
 	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to commit transaction",
-			"error":   err.Error(),
-		})
+		return err
 	}
 
-	// Resume execution outside transaction
+	// Resume current execution
 	rt := runtime.NewRuntime(&graph, ctrl.db)
-	if err := rt.ExecuteExecution(c.Context(), jobWithExec.ExecutionID); err != nil {
+	if err := rt.ExecuteExecution(c.Context(), executionID); err != nil {
 		log.Printf("Execution resume error: %v", err)
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Execution Error",
 			"message": "failed to resume process execution",
 			"error":   err.Error(),
 		})
+	}
+
+	engineRepo := repository.NewEngineRepository(ctrl.db)
+	// Get the execution that owns this job
+	exec, err := engineRepo.GetExecutionByID(executionID)
+	if exec != nil && exec.ParentExecutionID != nil {
+		// This is a multi-instance child - trigger progression
+		rt.OnMultiInstanceChildCompleted(context.Background(), exec.ID)
 	}
 
 	return c.JSON(fiber.Map{
@@ -493,26 +587,30 @@ func (ctrl *ExternalTaskController) GetJobs(c *fiber.Ctx) error {
 	processInstanceID := c.Query("processInstanceId")
 	topic := c.Query("topic")
 
-	// process_order
-	// process_order
 	var jobs []models.Job
-	query := `SELECT id, process_instance_id, execution_id, job_type, status, payload, retries, created_at, updated_at FROM public.jobs WHERE status = 'pending'`
+	query := `
+		SELECT 
+			id, process_instance_id, execution_id, job_type, status, 
+			payload, retries, created_at, updated_at, completed_at 
+		FROM public.jobs WHERE 1=1`
 
 	if processInstanceID != "" {
 		pid, err := uuid.Parse(processInstanceID)
 		if err == nil {
 			query += " AND process_instance_id = $1"
 			if topic != "" {
-				query += " AND job_type = $2"
+				query += " AND job_type = $2 ORDER BY created_at DESC"
 				ctrl.db.Select(&jobs, query, pid, topic)
 			} else {
+				query += " ORDER BY created_at DESC"
 				ctrl.db.Select(&jobs, query, pid)
 			}
 		}
 	} else if topic != "" {
-		query += " AND job_type = $1"
+		query += " AND job_type = $1 ORDER BY created_at DESC"
 		ctrl.db.Select(&jobs, query, topic)
 	} else {
+		query += " ORDER BY created_at DESC"
 		ctrl.db.Select(&jobs, query)
 	}
 

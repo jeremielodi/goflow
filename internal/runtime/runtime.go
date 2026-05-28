@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
@@ -441,6 +442,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return err
 		}
 
+		log.Printf("🔍 ExecuteExecution loop: currentID=%s, node.Type=%s, node.MultiInstance=%v",
+			currentID, node.Type, node.MultiInstance != nil)
+
 		switch node.Type {
 		case engine.StartEventType, engine.ExclusiveGatewayType:
 			next, err := common.ResolveNext(node, variables)
@@ -468,6 +472,18 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, currentID, next, variables)
 
 		case engine.ServiceTaskType:
+			if node.MultiInstance != nil {
+				// Check if this execution is already a child
+				if exec.ParentExecutionID != nil {
+					// This is a child - process as regular service task
+					log.Printf("📦 Multi-instance child %s processing service task %s", exec.ID, node.ID)
+					// Fall through to regular service task handling (create job)
+				} else if node.MultiInstance != nil {
+					// This is the parent - handle multi-instance coordination
+					return r.handleMultiInstance(ctx, exec, node, variables)
+				}
+			}
+
 			// Begin transaction
 			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
@@ -514,6 +530,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return nil
 
 		case engine.UserTaskType:
+			if node.MultiInstance != nil {
+				return r.handleMultiInstance(ctx, exec, node, variables)
+			}
 			// Begin transaction
 			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
@@ -538,26 +557,63 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 			// If there's a boundary timer, schedule it
 			if attachedTimer != nil && attachedTimer.TimerDefinition != "" {
-				timerDuration := parseTimerDuration(attachedTimer.TimerDefinition)
+				// Check if it's a cycle
+				var totalCycles int = 1
+				var repeatInterval string = ""
+				var cycleCount int = 0
+				var timerDuration time.Duration
+
+				// Parse timer definition for cycles
+				if strings.Contains(attachedTimer.TimerDefinition, "timeCycle") {
+					cycleStr := extractCycleString(attachedTimer.TimerDefinition)
+					cycle, err := ParseTimerCycle(cycleStr)
+					if err == nil {
+						totalCycles = cycle.Remaining
+						repeatInterval = formatDuration(cycle.Interval)
+						cycleCount = 0
+						timerDuration = cycle.Interval
+					} else {
+						log.Printf("⚠️ Failed to parse timer cycle: %v, using fallback", err)
+						timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
+					}
+				} else {
+					timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
+				}
+
 				dueAt := time.Now().Add(timerDuration)
 
-				log.Printf("⏰ [CREATE TIMER] Task: %s, Duration: %v, DueAt: %s",
-					node.ID, timerDuration, dueAt.Format("15:04:05.000"))
+				log.Printf("⏰ [CREATE TIMER] Task: %s, Duration: %v, DueAt: %s, IsCycle: %v, TotalCycles: %d",
+					node.ID, timerDuration, dueAt.Format("15:04:05.000"),
+					totalCycles != 1 || repeatInterval != "", totalCycles)
 
 				// Get the next node after the boundary event
 				var nextNodeID string
 				if len(attachedTimer.Outgoing) > 0 {
 					nextNodeID = attachedTimer.Outgoing[0].TargetRef
+					log.Printf("📌 Next node: %s", nextNodeID)
 				}
 
+				// Create payload with cycle info
+				payload := map[string]interface{}{
+					"target_node_id":    nextNodeID,
+					"event_type":        "boundary",
+					"is_cycle":          totalCycles != 1 || repeatInterval != "",
+					"total_cycles":      totalCycles,
+					"repeat_interval":   repeatInterval,
+					"current_cycle":     0,
+					"original_duration": timerDuration.String(),
+				}
+				payloadBytes, _ := json.Marshal(payload)
+
 				timerID := uuid.New()
-				err = engineRepo.CreateTimerTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, nextNodeID, dueAt, "boundary")
+				err = engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt, "boundary", payloadBytes, cycleCount, totalCycles, repeatInterval)
 				if err != nil {
 					return fmt.Errorf("failed to create timer: %w", err)
 				}
 
 				r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "boundary")
 			}
+
 			// Resolve assignee and candidate group
 			var assignee *string
 			if node.AssigneeExpr != nil {
@@ -604,9 +660,68 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
 			return nil
 
+		case engine.ScriptTaskType:
+			// Execute script task
+			if node.Script != nil {
+				log.Printf("📜 Executing script task: %s", node.ID)
+
+				// Execute the script (simplified - you may want to use a proper JS engine)
+				scriptResult, err := executeScript(*node.Script, variables)
+				if err != nil {
+					return fmt.Errorf("script execution failed: %w", err)
+				}
+
+				// Merge script results into variables
+				if scriptResult != nil {
+					for k, v := range scriptResult {
+						variables[k] = v
+					}
+
+					// Update variables in database
+					tx, err := r.DB.Beginx()
+					if err != nil {
+						return err
+					}
+					defer tx.Rollback()
+
+					err = engineRepo.UpdateProcessVariablesTx(tx, exec.ProcessInstanceID, variables)
+					if err != nil {
+						return err
+					}
+
+					if err := tx.Commit(); err != nil {
+						return err
+					}
+				}
+			}
+
+			// Move to next node
+			next, err := common.ResolveNext(node, variables)
+			if err != nil {
+				return err
+			}
+
+			tx, err := r.DB.Beginx()
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback()
+
+			err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next)
+			if err != nil {
+				tx.Rollback()
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+
+			currentID = next
+			continue
 		case engine.BoundaryTimerEventType:
 			// This node is reached when a timer fires
-			// Move to the target node (Task_Escalate)
+			// Move to the target node
 			if len(node.Outgoing) == 0 {
 				return fmt.Errorf("boundary timer event %s has no outgoing flow", node.ID)
 			}
@@ -646,7 +761,29 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			defer tx.Rollback()
 
 			if node.TimerDefinition != "" {
-				timerDuration := parseTimerDuration(node.TimerDefinition)
+				// Parse timer definition for cycles
+				var totalCycles int = 1
+				var repeatInterval string = ""
+				var cycleCount int = 0
+				var timerDuration time.Duration
+
+				// Check if it's a cycle
+				if strings.Contains(node.TimerDefinition, "timeCycle") {
+					cycleStr := extractCycleString(node.TimerDefinition)
+					cycle, err := ParseTimerCycle(cycleStr)
+					if err == nil {
+						totalCycles = cycle.Remaining
+						repeatInterval = formatDuration(cycle.Interval)
+						cycleCount = 0
+						timerDuration = cycle.Interval
+					} else {
+						log.Printf("⚠️ Failed to parse timer cycle: %v, using fallback", err)
+						timerDuration = parseTimerDuration(node.TimerDefinition)
+					}
+				} else {
+					timerDuration = parseTimerDuration(node.TimerDefinition)
+				}
+
 				dueAt := time.Now().Add(timerDuration)
 
 				var nextNodeID string
@@ -654,8 +791,31 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 					nextNodeID = node.Outgoing[0].TargetRef
 				}
 
+				// Create payload with cycle info
+				payload := map[string]interface{}{
+					"target_node_id":    nextNodeID,
+					"event_type":        "intermediate",
+					"is_cycle":          totalCycles != 1 || repeatInterval != "",
+					"total_cycles":      totalCycles,
+					"repeat_interval":   repeatInterval,
+					"current_cycle":     0,
+					"original_duration": timerDuration.String(),
+				}
+				payloadBytes, _ := json.Marshal(payload)
+
 				timerID := uuid.New()
-				err = engineRepo.CreateTimerTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, nextNodeID, dueAt, "intermediate")
+				err = engineRepo.CreateTimerWithCycleTx(
+					tx,
+					timerID,
+					exec.ProcessInstanceID,
+					&exec.ID,
+					dueAt,
+					"intermediate",
+					payloadBytes,
+					cycleCount,
+					totalCycles,
+					repeatInterval,
+				)
 				if err != nil {
 					return fmt.Errorf("failed to create timer: %w", err)
 				}
@@ -811,6 +971,222 @@ func resolveExpression(expr string, vars map[string]interface{}) string {
 	// Otherwise treat as literal string
 	return expr
 }
+
+// internal/runtime/runtime.go
+
+// internal/runtime/runtime.go
+
+func (r *Runtime) handleMultiInstance(ctx context.Context, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
+	engineRepo := repository.NewEngineRepository(r.DB)
+	miHandler := NewMultiInstanceHandler(r.DB)
+
+	// Check if multi-instance already exists
+	var miExec models.MultiInstanceExecution
+	query := `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`
+	err := r.DB.Get(&miExec, query, exec.ID)
+
+	if err != nil {
+		// First time - create multi-instance
+		totalCount := 1 // Default
+		if node.MultiInstance != nil && node.MultiInstance.LoopCardinality != "" {
+			totalCount, err = miHandler.ParseLoopCardinality(node.MultiInstance.LoopCardinality, variables)
+			if err != nil {
+				log.Printf("Warning: failed to parse loop cardinality: %v", err)
+				totalCount = 1
+			}
+		}
+
+		// Get input collection if specified
+		var inputItems []interface{}
+		if node.MultiInstance != nil && node.MultiInstance.InputDataItem != "" {
+			inputItems, err = miHandler.GetInputCollection(node.MultiInstance.InputDataItem, variables)
+			if err == nil && len(inputItems) > 0 {
+				totalCount = len(inputItems)
+			}
+		}
+
+		isSequential := false
+		if node.MultiInstance != nil {
+			isSequential = node.MultiInstance.IsSequential
+		}
+
+		tx, err := r.DB.Beginx()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+
+		// Create multi-instance record
+		miExecID := uuid.New()
+		_, err = tx.Exec(`
+            INSERT INTO public.multi_instance_executions 
+            (id, process_instance_id, execution_id, activity_id, is_sequential, total_count, 
+             completed_count, status, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, 0, 'active', NOW(), NOW())
+        `, miExecID, exec.ProcessInstanceID, exec.ID, node.ID, isSequential, totalCount)
+		if err != nil {
+			return err
+		}
+
+		// Set parent execution to waiting
+		err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+		if err != nil {
+			return err
+		}
+
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+
+		// Get the created miExec record
+		err = r.DB.Get(&miExec, query, exec.ID)
+		if err != nil {
+			return err
+		}
+
+		if isSequential {
+			// Sequential: create only first child
+			return r.createSequentialChild(ctx, exec.ID, &miExec, node, node.ID, 0, variables, inputItems)
+		} else {
+			// Parallel: create all children at once
+			return r.createParallelChildren(ctx, exec.ID, &miExec, node, node.ID, totalCount, variables, inputItems)
+		}
+	}
+	return r.checkMultiInstanceCompletion(ctx, exec, node, &miExec, variables)
+}
+
+// internal/runtime/runtime.go
+func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, taskNodeID string, loopIndex int, variables map[string]interface{}, inputItems []interface{}) error {
+	if loopIndex >= miExec.TotalCount {
+		log.Printf("✅ Sequential: All children created, completing multi-instance")
+		return r.completeMultiInstance(ctx, parentExecID, miExec, node, variables)
+	}
+
+	log.Printf("📝 createSequentialChild: parentExecID=%s, loopIndex=%d, totalCount=%d", parentExecID, loopIndex, miExec.TotalCount)
+
+	// Get element value for this iteration
+	var elementValue string
+	if len(inputItems) > loopIndex && inputItems[loopIndex] != nil {
+		elementValue = fmt.Sprintf("%v", inputItems[loopIndex])
+	} else {
+		elementValue = fmt.Sprintf("%d", loopIndex+1)
+	}
+
+	log.Printf("📦 Creating sequential child %d/%d with value: %s", loopIndex+1, miExec.TotalCount, elementValue)
+
+	tx, err := r.DB.Beginx()
+	if err != nil {
+		log.Printf("❌ Failed to begin transaction: %v", err)
+		return err
+	}
+	defer tx.Rollback()
+
+	// Update loop counter FIRST
+	_, err = tx.Exec(`
+        UPDATE public.multi_instance_executions 
+        SET loop_counter = $1, updated_at = NOW() 
+        WHERE id = $2
+    `, loopIndex+1, miExec.ID)
+	if err != nil {
+		log.Printf("❌ Failed to update loop counter: %v", err)
+		return err
+	}
+
+	// Create child execution
+	childExecID := uuid.New()
+	_, err = tx.Exec(`
+        INSERT INTO public.executions 
+        (id, process_instance_id, current_element_id, status, is_active, parent_execution_id, created_at, updated_at)
+        VALUES ($1, $2, $3, 'active', true, $4, NOW(), NOW())
+    `, childExecID, miExec.ProcessInstanceID, taskNodeID, parentExecID)
+	if err != nil {
+		log.Printf("❌ Failed to create child execution: %v", err)
+		return err
+	}
+
+	// Record child relationship
+	_, err = tx.Exec(`
+        INSERT INTO public.multi_instance_children 
+        (parent_execution_id, child_execution_id, loop_index, element_value, status, created_at)
+        VALUES ($1, $2, $3, $4, 'active', NOW())
+    `, parentExecID, childExecID, loopIndex, elementValue)
+	if err != nil {
+		log.Printf("❌ Failed to record child relationship: %v", err)
+		return err
+	}
+
+	// Set element variable if specified
+	if node.MultiInstance != nil && node.MultiInstance.ElementVariable != "" && elementValue != "" {
+		miHandler := NewMultiInstanceHandler(r.DB)
+		err = miHandler.SetProcessVariable(tx, miExec.ProcessInstanceID, node.MultiInstance.ElementVariable, elementValue)
+		if err != nil {
+			log.Printf("⚠️ Warning: failed to set element variable: %v", err)
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("❌ Failed to commit transaction: %v", err)
+		return err
+	}
+
+	log.Printf("✅ Successfully created child %d/%d with ID: %s", loopIndex+1, miExec.TotalCount, childExecID)
+
+	// Execute child
+	rt := NewRuntime(r.Graph, r.DB)
+	log.Printf("🔍 About to launch goroutine for child %s", childExecID)
+	go func() {
+		log.Printf("🔍 GOROUTINE RUNNING for child %s", childExecID)
+		err := rt.ExecuteExecution(context.Background(), childExecID)
+		log.Printf("🔍 GOROUTINE DONE for child %s, err=%v", childExecID, err)
+	}()
+
+	return nil
+}
+
+// func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, variables map[string]interface{}) error {
+// 	engineRepo := repository.NewEngineRepository(r.DB)
+
+// 	log.Printf("🏁 Completing multi-instance task %s", node.ID)
+
+// 	tx, err := r.DB.Beginx()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	defer tx.Rollback()
+
+// 	// Mark multi-instance as completed
+// 	_, err = tx.Exec(`
+//         UPDATE public.multi_instance_executions
+//         SET status = 'completed', updated_at = NOW()
+//         WHERE id = $1
+//     `, miExec.ID)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	// Get next node after the multi-instance task
+// 	var nextNodeID string
+// 	if len(node.Outgoing) > 0 {
+// 		nextNodeID = node.Outgoing[0].TargetRef
+// 	}
+
+// 	log.Printf("Parent moving from %s to %s", node.ID, nextNodeID)
+
+// 	// Update parent execution to move to next node
+// 	err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, parentExecID, "active", nextNodeID)
+// 	if err != nil {
+// 		return err
+// 	}
+
+// 	if err := tx.Commit(); err != nil {
+// 		return err
+// 	}
+
+// 	// Resume parent execution
+// 	rt := NewRuntime(r.Graph, r.DB)
+// 	return rt.ExecuteExecution(ctx, parentExecID)
+// }
 
 // ------------------------------------------------------------
 // Timer Worker - Call this from main.go to start timer processing
