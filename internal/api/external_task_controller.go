@@ -488,7 +488,7 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	exec, err := engineRepo.GetExecutionByID(executionID)
 	if exec != nil && exec.ParentExecutionID != nil {
 		// This is a multi-instance child - trigger progression
-		rt.OnMultiInstanceChildCompleted(context.Background(), exec.ID)
+		rt.OnMultiInstanceChildCompleted(context.Background(), exec.ID, map[string]interface{}{})
 	}
 
 	return c.JSON(fiber.Map{

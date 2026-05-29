@@ -10,6 +10,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/internal/worker"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -18,14 +19,16 @@ type ProcessInstanceController struct {
 	taskService         *service.TaskService
 	processRepo         *repository.ProcessRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
+	workerPool          *worker.WorkerPool // Add this field
 }
 
-func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService) *ProcessInstanceController {
+func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService, workerPool *worker.WorkerPool) *ProcessInstanceController {
 	return &ProcessInstanceController{
 		db:                  db,
 		taskService:         taskService,
 		processRepo:         repository.NewProcessRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+		workerPool:          workerPool,
 	}
 }
 
@@ -233,5 +236,45 @@ func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{
 		"message": "task completed successfully",
+	})
+}
+
+// Add this to process_instance_controller.go
+
+// StartProcessAsync - Non-blocking version using worker pool
+func (pc *ProcessInstanceController) StartProcessAsync(c *fiber.Ctx) error {
+	processKey := c.Params("key")
+
+	var body StartProcessRequest
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{
+			"title":   "Validation Error",
+			"message": "invalid request body",
+			"error":   err.Error(),
+		})
+	}
+
+	normalizedVars := normalizeVariables(body.Variables)
+
+	job := worker.Job{
+		Type:       "start_process",
+		ProcessKey: processKey,
+		Variables:  normalizedVars,
+	}
+
+	if err := pc.workerPool.Submit(job); err != nil {
+		return c.Status(503).JSON(fiber.Map{
+			"title":   "Server Busy",
+			"message": "Server is under heavy load",
+			"error":   err.Error(),
+		})
+	}
+
+	return c.Status(202).JSON(fiber.Map{
+		"title":      "Accepted",
+		"message":    "Process start request accepted",
+		"requestId":  job.ID,
+		"status":     "queued",
+		"queue_size": pc.workerPool.GetQueueLength(),
 	})
 }

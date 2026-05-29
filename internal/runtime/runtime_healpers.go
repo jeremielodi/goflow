@@ -410,8 +410,8 @@ func formatDuration(d time.Duration) string {
 }
 
 // OnMultiInstanceChildCompleted MUST be called from your external-task/complete API
-// after the job is marked completed. This drives sequential progression.
-func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID uuid.UUID) error {
+// In runtime.go - update OnMultiInstanceChildCompleted
+func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID uuid.UUID, result interface{}) error {
 	engineRepo := repository.NewEngineRepository(r.DB)
 
 	// Get the child execution
@@ -432,9 +432,9 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 	// Get the multi-instance record for the parent
 	var miExec models.MultiInstanceExecution
 	err = r.DB.Get(&miExec, `
-		SELECT * FROM public.multi_instance_executions 
-		WHERE execution_id = $1 AND status = 'active'
-	`, parentExecID)
+        SELECT * FROM public.multi_instance_executions 
+        WHERE execution_id = $1 AND status = 'active'
+    `, parentExecID)
 	if err != nil {
 		return fmt.Errorf("no active multi-instance for parent %s: %w", parentExecID, err)
 	}
@@ -445,27 +445,56 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 		return fmt.Errorf("failed to get multi-instance activity node: %w", err)
 	}
 
-	// --- Mark child completed ---
+	// Get variables
+	variables, err := engineRepo.GetProcessVariables(miExec.ProcessInstanceID)
+	if err != nil {
+		variables = make(map[string]interface{})
+	}
+
+	// Get child info
+	var child struct {
+		LoopIndex    int    `db:"loop_index"`
+		ElementValue string `db:"element_value"`
+	}
+	err = r.DB.Get(&child, `
+        SELECT loop_index, element_value FROM public.multi_instance_children 
+        WHERE child_execution_id = $1
+    `, childExecID)
+	if err != nil {
+		return err
+	}
+
+	miHandler := NewMultiInstanceHandler(r.DB)
+
+	// --- Mark child completed and store output ---
 	tx, err := r.DB.Beginx()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
+	// Add result to output collection if configured
+	if node.MultiInstance != nil && node.MultiInstance.OutputDataItem != "" && result != nil {
+		err = miHandler.AppendToOutputCollection(tx, miExec.ProcessInstanceID, node.MultiInstance.OutputDataItem, result)
+		if err != nil {
+			log.Printf("Warning: failed to append to output collection: %v", err)
+		}
+	}
+
 	_, err = tx.Exec(`
-		UPDATE public.multi_instance_children 
-		SET status = 'completed', completed_at = NOW() 
-		WHERE child_execution_id = $1
-	`, childExecID)
+        UPDATE public.multi_instance_children 
+        SET status = 'completed', completed_at = NOW() 
+        WHERE child_execution_id = $1
+    `, childExecID)
 	if err != nil {
 		return fmt.Errorf("failed to mark child completed: %w", err)
 	}
 
 	_, err = tx.Exec(`
-		UPDATE public.executions 
-		SET status = 'completed', is_active = false, updated_at = NOW() 
-		WHERE id = $1
-	`, childExecID)
+        UPDATE public.executions 
+        SET status = 'completed', is_active = false, updated_at = NOW() 
+        WHERE id = $1
+    `, childExecID)
 	if err != nil {
 		return fmt.Errorf("failed to complete child execution: %w", err)
 	}
@@ -473,18 +502,18 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 	// Count completed children
 	var completedCount int
 	err = tx.Get(&completedCount, `
-		SELECT COUNT(*) FROM public.multi_instance_children 
-		WHERE parent_execution_id = $1 AND status = 'completed'
-	`, parentExecID)
+        SELECT COUNT(*) FROM public.multi_instance_children 
+        WHERE parent_execution_id = $1 AND status = 'completed'
+    `, parentExecID)
 	if err != nil {
 		return fmt.Errorf("failed to count completed: %w", err)
 	}
 
 	_, err = tx.Exec(`
-		UPDATE public.multi_instance_executions 
-		SET completed_count = $1, updated_at = NOW() 
-		WHERE id = $2
-	`, completedCount, miExec.ID)
+        UPDATE public.multi_instance_executions 
+        SET completed_count = $1, updated_at = NOW() 
+        WHERE id = $2
+    `, completedCount, miExec.ID)
 	if err != nil {
 		return fmt.Errorf("failed to update progress: %w", err)
 	}
@@ -496,44 +525,38 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 	log.Printf("📊 Multi-instance progress: %d/%d completed (sequential=%v)",
 		completedCount, miExec.TotalCount, miExec.IsSequential)
 
-	// All done?
-	if completedCount >= miExec.TotalCount {
+	// Check completion condition
+	isComplete, err := miHandler.EvaluateCompletionCondition(*miExec.CompletionCondition, completedCount, miExec.TotalCount, variables)
+	if err != nil {
+		log.Printf("Warning: completion condition evaluation failed: %v", err)
+		isComplete = completedCount >= miExec.TotalCount
+	}
+
+	if isComplete {
 		log.Printf("✅ All %d children done — completing multi-instance", miExec.TotalCount)
-		return r.completeMultiInstance(ctx, parentExecID, &miExec, node, nil)
+		return r.completeMultiInstance(ctx, parentExecID, &miExec, node, variables)
 	}
 
 	// Sequential: spawn next child immediately
-	if miExec.IsSequential {
+	if miExec.IsSequential && completedCount < miExec.TotalCount {
 		log.Printf("🔄 Sequential: spawning child %d/%d", completedCount+1, miExec.TotalCount)
+
+		// Get fresh variables for next child
 		vars, err := engineRepo.GetProcessVariables(miExec.ProcessInstanceID)
 		if err != nil {
 			vars = make(map[string]interface{})
 		}
-		// Signature: createSequentialChild(ctx, parentExecID, miExec, node, taskNodeID, loopIndex, variables, inputItems)
-		// taskNodeID = node.ID (the multi-instance task itself)
-		return r.createSequentialChild(ctx, parentExecID, &miExec, node, node.ID, completedCount, vars, nil)
-	}
 
-	log.Printf("🔍 Parent=%s, Completed=%d, Total=%d, Sequential=%v",
-		parentExecID, completedCount, miExec.TotalCount, miExec.IsSequential)
-
-	if completedCount >= miExec.TotalCount {
-		log.Printf("🔍 ALL DONE - calling completeMultiInstance")
-		return r.completeMultiInstance(ctx, parentExecID, &miExec, node, nil)
-	}
-
-	if miExec.IsSequential {
-		log.Printf("🔍 SPAWNING NEXT CHILD at index %d", completedCount)
-		vars, err := engineRepo.GetProcessVariables(miExec.ProcessInstanceID)
-		if err != nil {
-			vars = make(map[string]interface{})
+		// Get input items if specified
+		var inputItems []interface{}
+		if node.MultiInstance != nil && node.MultiInstance.InputDataItem != "" {
+			inputItems, _ = miHandler.GetInputCollection(node.MultiInstance.InputDataItem, vars)
 		}
-		err = r.createSequentialChild(ctx, parentExecID, &miExec, node, node.ID, completedCount, vars, nil)
-		log.Printf("🔍 createSequentialChild returned: %v", err)
-		return err
+
+		return r.createSequentialChild(ctx, parentExecID, &miExec, node, node.ID, completedCount, vars, inputItems)
 	}
 
-	log.Printf("🔍 Parallel - waiting")
+	log.Printf("🔍 Parallel - waiting for all children")
 	return nil
 }
 

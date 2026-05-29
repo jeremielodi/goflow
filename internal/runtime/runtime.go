@@ -1056,6 +1056,7 @@ func (r *Runtime) handleMultiInstance(ctx context.Context, exec *repository.Exec
 }
 
 // internal/runtime/runtime.go
+// In runtime.go - update createSequentialChild
 func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, taskNodeID string, loopIndex int, variables map[string]interface{}, inputItems []interface{}) error {
 	if loopIndex >= miExec.TotalCount {
 		log.Printf("✅ Sequential: All children created, completing multi-instance")
@@ -1065,14 +1066,14 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 	log.Printf("📝 createSequentialChild: parentExecID=%s, loopIndex=%d, totalCount=%d", parentExecID, loopIndex, miExec.TotalCount)
 
 	// Get element value for this iteration
-	var elementValue string
+	var elementValue interface{}
 	if len(inputItems) > loopIndex && inputItems[loopIndex] != nil {
-		elementValue = fmt.Sprintf("%v", inputItems[loopIndex])
+		elementValue = inputItems[loopIndex]
 	} else {
 		elementValue = fmt.Sprintf("%d", loopIndex+1)
 	}
 
-	log.Printf("📦 Creating sequential child %d/%d with value: %s", loopIndex+1, miExec.TotalCount, elementValue)
+	log.Printf("📦 Creating sequential child %d/%d with value: %v", loopIndex+1, miExec.TotalCount, elementValue)
 
 	tx, err := r.DB.Beginx()
 	if err != nil {
@@ -1109,15 +1110,16 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
         INSERT INTO public.multi_instance_children 
         (parent_execution_id, child_execution_id, loop_index, element_value, status, created_at)
         VALUES ($1, $2, $3, $4, 'active', NOW())
-    `, parentExecID, childExecID, loopIndex, elementValue)
+    `, parentExecID, childExecID, loopIndex, fmt.Sprintf("%v", elementValue))
 	if err != nil {
 		log.Printf("❌ Failed to record child relationship: %v", err)
 		return err
 	}
 
+	miHandler := NewMultiInstanceHandler(r.DB)
+
 	// Set element variable if specified
-	if node.MultiInstance != nil && node.MultiInstance.ElementVariable != "" && elementValue != "" {
-		miHandler := NewMultiInstanceHandler(r.DB)
+	if node.MultiInstance != nil && node.MultiInstance.ElementVariable != "" {
 		err = miHandler.SetProcessVariable(tx, miExec.ProcessInstanceID, node.MultiInstance.ElementVariable, elementValue)
 		if err != nil {
 			log.Printf("⚠️ Warning: failed to set element variable: %v", err)
@@ -1134,11 +1136,10 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 
 	// Execute child
 	rt := NewRuntime(r.Graph, r.DB)
-	log.Printf("🔍 About to launch goroutine for child %s", childExecID)
 	go func() {
-		log.Printf("🔍 GOROUTINE RUNNING for child %s", childExecID)
-		err := rt.ExecuteExecution(context.Background(), childExecID)
-		log.Printf("🔍 GOROUTINE DONE for child %s, err=%v", childExecID, err)
+		if err := rt.ExecuteExecution(context.Background(), childExecID); err != nil {
+			log.Printf("❌ Sequential child %d failed: %v", loopIndex+1, err)
+		}
 	}()
 
 	return nil

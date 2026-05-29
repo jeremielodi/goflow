@@ -30,13 +30,14 @@ func NewProcessDefinitionController(db *sqlx.DB, rootDirPath *string) *ProcessDe
 }
 
 type ProcessDefinition struct {
-	ID        string
-	Key       string
-	Name      string
-	BPMN      string
-	TenantID  *string
-	Graph     *engine.ProcessGraph
-	CreatedAt time.Time
+	ID         string
+	Key        string
+	Name       string
+	BPMN       string
+	TenantID   *string
+	EngineType string
+	Graph      *engine.ProcessGraph
+	CreatedAt  time.Time
 }
 
 func extractProcessKeys(xmlBytes []byte) ([]string, error) {

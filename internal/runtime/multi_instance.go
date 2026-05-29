@@ -4,6 +4,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/models"
@@ -198,4 +199,123 @@ func (h *MultiInstanceHandler) GetCompletedChildrenCount(parentExecutionID uuid.
 func (h *MultiInstanceHandler) CompleteMultiInstance(tx *sqlx.Tx, miExecID uuid.UUID) error {
 	_, err := tx.Exec(`UPDATE public.multi_instance_executions SET status = 'completed', updated_at = NOW() WHERE id = $1`, miExecID)
 	return err
+}
+
+// internal/runtime/multi_instance.go
+
+// GetOutputCollection retrieves the output collection variable
+func (h *MultiInstanceHandler) GetOutputCollection(collectionName string, variables map[string]interface{}) ([]interface{}, error) {
+	if collectionName == "" {
+		return nil, nil
+	}
+
+	val, ok := variables[collectionName]
+	if !ok {
+		return []interface{}{}, nil
+	}
+
+	if slice, ok := val.([]interface{}); ok {
+		return slice, nil
+	}
+
+	// Handle string that might be JSON
+	if str, ok := val.(string); ok {
+		var slice []interface{}
+		if err := json.Unmarshal([]byte(str), &slice); err == nil {
+			return slice, nil
+		}
+	}
+
+	return []interface{}{}, nil
+}
+
+// AppendToOutputCollection appends a value to an output collection
+func (h *MultiInstanceHandler) AppendToOutputCollection(tx *sqlx.Tx, processInstanceID uuid.UUID, collectionName string, value interface{}) error {
+	if collectionName == "" {
+		return nil
+	}
+
+	// Get current variables
+	var data []byte
+	err := tx.Get(&data, `SELECT data FROM public.variables WHERE process_instance_id = $1`, processInstanceID)
+
+	vars := make(map[string]interface{})
+	if err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &vars); err != nil {
+			return err
+		}
+	}
+
+	// Get or create collection
+	var collection []interface{}
+	if existing, ok := vars[collectionName]; ok {
+		if slice, ok := existing.([]interface{}); ok {
+			collection = slice
+		}
+	}
+
+	collection = append(collection, value)
+	vars[collectionName] = collection
+
+	newData, err := json.Marshal(vars)
+	if err != nil {
+		return err
+	}
+
+	if err == nil && len(data) > 0 {
+		_, err = tx.Exec(`UPDATE public.variables SET data = $1, updated_at = NOW() WHERE process_instance_id = $2`, newData, processInstanceID)
+	} else {
+		_, err = tx.Exec(`INSERT INTO public.variables (id, process_instance_id, data, updated_at) VALUES ($1, $2, $3, NOW())`,
+			uuid.New(), processInstanceID, newData)
+	}
+
+	return err
+}
+
+// EvaluateCompletionCondition checks if completion condition is met
+func (h *MultiInstanceHandler) EvaluateCompletionCondition(condition string, completedCount, totalCount int, variables map[string]interface{}) (bool, error) {
+	if condition == "" {
+		return completedCount >= totalCount, nil
+	}
+
+	// Add special variables for condition evaluation
+	evalVars := make(map[string]interface{})
+	for k, v := range variables {
+		evalVars[k] = v
+	}
+	evalVars["nrOfCompletedInstances"] = completedCount
+	evalVars["nrOfActiveInstances"] = totalCount - completedCount
+	evalVars["nrOfInstances"] = totalCount
+
+	return EvaluateCondition(condition, evalVars)
+}
+
+// ParseInputCollectionItems parses input collection and returns items with proper typing
+func (h *MultiInstanceHandler) ParseInputCollectionItems(inputCollection string, variables map[string]interface{}) ([]interface{}, error) {
+	if inputCollection == "" {
+		return nil, nil
+	}
+
+	// Check if it's a variable reference like ${items}
+	if strings.HasPrefix(inputCollection, "${") && strings.HasSuffix(inputCollection, "}") {
+		varName := inputCollection[2 : len(inputCollection)-1]
+		return h.GetInputCollection(varName, variables)
+	}
+
+	// Try to parse as JSON array
+	var items []interface{}
+	if err := json.Unmarshal([]byte(inputCollection), &items); err == nil {
+		return items, nil
+	}
+
+	// Try as comma-separated values
+	if strings.Contains(inputCollection, ",") {
+		parts := strings.Split(inputCollection, ",")
+		for _, p := range parts {
+			items = append(items, strings.TrimSpace(p))
+		}
+		return items, nil
+	}
+
+	return nil, nil
 }

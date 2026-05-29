@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -236,7 +237,6 @@ func (r *EngineRepository) UpdateMultiInstanceProgressTx(tx *sqlx.Tx, miExecID u
 	return err
 }
 
-
 // GetMultiInstanceExecution retrieves a multi-instance execution by execution ID
 func (r *EngineRepository) GetMultiInstanceExecution(executionID uuid.UUID) (*models.MultiInstanceExecution, error) {
 	var miExec models.MultiInstanceExecution
@@ -256,9 +256,9 @@ func (r *EngineRepository) GetMultiInstanceExecution(executionID uuid.UUID) (*mo
 }
 
 func (r *EngineRepository) GetMultiInstanceExecutionByParentId(parentExecID uuid.UUID) (*models.MultiInstanceExecution, error) {
-    var mi models.MultiInstanceExecution
-    err := r.db.Get(&mi, `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`, parentExecID)
-    return &mi, err
+	var mi models.MultiInstanceExecution
+	err := r.db.Get(&mi, `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`, parentExecID)
+	return &mi, err
 }
 
 // CompleteMultiInstance marks the multi-instance execution as completed
@@ -536,7 +536,21 @@ func (r *EngineRepository) CreateUserTaskTx(tx *sqlx.Tx, task *UserTask) error {
 	return err
 }
 
-// UpdateProcessInstanceStatus updates the status of a process instance
+// repository/engine_repository.go
+
+// CreateProcessInstanceTx creates a new process instance within a transaction
+func (r *EngineRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, processDefinitionID uuid.UUID, startedAt time.Time) error {
+	query := `
+        INSERT INTO public.process_instances 
+        (id, process_definition_id, status, started_at)
+        VALUES ($1, $2, $3, $4)
+    `
+	// Use 'running' from the enum
+	_, err := tx.Exec(query, instanceID, processDefinitionID, "running", startedAt)
+	return err
+}
+
+// UpdateProcessInstanceStatusTx updates the status of a process instance
 func (r *EngineRepository) UpdateProcessInstanceStatusTx(tx *sqlx.Tx, instanceID uuid.UUID, status string, endedAt *time.Time) error {
 	adapter := database.NewDabaseAdapter(r.db)
 
@@ -559,6 +573,18 @@ func (r *EngineRepository) UpdateProcessInstanceStatusTx(tx *sqlx.Tx, instanceID
 func (r *EngineRepository) CompleteProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
 	return r.UpdateProcessInstanceStatusTx(tx, instanceID, "completed", &[]time.Time{time.Now()}[0])
 }
+
+// // CreateExecutionTx creates a new execution within a transaction
+// func (r *EngineRepository) CreateExecutionTx(tx *sqlx.Tx, execID, processInstanceID uuid.UUID, currentElementID string, createdAt time.Time) error {
+// 	query := `
+//         INSERT INTO public.executions
+//         (id, process_instance_id, current_element_id, status, is_active, created_at, updated_at)
+//         VALUES ($1, $2, $3, $4, $5, $6, $7)
+//     `
+// 	// Use 'active' from execution_status enum
+// 	_, err := tx.Exec(query, execID, processInstanceID, currentElementID, "active", true, createdAt, createdAt)
+// 	return err
+// }
 
 // UpdateProcessVariables updates variables for a process instance
 func (r *EngineRepository) UpdateProcessVariablesTx(tx *sqlx.Tx, instanceID uuid.UUID, variables map[string]interface{}) error {
@@ -679,6 +705,16 @@ func (r *EngineRepository) GetProcessInstanceIDByExecutionID(execID uuid.UUID) (
 	return instanceID, err
 }
 
+func (r *EngineRepository) CreateExecutionTx2(tx *sqlx.Tx, execID, processInstanceID uuid.UUID, currentElementID string, createdAt time.Time) error {
+	query := `
+        INSERT INTO public.executions 
+        (id, process_instance_id, current_element_id, status, is_active, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `
+	_, err := tx.Exec(query, execID, processInstanceID, currentElementID, "active", true, createdAt, createdAt)
+	return err
+}
+
 // CreateExecution creates a new execution
 func (r *EngineRepository) CreateExecutionTx(tx *sqlx.Tx, exec *Execution) error {
 	adapter := database.NewDabaseAdapter(r.db)
@@ -779,4 +815,213 @@ func (r *EngineRepository) LockJob(jobID uuid.UUID, workerID string, lockDuratio
 	}
 	rows, _ := result.RowsAffected()
 	return rows > 0, nil
+}
+
+// Add these missing methods to repository/engine_repository.go
+
+// ============================================================
+// PROCESS DEFINITION METHODS
+// ============================================================
+
+// repository/engine_repository.go
+
+func (r *EngineRepository) FindLatestProcessDefinitionByKey(processKey string) (*models.ProcessDefinition, error) {
+	var def models.ProcessDefinition
+	query := `
+        SELECT id, deployment_id, process_key, process_name, version, is_active, bpmn_xml, parsed_graph, created_at
+        FROM public.process_definitions
+        WHERE process_key = $1 AND is_active = true
+        ORDER BY version DESC
+        LIMIT 1
+    `
+	err := r.db.Get(&def, query, processKey)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("process definition not found for key: %s", processKey)
+		}
+		return nil, err
+	}
+	return &def, nil
+}
+
+// ============================================================
+// VARIABLE METHODS
+// ============================================================
+
+// CreateVariablesTx creates variables for a process instance within a transaction
+func (r *EngineRepository) CreateVariablesTx(tx *sqlx.Tx, instanceID uuid.UUID, variables map[string]interface{}, updatedAt time.Time) error {
+	if len(variables) == 0 {
+		return nil
+	}
+
+	jsonData, err := json.Marshal(variables)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`
+		INSERT INTO public.variables 
+		(id, process_instance_id, data, updated_at)
+		VALUES ($1, $2, $3, $4)
+	`, uuid.New(), instanceID, jsonData, updatedAt)
+	return err
+}
+
+// SetProcessVariableTx sets a single process variable within a transaction
+func (r *EngineRepository) SetProcessVariableTx(tx *sqlx.Tx, instanceID uuid.UUID, key string, value interface{}) error {
+	// Get existing variables
+	var data []byte
+	err := tx.Get(&data, `SELECT data FROM public.variables WHERE process_instance_id = $1`, instanceID)
+
+	vars := make(map[string]interface{})
+	if err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &vars); err != nil {
+			return err
+		}
+	} else if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	vars[key] = value
+
+	newData, err := json.Marshal(vars)
+	if err != nil {
+		return err
+	}
+
+	if len(data) > 0 {
+		_, err = tx.Exec(`UPDATE public.variables SET data = $1, updated_at = NOW() WHERE process_instance_id = $2`, newData, instanceID)
+	} else {
+		_, err = tx.Exec(`INSERT INTO public.variables (id, process_instance_id, data, updated_at) VALUES ($1, $2, $3, NOW())`,
+			uuid.New(), instanceID, newData)
+	}
+	return err
+}
+
+// ============================================================
+// TASK METHODS
+// ============================================================
+
+// GetTaskByID retrieves a task by ID
+func (r *EngineRepository) GetTaskByID(taskID uuid.UUID) (*UserTask, error) {
+	var task UserTask
+	query := `
+		SELECT id, process_instance_id, execution_id, task_definition_key, task_name, 
+		       assignee, candidate_group, status, created_at, completed_at
+		FROM public.tasks
+		WHERE id = $1
+	`
+	err := r.db.Get(&task, query, taskID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &task, nil
+}
+
+// CompleteTask marks a task as completed
+func (r *EngineRepository) CompleteTask(taskID uuid.UUID, variables map[string]interface{}) error {
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Get task to find process instance
+	var task UserTask
+	err = tx.Get(&task, `SELECT id, process_instance_id, execution_id, task_definition_key FROM public.tasks WHERE id = $1`, taskID)
+	if err != nil {
+		return err
+	}
+
+	// Update variables if any
+	if len(variables) > 0 {
+		err = r.MergeProcessVariablesTx(tx, task.ProcessInstanceID, variables)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Mark task as completed
+	_, err = tx.Exec(`UPDATE public.tasks SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, taskID)
+	if err != nil {
+		return err
+	}
+
+	// Get execution and update it
+	_, err = tx.Exec(`UPDATE public.executions SET status = 'active', updated_at = NOW() WHERE id = $1`, task.ExecutionID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// ============================================================
+// PROCESS INSTANCE CREATION (for worker pool)
+// ============================================================
+
+// CreateProcessInstanceWithVariables creates a process instance and its variables in one transaction
+func (r *EngineRepository) CreateProcessInstanceWithVariables(processKey string, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
+	// Get process definition
+	procDef, err := r.FindLatestProcessDefinitionByKey(processKey)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+
+	// Build graph
+	graph, err := engine.BuildGraphForProcess([]byte(procDef.BpmnXML), processKey)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+
+	// Find start node
+	var startNodeID string
+	for _, node := range graph.Nodes {
+		if node.Type == engine.StartEventType {
+			startNodeID = node.ID
+			break
+		}
+	}
+	if startNodeID == "" {
+		return uuid.Nil, uuid.Nil, errors.New("no start event found")
+	}
+
+	// Start transaction
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	defer tx.Rollback()
+
+	// Create process instance
+	instanceID := uuid.New()
+	now := time.Now()
+	err = r.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+
+	// Create variables
+	if len(variables) > 0 {
+		err = r.CreateVariablesTx(tx, instanceID, variables, now)
+		if err != nil {
+			return uuid.Nil, uuid.Nil, err
+		}
+	}
+
+	// Create execution
+	execID := uuid.New()
+	err = r.CreateExecutionTx2(tx, execID, instanceID, startNodeID, now)
+	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+
+	return instanceID, execID, nil
 }
