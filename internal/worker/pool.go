@@ -121,7 +121,7 @@ func (p *WorkerPool) Submit(job Job) error {
 // worker processes jobs from the queue
 func (p *WorkerPool) worker(id int) {
 	defer p.wg.Done()
-	log.Printf("👷 Worker %d started in pool '%s'", id, p.name)
+	// log.Printf("👷 Worker %d started in pool '%s'", id, p.name)
 
 	for job := range p.jobQueue {
 		p.updateActiveWorker(true)
@@ -164,7 +164,7 @@ func (p *WorkerPool) worker(id int) {
 		p.updateActiveWorker(false)
 	}
 
-	log.Printf("👷 Worker %d stopped in pool '%s'", id, p.name)
+	// log.Printf("👷 Worker %d stopped in pool '%s'", id, p.name)
 }
 
 // processJob processes a single job

@@ -139,6 +139,48 @@ CREATE TABLE gateway_state (
     UNIQUE(process_instance_id, gateway_id)
 );
 
+
+
+-- =========================================================
+-- EXECUTIONS (TOKENS)
+-- Core BPMN runtime execution state
+--
+-- Each execution represents a token moving
+-- through the process graph.
+--
+-- Parallel gateways later create multiple executions.
+-- =========================================================
+CREATE TABLE executions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique execution token identifier
+    process_instance_id UUID NOT NULL -- Parent process instance
+        REFERENCES process_instances(id)
+        ON DELETE CASCADE,
+    current_element_id TEXT NOT NULL, -- BPMN node ID currently being executed
+    parent_execution_id UUID NULL -- Supports future parallel gateways (hierarchy)
+        REFERENCES executions(id),
+    status execution_status NOT NULL DEFAULT 'active', -- Current execution state
+    is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this token is still active
+    path_id TEXT,
+    gateway_join_id UUID REFERENCES gateway_state(id),
+    branch_variables JSONB,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When execution started
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last state change timestamp
+);
+
+CREATE INDEX idx_executions_process_instance_id
+ON executions(process_instance_id);
+
+CREATE INDEX idx_executions_current_element_id
+ON executions(current_element_id);
+
+CREATE INDEX idx_executions_is_active
+ON executions(is_active);
+
+CREATE INDEX idx_executions_parent_gateway 
+ON executions(parent_execution_id, gateway_join_id) 
+WHERE is_active = true;
+
+
 -- Event subprocess tracking
 CREATE TABLE event_subprocesses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -203,44 +245,6 @@ CREATE INDEX idx_boundary_events_active
 ON boundary_events(process_instance_id, attached_to_id) 
 WHERE is_active = true;
 
--- =========================================================
--- EXECUTIONS (TOKENS)
--- Core BPMN runtime execution state
---
--- Each execution represents a token moving
--- through the process graph.
---
--- Parallel gateways later create multiple executions.
--- =========================================================
-CREATE TABLE executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique execution token identifier
-    process_instance_id UUID NOT NULL -- Parent process instance
-        REFERENCES process_instances(id)
-        ON DELETE CASCADE,
-    current_element_id TEXT NOT NULL, -- BPMN node ID currently being executed
-    parent_execution_id UUID NULL -- Supports future parallel gateways (hierarchy)
-        REFERENCES executions(id),
-    status execution_status NOT NULL DEFAULT 'active', -- Current execution state
-    is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this token is still active
-    path_id TEXT,
-    gateway_join_id UUID REFERENCES gateway_state(id),
-    branch_variables JSONB,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When execution started
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last state change timestamp
-);
-
-CREATE INDEX idx_executions_process_instance_id
-ON executions(process_instance_id);
-
-CREATE INDEX idx_executions_current_element_id
-ON executions(current_element_id);
-
-CREATE INDEX idx_executions_is_active
-ON executions(is_active);
-
-CREATE INDEX idx_executions_parent_gateway 
-ON executions(parent_execution_id, gateway_join_id) 
-WHERE is_active = true;
 -- =========================================================
 -- TASKS
 -- Human workflow/tasklist layer
