@@ -53,3 +53,36 @@ func NewAllowPlayload() *IsAllowPlayload {
 		Nbr: 0,
 	}
 }
+
+type CreateUserRequest struct {
+	Email    string      `json:"email"`
+	FullName string      `json:"full_name"`
+	Password string      `json:"password"`
+	RoleIDs  []uuid.UUID `json:"role_ids,omitempty"`
+}
+
+type UpdateUserRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	FullName string `json:"full_name"`
+	IsActive bool   `json:"is_active"`
+}
+
+type UpdatePasswordRequest struct {
+	CurrentPassword string `json:"current_password" validate:"required"`
+	NewPassword     string `json:"new_password" validate:"required,min=6"`
+}
+
+// LoginRequest represents the login request body
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// LoginResponse represents the login response
+type LoginResponse struct {
+	Token     string   `json:"token"`
+	User      User     `json:"user"`
+	ExpiresAt int64    `json:"expires_at"`
+	Roles     []string `json:"roles,omitempty"`
+	Actions   []string `json:"actions,omitempty"`
+}

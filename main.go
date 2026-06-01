@@ -13,9 +13,16 @@ import (
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/internal/worker"
+	"github.com/jeremielodi/goflow/pkg/authentication"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jeremielodi/goflow/pkg/database"
+	"github.com/jeremielodi/goflow/pkg/middleware"
+	"github.com/jmoiron/sqlx"
 )
+
+func permissions(db *sqlx.DB, code string) fiber.Handler {
+	return middleware.PermissionMiddleware(db, code)
+}
 
 func main() {
 
@@ -79,6 +86,8 @@ func main() {
 	multiInstanceController := api.NewMultiInstanceController(db)
 	// timer-----------------------------------------
 
+	userController := api.NewUserController(db, &authentication.JWTService{})
+
 	timerController := api.NewTimerController(db)
 
 	timerScheduler := service.NewTimerScheduler(db, resumer)
@@ -92,20 +101,57 @@ func main() {
 		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
 	})
 
+	// Initialize role and action controllers
+	roleCtrl := api.NewRoleController(db)
+	actionCtrl := api.NewActionController(db)
+
+	// Role routes (protected with permissions)
+	app.Post("/roles", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.CreateRole)
+	app.Get("/roles", roleCtrl.ListRoles)
+	app.Get("/roles/:id", roleCtrl.GetRole)
+	app.Put("/roles/:id", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.UpdateRole)
+	app.Delete("/roles/:id", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.DeleteRole)
+
+	// User role assignment
+	app.Post("/users/:userId/roles/:roleId", permissions(db, "CAN_MANGE_USER"), roleCtrl.AssignRoleToUser)
+	app.Delete("/users/:userId/roles/:roleId", permissions(db, "CAN_MANGE_USER"), roleCtrl.RemoveRoleFromUser)
+	app.Get("/users/:userId/roles", roleCtrl.GetUserRoles)
+
+	// Action routes
+	app.Get("/actions", actionCtrl.ListActions)
+	app.Post("/roles/:roleId/actions/:actionId", permissions(db, "CAN_EDIT_ROLE"), actionCtrl.AssignActionToRole)
+	app.Delete("/roles/:roleId/actions/:actionId", permissions(db, "CAN_EDIT_ROLE"), actionCtrl.RemoveActionFromRole)
+	app.Get("/roles/:roleId/actions", actionCtrl.GetRoleActions)
+
+	// User routes (protected by your auth middleware)
+	app.Post("/users", permissions(db, "CAN_MANGE_USER"), userController.CreateUser)
+
+	app.Get("/users", permissions(db, "CAN_MANGE_USER"), userController.ListUsers)         // Protected - needs auth
+	app.Get("/users/me", userController.GetCurrentUser)                                    // Protected - gets current user
+	app.Get("/users/:id", userController.GetUser)                                          // Protected
+	app.Get("/users/email/:email", userController.GetUserByEmail)                          // Protected
+	app.Put("/users/:id", userController.UpdateUser)                                       // Protected - own profile only
+	app.Put("/users/:id/password", userController.UpdatePassword)                          // Protected - own password only
+	app.Delete("/users/:id", permissions(db, "CAN_MANGE_USER"), userController.DeleteUser) // Protected - admin only
+
+	// Access control routes
+	app.Get("/users/:id/access/:resource", userController.CheckAccess)
+	app.Get("/users/:id/permission/:actionId", userController.CheckPermission)
+
 	// C8
-	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/v2/deployments", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 
 	// C7
-	app.Post("/engine-rest/v2/deployment/create", processDefinitionCtrl.DeployBPMN)
-	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN)
-	app.Post("/engine-rest/external-task/fetchAndLock", externalTaskCtrl.FetchAndLock)
+	app.Post("/engine-rest/v2/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/external-task/fetchAndLock", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.FetchAndLock)
 	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
 	app.Post("/engine-rest/external-task/:id/failure", externalTaskCtrl.HandleFailure)
 
-	app.Get("/tasks", taskCtrl.GetTasks)
+	app.Get("/tasks", permissions(db, "CAN_READ_TASKS"), taskCtrl.GetTasks)
 	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
-	app.Get("/jobs", externalTaskCtrl.GetJobs)
+	app.Get("/jobs", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJobs)
 
 	// Audit endpoints
 	app.Get("/audit/process/:processId", auditController.GetProcessAuditLogs)

@@ -29,12 +29,6 @@ var PublicRoutes = []string{
 	"/clients",
 	"/drivers",
 	"/ws",
-	"/socket.io",
-	"/images/",
-	"/dictionary",
-	"/form",
-	"/submissions/doc/",
-	"/submissions/E36FBD63D0144736ACC8DD7409A3465E/download.xlsx",
 }
 
 func WithinPublicRoutes(value string, urls []string) bool {
@@ -129,12 +123,4 @@ func getTokenFromAuthorizationHeader(c *fiber.Ctx) (string, error) {
 	}
 
 	return auth, nil
-
-	/*token := strings.Fields(auth)
-	if len(token) != 2 || strings.ToLower(token[0]) != "bearer" || token[1] == "" {
-		return "", fmt.Errorf("authorization header invaild")
-	}
-
-	return auth, nil
-	*/
 }

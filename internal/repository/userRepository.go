@@ -1,3 +1,4 @@
+// internal/repository/user_repository.go
 package repository
 
 import (
@@ -20,6 +21,20 @@ func NewUserRepository(db *sqlx.DB) *UserRepository {
 
 // Create inserts a new user using the adapter style.
 func (r *UserRepository) Create(user models.UserCreateModel) (sql.Result, error) {
+	adapter := database.NewDabaseAdapter(r.db)
+	return adapter.Insert("public.users", []database.QueryParameter{
+		{Key: "id", Value: user.ID},
+		{Key: "email", Value: user.Email},
+		{Key: "full_name", Value: user.FullName},
+		{Key: "password_hash", Value: user.PasswordHash},
+		{Key: "is_active", Value: user.IsActive},
+		{Key: "created_at", Value: time.Now()},
+		{Key: "updated_at", Value: time.Now()},
+	})
+}
+
+// CreateWithTx inserts a new user using the adapter style within a transaction.
+func (r *UserRepository) CreateWithTx(tx *sqlx.Tx, user models.UserCreateModel) (sql.Result, error) {
 	adapter := database.NewDabaseAdapter(r.db)
 	return adapter.Insert("public.users", []database.QueryParameter{
 		{Key: "id", Value: user.ID},
@@ -106,6 +121,11 @@ func (r *UserRepository) Delete(id uuid.UUID) (sql.Result, error) {
 	return r.db.Exec(`DELETE FROM public.users WHERE id = $1`, id)
 }
 
+// DeleteWithTx removes a user by ID within a transaction.
+func (r *UserRepository) DeleteWithTx(tx *sqlx.Tx, id uuid.UUID) (sql.Result, error) {
+	return tx.Exec(`DELETE FROM public.users WHERE id = $1`, id)
+}
+
 // ExistsByEmail checks if email already used.
 func (r *UserRepository) ExistsByEmail(email string) (bool, error) {
 	var count int
@@ -134,9 +154,7 @@ func (r *UserRepository) Login(login models.UserLoginModel) (models.User, error)
 }
 
 // HasAccess, IsAllow etc. remain as you already wrote them
-
 func (u *UserRepository) HasAccess(userUuid string, formUuid string) (bool, error) {
-
 	const sql = `
 		  SELECT count(uuid) as nbr
 	  FROM public.user_form
@@ -148,12 +166,11 @@ func (u *UserRepository) HasAccess(userUuid string, formUuid string) (bool, erro
 }
 
 func (u *UserRepository) IsAllow(actionId *int, userUuid *string) (bool, error) {
-
 	const sql = `
 		  SELECT count(ra.uuid) as nbr
 		  FROM role_actions ra
-		  JOIN user_roles as ur ON ur.rolesUuid = ra.roleUuid
-		  WHERE actionsId =$1 AND ur.userUuid =$2
+		  JOIN user_roles as ur ON ur.roles_id = ra.roles_id
+		  WHERE ra.action_id =$1 AND ur.user_id =$2
 		`
 	result := models.NewAllowPlayload()
 	err := u.db.Get(result, sql, actionId, userUuid)

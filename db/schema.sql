@@ -56,6 +56,55 @@ CREATE TABLE users (
 CREATE INDEX idx_users_email
 ON users(email);
 
+
+CREATE TABLE IF NOT EXISTS roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  label varchar(50) NOT NULL UNIQUE,
+  isDefault INT DEFAULT 0
+)WITH (
+    OIDS = FALSE
+)
+TABLESPACE pg_default;
+
+
+CREATE TABLE IF NOT EXISTS user_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  roles_id UUID NOT NULL,
+  FOREIGN KEY (roles_id) REFERENCES public.roles (id) ON DELETE CASCADE ON UPDATE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES public.users (id) ON DELETE CASCADE ON UPDATE CASCADE
+)
+WITH (
+    OIDS = FALSE
+)
+TABLESPACE pg_default;
+
+
+
+
+CREATE TABLE public.actions (
+  id INT NOT NULL,
+  code VARCHAR(40),
+  description VARCHAR(100) NOT NULL,
+  CONSTRAINT action_pkey PRIMARY KEY (id)
+)WITH (
+    OIDS = FALSE
+)
+TABLESPACE pg_default;
+
+CREATE TABLE public.role_actions(
+  uuid UUID NOT NULL,
+  roles_id UUID NOT NULL,
+  action_id INT NOT NULL,
+  CONSTRAINT role_action_pkey PRIMARY KEY (uuid),
+  CONSTRAINT role_actions__action FOREIGN KEY (action_id) REFERENCES public.actions (id) ON UPDATE CASCADE,
+  CONSTRAINT role_actions__role FOREIGN KEY (roles_id) REFERENCES public.roles (id) ON UPDATE CASCADE  ON DELETE CASCADE
+)WITH (
+    OIDS = FALSE
+)
+TABLESPACE pg_default;
+
+
 -- =========================================================
 -- DEPLOYMENTS
 -- One deployment can contain one or multiple BPMN files
