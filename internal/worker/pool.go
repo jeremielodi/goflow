@@ -327,9 +327,9 @@ func (p *WorkerPool) collectMetrics() {
 func (p *WorkerPool) logMetrics() {
 	p.metrics.mu.RLock()
 	defer p.metrics.mu.RUnlock()
-	log.Printf("📊 Worker Pool '%s': Submitted=%d, Processed=%d, Failed=%d, Retried=%d, Queue=%d, Workers=%d",
-		p.name, p.metrics.JobsSubmitted, p.metrics.JobsProcessed, p.metrics.JobsFailed,
-		p.metrics.JobsRetried, p.metrics.QueueLength, p.metrics.ActiveWorkers)
+	// // log.Printf("📊 Worker Pool '%s': Submitted=%d, Processed=%d, Failed=%d, Retried=%d, Queue=%d, Workers=%d",
+	// 	p.name, p.metrics.JobsSubmitted, p.metrics.JobsProcessed, p.metrics.JobsFailed,
+	// 	p.metrics.JobsRetried, p.metrics.QueueLength, p.metrics.ActiveWorkers)
 }
 
 // GetMetrics returns current metrics

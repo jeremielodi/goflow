@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -615,4 +617,40 @@ func (ctrl *ExternalTaskController) GetJobs(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(jobs)
+}
+
+// GetJobs handles GET /jobs - returns jobs for a process instance
+func (ctrl *ExternalTaskController) GetJob(c *fiber.Ctx) error {
+	id := c.Params("id")
+	// If ID is provided, return single job
+	if id == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   true,
+			"message": "Failed to fetch job",
+		})
+	}
+	var job models.Job
+	query := `
+			SELECT 
+				id, process_instance_id, execution_id, job_type, status, 
+				payload, retries, created_at, updated_at, completed_at 
+			FROM public.jobs WHERE id = $1`
+
+	err := ctrl.db.Get(&job, query, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error":   true,
+				"message": "Job not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   true,
+			"message": "Failed to fetch job",
+			"details": err.Error(),
+		})
+	}
+
+	return c.JSON(job)
+
 }

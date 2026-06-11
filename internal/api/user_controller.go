@@ -53,19 +53,6 @@ func getCurrentUserID(c *fiber.Ctx) (uuid.UUID, error) {
 	return uuid.Parse(userUUID)
 }
 
-// generateUserToken creates a JWT token for the user using the JWT service
-func (uc *UserController) generateUserToken(user models.User) (string, int64, error) {
-	token, err := uc.jwtService.CreateToken(user)
-	if err != nil {
-		return "", 0, err
-	}
-
-	// Get expiration time from JWT service (7 days from now)
-	expiresAt := time.Now().Add(7 * 24 * time.Hour).Unix()
-
-	return token, expiresAt, nil
-}
-
 // ============================================================
 // AUTHENTICATION
 // ============================================================
@@ -134,16 +121,16 @@ func (uc *UserController) Login(c *fiber.Ctx) error {
 		})
 	}
 
-	// Generate token using JWT service
-	token, expiresAt, err := uc.generateUserToken(user)
+	// Generate token pair using JWT service
+	tokenPair, err := uc.jwtService.CreateTokenPair(user)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "Failed to generate token",
+			"error":   "Failed to generate tokens",
 			"message": err.Error(),
 		})
 	}
 
-	// Get user roles and permissions for response
+	// Get user roles and permissions
 	roleRepo := repository.NewRoleRepository(uc.db)
 	actionRepo := repository.NewActionRepository(uc.db)
 
@@ -160,33 +147,82 @@ func (uc *UserController) Login(c *fiber.Ctx) error {
 		actionCodes[i] = action.Code
 	}
 
-	// Set token in cookie (optional - for web clients)
+	// Set refresh token in HTTP-only cookie (optional)
 	c.Cookie(&fiber.Cookie{
-		Name:     "token",
-		Value:    token,
-		Expires:  time.Unix(expiresAt, 0),
+		Name:     "refresh_token",
+		Value:    tokenPair.RefreshToken,
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
 		HTTPOnly: true,
 		Secure:   false, // Set to true in production with HTTPS
 		SameSite: "Lax",
+		Path:     "/auth/refresh",
 	})
 
 	return c.JSON(models.LoginResponse{
-		Token:     token,
-		User:      user,
-		ExpiresAt: expiresAt,
-		Roles:     roleLabels,
-		Actions:   actionCodes,
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+		ExpiresIn:    tokenPair.ExpiresIn,
+		User:         user,
+		Roles:        roleLabels,
+		Actions:      actionCodes,
+	})
+}
+
+// internal/api/user_controller.go - Update the RefreshToken method
+
+// RefreshToken handles POST /auth/refresh
+func (uc *UserController) RefreshToken(c *fiber.Ctx) error {
+	var req models.RefreshTokenRequest
+
+	// Try to get refresh token from body first, then from cookie
+	if err := c.BodyParser(&req); err != nil || req.RefreshToken == "" {
+		// If not in body, try to get from cookie
+		req.RefreshToken = c.Cookies("refresh_token")
+	}
+
+	if req.RefreshToken == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   "Refresh token required",
+			"message": "Refresh token is required in request body or cookie",
+		})
+	}
+
+	// Use JWT service to refresh token (includes user validation)
+	tokenPair, err := uc.jwtService.RefreshAccessToken(req.RefreshToken)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error":   "Invalid refresh token",
+			"message": err.Error(),
+		})
+	}
+
+	// Update refresh token cookie
+	c.Cookie(&fiber.Cookie{
+		Name:     "refresh_token",
+		Value:    tokenPair.RefreshToken,
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		HTTPOnly: true,
+		Secure:   false, // Set to true in production with HTTPS
+		SameSite: "Lax",
+		Path:     "/auth/refresh",
+	})
+
+	return c.JSON(models.RefreshTokenResponse{
+		AccessToken:  tokenPair.AccessToken,
+		RefreshToken: tokenPair.RefreshToken,
+		ExpiresIn:    tokenPair.ExpiresIn,
 	})
 }
 
 // Logout handles POST /auth/logout
 func (uc *UserController) Logout(c *fiber.Ctx) error {
-	// Clear the token cookie
+	// Clear the refresh token cookie
 	c.Cookie(&fiber.Cookie{
-		Name:     "token",
+		Name:     "refresh_token",
 		Value:    "",
 		Expires:  time.Now().Add(-1 * time.Hour),
 		HTTPOnly: true,
+		Path:     "/auth/refresh",
 	})
 
 	return c.JSON(fiber.Map{

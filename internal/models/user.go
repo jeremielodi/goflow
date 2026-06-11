@@ -78,11 +78,23 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// LoginResponse represents the login response
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+// RefreshTokenResponse represents the refresh token response
+type RefreshTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+// LoginResponse with refresh token
 type LoginResponse struct {
-	Token     string   `json:"token"`
-	User      User     `json:"user"`
-	ExpiresAt int64    `json:"expires_at"`
-	Roles     []string `json:"roles,omitempty"`
-	Actions   []string `json:"actions,omitempty"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	ExpiresIn    int64    `json:"expires_in"`
+	User         User     `json:"user"`
+	Roles        []string `json:"roles,omitempty"`
+	Actions      []string `json:"actions,omitempty"`
 }

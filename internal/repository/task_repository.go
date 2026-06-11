@@ -231,6 +231,19 @@ func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Resul
 	})
 }
 
+// ClaimTask assigns a task to a user and updates status to 'claimed'.
+func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
+	adapter := database.NewDabaseAdapter(r.db)
+	return adapter.Update("public.tasks", []database.QueryParameter{
+		{Key: "assignee", Value: nil},
+		{Key: "status", Value: "created"},
+		{Key: "claimed_at", Value: nil},
+	}, database.QueryParameter{
+		Key:   "id",
+		Value: taskID,
+	})
+}
+
 // UpdateTaskFormData merges new form data into the existing JSONB.
 func (r *TaskRepository) UpdateTaskFormData(taskID uuid.UUID, formData map[string]interface{}) (sql.Result, error) {
 	// Use a direct Exec because the adapter may not support JSONB merging easily.

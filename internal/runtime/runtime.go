@@ -442,8 +442,8 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return err
 		}
 
-		log.Printf("🔍 ExecuteExecution loop: currentID=%s, node.Type=%s, node.MultiInstance=%v",
-			currentID, node.Type, node.MultiInstance != nil)
+		// log.Printf("🔍 ExecuteExecution loop: currentID=%s, node.Type=%s, node.MultiInstance=%v",
+		// 	currentID, node.Type, node.MultiInstance != nil)
 
 		switch node.Type {
 		case engine.StartEventType, engine.ExclusiveGatewayType:

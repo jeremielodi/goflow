@@ -43,6 +43,11 @@ func main() {
 	}
 	resumer := runtime.CreateResumer(db)
 
+	// Create default data
+	if err := service.CreateDefaultData(db, util); err != nil {
+		log.Fatalf("Failed to create superuser: %v", err)
+	}
+
 	// ============================================================
 	// CREATE WORKER POOL
 	// ============================================================
@@ -61,11 +66,6 @@ func main() {
 			if !workerPool.IsHealthy() {
 				log.Printf("⚠️ Worker pool is under heavy load! Queue length: %d", workerPool.GetQueueLength())
 			}
-			// Log metrics periodically
-			metrics := workerPool.GetMetrics()
-			log.Printf("📊 Worker Pool Metrics: Submitted=%d, Processed=%d, Failed=%d, Queue=%d, Workers=%d",
-				metrics.JobsSubmitted, metrics.JobsProcessed, metrics.JobsFailed,
-				metrics.QueueLength, metrics.ActiveWorkers)
 		}
 	}()
 
@@ -86,10 +86,12 @@ func main() {
 	multiInstanceController := api.NewMultiInstanceController(db)
 	// timer-----------------------------------------
 
-	userController := api.NewUserController(db, &authentication.JWTService{})
+	jwcService := authentication.NewJWTService(db, util.DotEnvVariable("goflow_secret_key"))
+	userController := api.NewUserController(db, jwcService)
 
 	timerController := api.NewTimerController(db)
 
+	historicTaskCtrl := api.NewHistoricTaskController(db)
 	timerScheduler := service.NewTimerScheduler(db, resumer)
 	go timerScheduler.Start(context.Background())
 	defer timerScheduler.Stop()
@@ -100,6 +102,12 @@ func main() {
 	app.Get("/", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
 	})
+
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
+	})
+
+	app.Use(middleware.CombinedAuthMiddleware(db, jwcService, util))
 
 	// Initialize role and action controllers
 	roleCtrl := api.NewRoleController(db)
@@ -125,7 +133,9 @@ func main() {
 
 	// User routes (protected by your auth middleware)
 	app.Post("/users", permissions(db, "CAN_MANGE_USER"), userController.CreateUser)
-
+	app.Post("/auth/login", userController.Login)
+	app.Post("/auth/refresh", userController.RefreshToken)
+	app.Post("/auth/logout", userController.Logout)
 	app.Get("/users", permissions(db, "CAN_MANGE_USER"), userController.ListUsers)         // Protected - needs auth
 	app.Get("/users/me", userController.GetCurrentUser)                                    // Protected - gets current user
 	app.Get("/users/:id", userController.GetUser)                                          // Protected
@@ -143,6 +153,10 @@ func main() {
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 
 	// C7
+	app.Get("/engine-rest/engine", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
+	})
+
 	app.Post("/engine-rest/v2/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/external-task/fetchAndLock", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.FetchAndLock)
@@ -151,7 +165,16 @@ func main() {
 
 	app.Get("/tasks", permissions(db, "CAN_READ_TASKS"), taskCtrl.GetTasks)
 	app.Post("/tasks/:id/complete", processInstanceCtrl.CompleteTask)
+	app.Get("/engine-rest/tasks", permissions(db, "CAN_READ_TASKS"), taskCtrl.GetTasks)
+	app.Post("/engine-rest/tasks/:id/claim", taskCtrl.Claim)
+	app.Post("/engine-rest/tasks/:id/unclaim", taskCtrl.UnClaim)
+	app.Post("/engine-rest/tasks/:id/complete", processInstanceCtrl.CompleteTask)
+
 	app.Get("/jobs", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJobs)
+	app.Get("/jobs/:id", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJob)
+	app.Get("/engine-rest/jobs/:id", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJob)
+
+	app.Get("/history/tasks", historicTaskCtrl.GetHistoricTasks)
 
 	// Audit endpoints
 	app.Get("/audit/process/:processId", auditController.GetProcessAuditLogs)
@@ -163,6 +186,28 @@ func main() {
 	app.Get("/multi-instance/execution/:instanceId", multiInstanceController.GetByProcessInstance)
 
 	app.Post("/async/process-definitions/:key/start", processInstanceCtrl.StartProcessAsync)
+
+	// Process instance variable routes (Camunda compatible)
+	app.Get("/engine-rest/process-instance/:id/variables", processInstanceCtrl.GetProcessVariables)
+	app.Get("/engine-rest/process-instance/:id/variables/:varName", processInstanceCtrl.GetProcessVariable)
+	app.Post("/engine-rest/process-instance/:id/variables", processInstanceCtrl.SetProcessVariables)
+	app.Put("/engine-rest/process-instance/:id/variables/:varName", processInstanceCtrl.SetProcessVariable)
+	app.Delete("/engine-rest/process-instance/:id/variables/:varName", processInstanceCtrl.DeleteProcessVariable)
+	app.Delete("/engine-rest/process-instance/:id/variables", processInstanceCtrl.DeleteProcessVariables)
+
+	app.Put("/engine-rest/process-instance/:id/suspended", processInstanceCtrl.SuspendProcess)
+	app.Delete("/engine-rest/process-instance/:id", processInstanceCtrl.TerminateProcess)
+	app.Post("/engine-rest/process-instance/:id/end", processInstanceCtrl.EndProcess)
+	app.Get("/engine-rest/process-instance/:id/state", processInstanceCtrl.GetProcessState)
+	app.Post("/engine-rest/process-instance/:id/stop", processInstanceCtrl.StopProcessWithReason)
+
+	// Historic process instance
+	app.Get("/engine-rest/history/process-instance/:id", processInstanceCtrl.GetHistoricProcessInstance)
+
+	// Process instance queries
+	app.Get("/engine-rest/process-instance/:id", processInstanceCtrl.GetProcessInstance)
+	app.Get("/engine-rest/process-instance", processInstanceCtrl.GetProcessInstanceList)
+	app.Delete("/engine-rest/process-instance/:id", processInstanceCtrl.DeleteProcessInstance)
 
 	// Worker pool metrics endpoint (for monitoring)
 	app.Get("/metrics/pool", func(c *fiber.Ctx) error {
