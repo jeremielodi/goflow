@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
@@ -23,11 +24,12 @@ var (
 )
 
 type EngineRepository struct {
-	db *sqlx.DB
+	db         *sqlx.DB
+	dispatcher *events.TaskEventDispatcher
 }
 
-func NewEngineRepository(db *sqlx.DB) *EngineRepository {
-	return &EngineRepository{db: db}
+func NewEngineRepository(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *EngineRepository {
+	return &EngineRepository{db: db, dispatcher: dispatcher}
 }
 
 // GetActiveExecutionWithTx retrieves an active execution within a transaction
@@ -533,6 +535,24 @@ func (r *EngineRepository) CreateUserTaskTx(tx *sqlx.Tx, task *UserTask) error {
 	}
 
 	_, err := adapter.Insert("public.tasks", params)
+
+	if err == nil && r.dispatcher != nil {
+		// Dispatch event using global dispatcher
+		event := &events.TaskEvent{
+			ID:                uuid.New().String(),
+			EventType:         events.TaskCreated,
+			TaskID:            task.ID.String(),
+			ProcessInstanceID: task.ProcessInstanceID.String(),
+			ExecutionID:       task.ExecutionID.String(),
+			TaskName:          *task.TaskName,
+			Assignee:          task.Assignee,
+			CandidateGroup:    task.CandidateGroup,
+			NewStatus:         "created",
+			Timestamp:         time.Now(),
+		}
+		go r.dispatcher.Dispatch(context.Background(), event)
+	}
+
 	return err
 }
 

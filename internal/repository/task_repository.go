@@ -2,6 +2,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,17 +10,19 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
 
 type TaskRepository struct {
-	db *sqlx.DB
+	db         *sqlx.DB
+	dispatcher *events.TaskEventDispatcher
 }
 
-func NewTaskRepository(db *sqlx.DB) *TaskRepository {
-	return &TaskRepository{db: db}
+func NewTaskRepository(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *TaskRepository {
+	return &TaskRepository{db: db, dispatcher: dispatcher}
 }
 
 // ============================================================
@@ -39,7 +42,12 @@ func (r *TaskRepository) CreateTask(task models.Task) (sql.Result, error) {
 		formDataJSON, _ = json.Marshal(task.FormData)
 	}
 
-	return adapter.Insert("public.tasks", []database.QueryParameter{
+	// Set task ID for event
+	task.ID = id
+	task.Status = "created"
+	task.CreatedAt = now
+
+	result, err := adapter.Insert("public.tasks", []database.QueryParameter{
 		{Key: "id", Value: id},
 		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "execution_id", Value: task.ExecutionID},
@@ -47,12 +55,21 @@ func (r *TaskRepository) CreateTask(task models.Task) (sql.Result, error) {
 		{Key: "task_name", Value: task.TaskName},
 		{Key: "assignee", Value: task.Assignee},
 		{Key: "candidate_group", Value: task.CandidateGroup},
-		{Key: "status", Value: task.Status}, // "created", "claimed", "completed"
+		{Key: "status", Value: task.Status},
 		{Key: "form_data", Value: formDataJSON},
 		{Key: "created_at", Value: now},
-		{Key: "claimed_at", Value: task.ClaimedAt}, // can be nil
+		{Key: "claimed_at", Value: task.ClaimedAt},
 		{Key: "completed_at", Value: task.CompletedAt},
 	})
+
+	if err != nil {
+		return result, err
+	}
+
+	// Dispatch TaskCreated event
+	r.dispatchTaskEvent(id, &task, events.TaskCreated, nil)
+
+	return result, nil
 }
 
 // ============================================================
@@ -113,9 +130,7 @@ func (r *TaskRepository) FindTasksByAssignee(assignee string, status ...string) 
 }
 
 // FindAll returns tasks filtered by any column given in the params map.
-// Example: params := map[string]interface{}{"assignee": "john", "status": "created"}
 func (r *TaskRepository) FindAll(params map[string]interface{}) ([]models.Task, error) {
-	// Allowed column names for filtering (prevent SQL injection)
 	allowedColumns := map[string]bool{
 		"id": true, "process_instance_id": true, "execution_id": true,
 		"task_definition_key": true, "task_name": true, "assignee": true,
@@ -221,7 +236,14 @@ func (r *TaskRepository) FindTasksByProcessInstance(instanceID uuid.UUID) ([]mod
 func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Result, error) {
 	adapter := database.NewDabaseAdapter(r.db)
 	now := time.Now()
-	return adapter.Update("public.tasks", []database.QueryParameter{
+
+	// Get task before update for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := adapter.Update("public.tasks", []database.QueryParameter{
 		{Key: "assignee", Value: assignee},
 		{Key: "status", Value: "claimed"},
 		{Key: "claimed_at", Value: now},
@@ -229,12 +251,30 @@ func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Resul
 		Key:   "id",
 		Value: taskID,
 	})
+
+	if err != nil {
+		return result, err
+	}
+
+	// Dispatch TaskClaimed event
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskClaimed, map[string]interface{}{
+		"assignee": assignee,
+	})
+
+	return result, nil
 }
 
-// ClaimTask assigns a task to a user and updates status to 'claimed'.
+// UnClaimTask removes assignee from a task and resets status to 'created'.
 func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
 	adapter := database.NewDabaseAdapter(r.db)
-	return adapter.Update("public.tasks", []database.QueryParameter{
+
+	// Get task before update for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := adapter.Update("public.tasks", []database.QueryParameter{
 		{Key: "assignee", Value: nil},
 		{Key: "status", Value: "created"},
 		{Key: "claimed_at", Value: nil},
@@ -242,13 +282,22 @@ func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
 		Key:   "id",
 		Value: taskID,
 	})
+
+	if err != nil {
+		return result, err
+	}
+
+	// Dispatch TaskCancelled event (unclaim is like cancelling the claim)
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCancelled, map[string]interface{}{
+		"reason": "unclaimed",
+	})
+
+	return result, nil
 }
 
 // UpdateTaskFormData merges new form data into the existing JSONB.
 func (r *TaskRepository) UpdateTaskFormData(taskID uuid.UUID, formData map[string]interface{}) (sql.Result, error) {
-	// Use a direct Exec because the adapter may not support JSONB merging easily.
 	newJSON, _ := json.Marshal(formData)
-	// PostgreSQL JSONB concatenation: data || '{"new":"value"}'::jsonb
 	_, err := r.db.Exec(`
 		UPDATE public.tasks
 		SET form_data = COALESCE(form_data, '{}'::jsonb) || $1::jsonb
@@ -257,20 +306,19 @@ func (r *TaskRepository) UpdateTaskFormData(taskID uuid.UUID, formData map[strin
 	if err != nil {
 		return nil, err
 	}
-	return sql.Result(nil), nil // placeholder, but the method signature expects sql.Result
+	return sql.Result(nil), nil
 }
 
-// ============================================================
-// DELETE
-// ============================================================
-
-// DeleteTask permanently removes a task (e.g., for cancellation).
-func (r *TaskRepository) DeleteTask(taskID uuid.UUID) (sql.Result, error) {
-	return r.db.Exec(`DELETE FROM public.tasks WHERE id = $1`, taskID)
-}
-
+// UpdateTaskStatus updates task status.
 func (r *TaskRepository) UpdateTaskStatus(taskID uuid.UUID, status string, claimedAt, completedAt *time.Time) (sql.Result, error) {
 	adapter := database.NewDabaseAdapter(r.db)
+
+	// Get task before update for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return nil, err
+	}
+
 	params := []database.QueryParameter{
 		{Key: "status", Value: status},
 	}
@@ -280,9 +328,115 @@ func (r *TaskRepository) UpdateTaskStatus(taskID uuid.UUID, status string, claim
 	if completedAt != nil {
 		params = append(params, database.QueryParameter{Key: "completed_at", Value: *completedAt})
 	}
-	return adapter.Update("public.tasks", params, database.QueryParameter{Key: "id", Value: taskID})
+
+	result, err := adapter.Update("public.tasks", params, database.QueryParameter{Key: "id", Value: taskID})
+
+	if err != nil {
+		return result, err
+	}
+
+	// Determine event type based on new status
+	var eventType events.TaskEventType
+	switch status {
+	case "completed":
+		eventType = events.TaskCompleted
+	case "cancelled":
+		eventType = events.TaskCancelled
+	case "failed":
+		eventType = events.TaskFailed
+	default:
+		// Don't dispatch for other status changes
+		return result, nil
+	}
+
+	r.dispatchTaskEvent(taskID, &taskBefore, eventType, map[string]interface{}{
+		"new_status": status,
+	})
+
+	return result, nil
 }
 
+// CompleteTask marks a task as completed.
+func (r *TaskRepository) CompleteTask(taskID uuid.UUID) error {
+	// Get task before update for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.Exec(`
+		UPDATE public.tasks
+		SET status = 'completed', completed_at = $1, updated_at = $1
+		WHERE id = $2
+	`, time.Now(), taskID)
+
+	if err != nil {
+		return err
+	}
+
+	// Dispatch TaskCompleted event
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCompleted, nil)
+
+	return nil
+}
+
+// FailTask marks a task as failed.
+func (r *TaskRepository) FailTask(taskID uuid.UUID, reason string) error {
+	// Get task before update for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.Exec(`
+		UPDATE public.tasks
+		SET status = 'failed', updated_at = $1
+		WHERE id = $2
+	`, time.Now(), taskID)
+
+	if err != nil {
+		return err
+	}
+
+	// Dispatch TaskFailed event
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskFailed, map[string]interface{}{
+		"reason": reason,
+	})
+
+	return nil
+}
+
+// ============================================================
+// DELETE
+// ============================================================
+
+// DeleteTask permanently removes a task (e.g., for cancellation).
+func (r *TaskRepository) DeleteTask(taskID uuid.UUID) (sql.Result, error) {
+	// Get task before delete for event
+	taskBefore, err := r.FindTaskByID(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := r.db.Exec(`DELETE FROM public.tasks WHERE id = $1`, taskID)
+
+	if err != nil {
+		return result, err
+	}
+
+	// Dispatch TaskCancelled event
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCancelled, map[string]interface{}{
+		"reason": "deleted",
+	})
+
+	return result, nil
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+// GetProcessInstanceID returns the process instance ID for a task.
 func (r *TaskRepository) GetProcessInstanceID(taskID uuid.UUID) (uuid.UUID, error) {
 	var instanceID uuid.UUID
 	err := r.db.Get(&instanceID, `
@@ -291,6 +445,7 @@ func (r *TaskRepository) GetProcessInstanceID(taskID uuid.UUID) (uuid.UUID, erro
 	return instanceID, err
 }
 
+// GetExecutionID returns the execution ID for a task.
 func (r *TaskRepository) GetExecutionID(taskID uuid.UUID) (uuid.UUID, error) {
 	var execID uuid.UUID
 	err := r.db.Get(&execID, `
@@ -315,11 +470,73 @@ func (r *TaskRepository) UpdateTaskStatusTx(tx *sqlx.Tx, taskID uuid.UUID, statu
 	args = append(args, taskID)
 	return tx.Exec(query, args...)
 }
-func (r *TaskRepository) CompleteTask(taskID uuid.UUID) error {
-	_, err := r.db.Exec(`
+
+// CompleteTaskTx completes a task within a transaction.
+func (r *TaskRepository) CompleteTaskTx(tx *sqlx.Tx, taskID uuid.UUID) error {
+	_, err := tx.Exec(`
 		UPDATE public.tasks
-		SET status = 'completed', completed_at = $1
+		SET status = 'completed', completed_at = $1, updated_at = $1
 		WHERE id = $2
 	`, time.Now(), taskID)
 	return err
+}
+
+// ============================================================
+// EVENT DISPATCHING
+// ============================================================
+
+// dispatchTaskEvent dispatches a task event to all registered listeners
+func (r *TaskRepository) dispatchTaskEvent(taskID uuid.UUID, task *models.Task, eventType events.TaskEventType, additionalData map[string]interface{}) {
+	if r.dispatcher == nil {
+		return
+	}
+
+	// Get the new status based on event type
+	newStatus := r.getStatusForEventType(eventType)
+
+	event := &events.TaskEvent{
+		ID:                uuid.New().String(),
+		EventType:         eventType,
+		TaskID:            taskID.String(),
+		ProcessInstanceID: task.ProcessInstanceID.String(),
+		ExecutionID:       task.ExecutionID.String(),
+		TaskName:          task.TaskName,
+		Assignee:          task.Assignee,
+		CandidateGroup:    task.CandidateGroup,
+		OldStatus:         task.Status,
+		NewStatus:         newStatus,
+		Timestamp:         time.Now(),
+		Variables:         additionalData,
+	}
+
+	// Add assignee to event if present in additional data
+	if assignee, ok := additionalData["assignee"].(string); ok && assignee != "" {
+		event.Assignee = &assignee
+	}
+
+	// Add reason if present
+	if reason, ok := additionalData["reason"].(string); ok {
+		event.Comment = reason
+	}
+
+	// Dispatch in goroutine to not block
+	go r.dispatcher.Dispatch(context.Background(), event)
+}
+
+// getStatusForEventType returns the status string for an event type
+func (r *TaskRepository) getStatusForEventType(eventType events.TaskEventType) string {
+	switch eventType {
+	case events.TaskCreated:
+		return "created"
+	case events.TaskClaimed:
+		return "claimed"
+	case events.TaskCompleted:
+		return "completed"
+	case events.TaskFailed:
+		return "failed"
+	case events.TaskCancelled:
+		return "cancelled"
+	default:
+		return "unknown"
+	}
 }

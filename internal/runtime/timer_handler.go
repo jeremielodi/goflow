@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -19,10 +20,10 @@ type TimerHandler struct {
 	engineRepo *repository.EngineRepository
 }
 
-func NewTimerHandler(db *sqlx.DB) *TimerHandler {
+func NewTimerHandler(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *TimerHandler {
 	return &TimerHandler{
 		db:         db,
-		engineRepo: repository.NewEngineRepository(db),
+		engineRepo: repository.NewEngineRepository(db, dispatcher),
 	}
 }
 

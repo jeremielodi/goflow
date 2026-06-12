@@ -9,6 +9,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -22,15 +23,17 @@ type ProcessInstanceController struct {
 	processRepo         *repository.ProcessRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
 	workerPool          *worker.WorkerPool
+	dispatcher          *events.TaskEventDispatcher
 }
 
-func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService, workerPool *worker.WorkerPool) *ProcessInstanceController {
+func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService, workerPool *worker.WorkerPool, dispatcher *events.TaskEventDispatcher) *ProcessInstanceController {
 	return &ProcessInstanceController{
 		db:                  db,
 		taskService:         taskService,
 		processRepo:         repository.NewProcessRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
 		workerPool:          workerPool,
+		dispatcher:          dispatcher,
 	}
 }
 
@@ -447,7 +450,7 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 	}
 
 	// Run the runtime
-	rt := runtime.NewRuntime(&graph, pc.db)
+	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
 	ctx := c.Context()
 	err = rt.ExecuteExecution(ctx, execID)
 	if err != nil {

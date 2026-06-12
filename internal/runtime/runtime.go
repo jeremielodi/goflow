@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -398,13 +399,15 @@ type Runtime struct {
 	Graph        *engine.ProcessGraph
 	DB           *sqlx.DB
 	auditService *service.AuditService
+	dispatcher   *events.TaskEventDispatcher
 }
 
-func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB) *Runtime {
+func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB, dispatcher *events.TaskEventDispatcher) *Runtime {
 	return &Runtime{
 		Graph:        Graph,
 		DB:           DB,
 		auditService: service.NewAuditService(DB),
+		dispatcher:   dispatcher,
 	}
 }
 
@@ -412,7 +415,7 @@ func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB) *Runtime {
 // ExecuteExecution starts or resumes from a given execution ID
 // ------------------------------------------------------------
 func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error {
-	engineRepo := repository.NewEngineRepository(r.DB)
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	// Get active execution
 	exec, err := engineRepo.GetActiveExecution(ctx, execID)
@@ -658,6 +661,24 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 			r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
+
+			if err == nil && r.dispatcher != nil {
+				// Dispatch event using global dispatcher
+				event := &events.TaskEvent{
+					ID:                uuid.New().String(),
+					EventType:         events.TaskCreated,
+					TaskID:            taskID.String(),
+					ProcessInstanceID: exec.ProcessInstanceID.String(),
+					ExecutionID:       exec.ID.String(),
+					TaskName:          taskName,
+					Assignee:          assignee,
+					CandidateGroup:    candidateGroup,
+					NewStatus:         "created",
+					Timestamp:         time.Now(),
+				}
+				go r.dispatcher.Dispatch(context.Background(), event)
+			}
+
 			return nil
 
 		case engine.ScriptTaskType:
@@ -831,7 +852,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			}
 		case engine.ParallelGatewayType:
 			// Create parallel gateway executor
-			parallelExecutor := NewParallelGatewayExecutor(r.DB)
+			parallelExecutor := NewParallelGatewayExecutor(r.DB, r.dispatcher)
 
 			// Check if this is a fork or join
 			if r.isForkGateway(node, exec) {
@@ -943,7 +964,7 @@ func (r *Runtime) isForkGateway(node *engine.Node, exec *repository.Execution) b
 		if exec.ParentExecutionID == nil {
 			return true
 		}
-		engineRepo := repository.NewEngineRepository(r.DB)
+		engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 		// Check if this gateway already has a waiting state (means we're joining)
 		var count = engineRepo.CountGatewayWaitingState(exec.ParentExecutionID, node.ID)
 		// If no waiting gateway state, this is a fork
@@ -977,7 +998,7 @@ func resolveExpression(expr string, vars map[string]interface{}) string {
 // internal/runtime/runtime.go
 
 func (r *Runtime) handleMultiInstance(ctx context.Context, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
-	engineRepo := repository.NewEngineRepository(r.DB)
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 	miHandler := NewMultiInstanceHandler(r.DB)
 
 	// Check if multi-instance already exists
@@ -1135,7 +1156,7 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 	log.Printf("✅ Successfully created child %d/%d with ID: %s", loopIndex+1, miExec.TotalCount, childExecID)
 
 	// Execute child
-	rt := NewRuntime(r.Graph, r.DB)
+	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 	go func() {
 		if err := rt.ExecuteExecution(context.Background(), childExecID); err != nil {
 			log.Printf("❌ Sequential child %d failed: %v", loopIndex+1, err)
@@ -1194,7 +1215,7 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 // ------------------------------------------------------------
 
 // StartTimerWorker starts a background goroutine that processes due timers
-func StartTimerWorker(db *sqlx.DB, stopCh <-chan struct{}) {
+func StartTimerWorker(db *sqlx.DB, stopCh <-chan struct{}, dispatcher *events.TaskEventDispatcher) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
@@ -1203,14 +1224,14 @@ func StartTimerWorker(db *sqlx.DB, stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			processDueTimers(db)
+			processDueTimers(db, dispatcher)
 		}
 	}
 }
 
-func processDueTimers(db *sqlx.DB) {
+func processDueTimers(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) {
 	ctx := context.Background()
-	engineRepo := repository.NewEngineRepository(db)
+	engineRepo := repository.NewEngineRepository(db, dispatcher)
 
 	// Get timers that need to fire
 	timers, err := engineRepo.GetDueTimers(ctx, time.Now())
@@ -1285,7 +1306,7 @@ func processDueTimers(db *sqlx.DB) {
 		}
 
 		// Resume execution
-		rt := NewRuntime(graph, db)
+		rt := NewRuntime(graph, db, dispatcher)
 		go rt.ExecuteExecution(ctx, exec.ID)
 	}
 }

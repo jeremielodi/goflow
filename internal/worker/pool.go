@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jmoiron/sqlx"
@@ -47,6 +48,7 @@ type WorkerPool struct {
 	db           *sqlx.DB
 	processCache sync.Map
 	metrics      *PoolMetrics
+	dispatcher   *events.TaskEventDispatcher
 }
 
 // PoolMetrics tracks worker pool performance
@@ -62,7 +64,7 @@ type PoolMetrics struct {
 }
 
 // NewWorkerPool creates a new worker pool
-func NewWorkerPool(db *sqlx.DB, name string, workerCount int, queueSize int) *WorkerPool {
+func NewWorkerPool(db *sqlx.DB, name string, workerCount int, queueSize int, dispatcher *events.TaskEventDispatcher) *WorkerPool {
 	if workerCount <= 0 {
 		workerCount = 10
 	}
@@ -78,6 +80,7 @@ func NewWorkerPool(db *sqlx.DB, name string, workerCount int, queueSize int) *Wo
 		stopChan:    make(chan struct{}),
 		db:          db,
 		metrics:     &PoolMetrics{},
+		dispatcher:  dispatcher,
 	}
 }
 
@@ -182,7 +185,7 @@ func (p *WorkerPool) processJob(job Job) JobResult {
 
 // processStartProcess handles process start jobs
 func (p *WorkerPool) processStartProcess(job Job) JobResult {
-	engineRepo := repository.NewEngineRepository(p.db)
+	engineRepo := repository.NewEngineRepository(p.db, p.dispatcher)
 
 	// Get process definition
 	procDef, err := engineRepo.FindLatestProcessDefinitionByKey(job.ProcessKey)
@@ -251,7 +254,7 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 	}
 
 	// Execute asynchronously
-	rt := runtime.NewRuntime(graph, p.db)
+	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
 	go func() {
 		if err := rt.ExecuteExecution(context.Background(), execID); err != nil {
 			log.Printf("❌ Execution error for instance %s: %v", instanceID, err)

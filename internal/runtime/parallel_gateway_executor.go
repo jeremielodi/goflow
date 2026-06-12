@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -17,10 +18,10 @@ type ParallelGatewayExecutor struct {
 	engineRepo *repository.EngineRepository
 }
 
-func NewParallelGatewayExecutor(db *sqlx.DB) *ParallelGatewayExecutor {
+func NewParallelGatewayExecutor(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *ParallelGatewayExecutor {
 	return &ParallelGatewayExecutor{
 		db:         db,
-		engineRepo: repository.NewEngineRepository(db),
+		engineRepo: repository.NewEngineRepository(db, dispatcher),
 	}
 }
 

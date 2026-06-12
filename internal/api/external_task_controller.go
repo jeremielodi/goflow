@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
@@ -22,13 +23,15 @@ type ExternalTaskController struct {
 	db                  *sqlx.DB
 	externalTaskRepo    *repository.ExternalTaskRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
+	dispatcher          *events.TaskEventDispatcher
 }
 
-func NewExternalTaskController(db *sqlx.DB) *ExternalTaskController {
+func NewExternalTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *ExternalTaskController {
 	return &ExternalTaskController{
 		db:                  db,
 		externalTaskRepo:    repository.NewExternalTaskRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+		dispatcher:          dispatcher,
 	}
 }
 
@@ -475,7 +478,7 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	}
 
 	// Resume current execution
-	rt := runtime.NewRuntime(&graph, ctrl.db)
+	rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
 	if err := rt.ExecuteExecution(c.Context(), executionID); err != nil {
 		log.Printf("Execution resume error: %v", err)
 		return c.Status(500).JSON(fiber.Map{
@@ -485,7 +488,7 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	engineRepo := repository.NewEngineRepository(ctrl.db)
+	engineRepo := repository.NewEngineRepository(ctrl.db, ctrl.dispatcher)
 	// Get the execution that owns this job
 	exec, err := engineRepo.GetExecutionByID(executionID)
 	if exec != nil && exec.ParentExecutionID != nil {

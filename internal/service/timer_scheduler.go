@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -22,10 +23,10 @@ type TimerScheduler struct {
 	resumer    func(ctx context.Context, execID uuid.UUID) error
 }
 
-func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error) *TimerScheduler {
+func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher) *TimerScheduler {
 	return &TimerScheduler{
 		db:         db,
-		engineRepo: repository.NewEngineRepository(db),
+		engineRepo: repository.NewEngineRepository(db, dispatcher),
 		stopChan:   make(chan bool),
 		resumer:    resumer,
 	}

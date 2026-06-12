@@ -132,7 +132,7 @@ func (r *Runtime) createChildExecutions(ctx context.Context, parentExecID uuid.U
 	}
 
 	// Execute all children in parallel
-	rt := NewRuntime(r.Graph, r.DB)
+	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 	for i := 0; i < totalCount; i++ {
 		var childExecID uuid.UUID
 		r.DB.Get(&childExecID, `
@@ -155,7 +155,7 @@ func (r *Runtime) createChildExecutions(ctx context.Context, parentExecID uuid.U
 // internal/runtime/runtime.go
 
 func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *repository.Execution, node *engine.Node, miExec *models.MultiInstanceExecution, variables map[string]interface{}) error {
-	engineRepo := repository.NewEngineRepository(r.DB)
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	// Count completed children
 	var completedCount int
@@ -206,7 +206,7 @@ func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *reposi
 		}
 
 		// Resume parent execution
-		rt := NewRuntime(r.Graph, r.DB)
+		rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 		return rt.ExecuteExecution(ctx, exec.ID)
 	}
 
@@ -214,7 +214,7 @@ func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *reposi
 }
 
 func (r *Runtime) handleMultiInstanceParent(ctx context.Context, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
-	engineRepo := repository.NewEngineRepository(r.DB)
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	// Parse total count
 	totalCount := 3 // default
@@ -264,7 +264,7 @@ func (r *Runtime) handleMultiInstanceParent(ctx context.Context, exec *repositor
 	}
 
 	// Execute all children in parallel
-	rt := NewRuntime(r.Graph, r.DB)
+	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 	for i := 0; i < totalCount; i++ {
 		var childExecID uuid.UUID
 		r.DB.Get(&childExecID, `
@@ -339,7 +339,7 @@ func (r *Runtime) createParallelChildren(ctx context.Context, parentExecID uuid.
 	}
 
 	// Execute all children in parallel
-	rt := NewRuntime(r.Graph, r.DB)
+	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 	for _, childExecID := range childExecIDs {
 		go func(execID uuid.UUID) {
 			if err := rt.ExecuteExecution(ctx, execID); err != nil {
@@ -412,7 +412,7 @@ func formatDuration(d time.Duration) string {
 // OnMultiInstanceChildCompleted MUST be called from your external-task/complete API
 // In runtime.go - update OnMultiInstanceChildCompleted
 func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID uuid.UUID, result interface{}) error {
-	engineRepo := repository.NewEngineRepository(r.DB)
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	// Get the child execution
 	childExec, err := engineRepo.GetExecutionByID(childExecID)
@@ -561,7 +561,7 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 }
 
 func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, variables map[string]interface{}) error {
-	// engineRepo := repository.NewEngineRepository(r.DB)
+	// engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	tx, err := r.DB.Beginx()
 	if err != nil {
@@ -597,7 +597,7 @@ func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.U
 		return err
 	}
 
-	rt := NewRuntime(r.Graph, r.DB)
+	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
 	go func() {
 		log.Printf("🚀 Resuming parent %s at %s", parentExecID, nextNodeID)
 		if err := rt.ExecuteExecution(ctx, parentExecID); err != nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/pkg/database"
@@ -22,18 +23,20 @@ type TaskService struct {
 	procRepo       *repository.ProcessRepository
 	instRepo       *repository.ProcessInstanceRepository
 	resumeExecutor ResumeExecutionFunc // Callback for resuming execution
+	dispatcher     *events.TaskEventDispatcher
 }
 
 // ResumeExecutionFunc is a function type for resuming execution
 type ResumeExecutionFunc func(ctx context.Context, graph *engine.ProcessGraph, execID uuid.UUID) error
 
 // NewTaskService creates a new TaskService
-func NewTaskService(db *sqlx.DB) *TaskService {
+func NewTaskService(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *TaskService {
 	return &TaskService{
-		db:       db,
-		taskRepo: repository.NewTaskRepository(db),
-		procRepo: repository.NewProcessRepository(db),
-		instRepo: repository.NewProcessInstanceRepository(db),
+		db:         db,
+		taskRepo:   repository.NewTaskRepository(db, dispatcher),
+		procRepo:   repository.NewProcessRepository(db),
+		instRepo:   repository.NewProcessInstanceRepository(db),
+		dispatcher: dispatcher,
 	}
 }
 
@@ -52,6 +55,9 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if task.Status == "completed" {
 		return fmt.Errorf("task already completed")
 	}
+
+	// Store task before completion for event
+	taskBefore := task
 
 	// 2. Load process definition and graph
 	defID, err := s.instRepo.GetProcessDefinitionID(task.ProcessInstanceID)
@@ -87,7 +93,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if err != nil {
 		// No outgoing flows → process completed after this user task
 		if err.Error() == "node has no outgoing flows" {
-			return s.completeProcessAndTask(task, currentVars)
+			return s.completeProcessAndTask(task, currentVars, taskBefore)
 		}
 		return fmt.Errorf("failed to resolve next node: %w", err)
 	}
@@ -136,6 +142,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		"task_key":     task.TaskDefinitionKey,
 		"assignee":     task.Assignee,
 		"variables":    currentVars,
+		"next_element": nextID,
 		"completed_at": time.Now(),
 	}
 
@@ -153,6 +160,33 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		return fmt.Errorf("transaction failed: %w", err)
 	}
 
+	// Dispatch TASK_COMPLETED event
+	if s.dispatcher != nil {
+		assignee := ""
+		if taskBefore.Assignee != nil {
+			assignee = *taskBefore.Assignee
+		}
+
+		event := &events.TaskEvent{
+			ID:                uuid.New().String(),
+			EventType:         events.TaskCompleted,
+			TaskID:            taskID.String(),
+			ProcessInstanceID: task.ProcessInstanceID.String(),
+			ExecutionID:       task.ExecutionID.String(),
+			TaskName:          task.TaskName,
+			Assignee:          &assignee,
+			OldStatus:         taskBefore.Status,
+			NewStatus:         "completed",
+			Timestamp:         time.Now(),
+			Variables: map[string]interface{}{
+				"next_element": nextID,
+				"user_vars":    userVars,
+			},
+		}
+
+		go s.dispatcher.Dispatch(ctx, event)
+	}
+
 	// 6. Resume execution using the callback function
 	if s.resumeExecutor != nil {
 		return s.resumeExecutor(ctx, &graph, *task.ExecutionID)
@@ -162,7 +196,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 }
 
 // Helper to finish process when no next node exists
-func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}) error {
+func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}, taskBefore models.Task) error {
 	tx := database.NewTransaction(s.db)
 
 	// Mark task as completed
@@ -222,5 +256,33 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 	if err != nil || !success {
 		return fmt.Errorf("transaction failed while ending process: %w", err)
 	}
+
+	// Dispatch TASK_COMPLETED event for final task
+	if s.dispatcher != nil {
+		assignee := ""
+		if taskBefore.Assignee != nil {
+			assignee = *taskBefore.Assignee
+		}
+
+		event := &events.TaskEvent{
+			ID:                uuid.New().String(),
+			EventType:         events.TaskCompleted,
+			TaskID:            task.ID.String(),
+			ProcessInstanceID: task.ProcessInstanceID.String(),
+			ExecutionID:       task.ExecutionID.String(),
+			TaskName:          task.TaskName,
+			Assignee:          &assignee,
+			OldStatus:         taskBefore.Status,
+			NewStatus:         "completed",
+			Timestamp:         time.Now(),
+			Variables: map[string]interface{}{
+				"process_ended": true,
+				"final_vars":    currentVars,
+			},
+		}
+
+		go s.dispatcher.Dispatch(context.Background(), event)
+	}
+
 	return nil
 }

@@ -12,7 +12,7 @@ type Task struct {
 	ProcessInstanceID uuid.UUID        `db:"process_instance_id" json:"processInstanceId"`
 	ExecutionID       *uuid.UUID       `db:"execution_id" json:"executionId,omitempty"`
 	TaskDefinitionKey string           `db:"task_definition_key" json:"taskDefinitionKey"`
-	TaskName          *string          `db:"task_name" json:"taskName,omitempty"`
+	TaskName          string           `db:"task_name" json:"taskName,omitempty"`
 	Assignee          *string          `db:"assignee" json:"assignee,omitempty"`
 	CandidateGroup    *string          `db:"candidate_group" json:"candidateGroup,omitempty"`
 	Status            string           `db:"status" json:"status"` // created, claimed, completed
