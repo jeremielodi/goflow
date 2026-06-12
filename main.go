@@ -153,7 +153,7 @@ func main() {
 	// ============================================================
 
 	// SSE endpoint for task events (requires authentication)
-	app.Get("/events/tasks", middleware.CombinedAuthMiddleware(db, jwcService, util), sseListener.SSEHandler)
+	app.Get("/events/tasks", sseListener.SSEHandler)
 
 	// WebSocket endpoint for task events
 	app.Use("/ws/tasks", func(c *fiber.Ctx) error {

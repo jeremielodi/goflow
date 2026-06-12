@@ -660,9 +660,10 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
+
 			r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
 
-			if err == nil && r.dispatcher != nil {
+			if r.dispatcher != nil {
 				// Dispatch event using global dispatcher
 				event := &events.TaskEvent{
 					ID:                uuid.New().String(),
