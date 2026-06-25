@@ -377,10 +377,11 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 				if !found {
 					// Create a flow from attached node to boundary event
 					flow := Flow{
-						ID:        b.ID + "_boundary_flow",
-						SourceRef: b.AttachedToRef,
-						TargetRef: b.ID,
-						Condition: "",
+						ID:         b.ID + "_boundary_flow",
+						SourceRef:  b.AttachedToRef,
+						TargetRef:  b.ID,
+						Condition:  "",
+						IsBoundary: true,
 					}
 					attachedNode.Outgoing = append(attachedNode.Outgoing, flow)
 					boundaryNode.Incoming = append(boundaryNode.Incoming, b.AttachedToRef)

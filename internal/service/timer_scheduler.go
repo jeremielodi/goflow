@@ -58,13 +58,11 @@ func (s *TimerScheduler) Stop() {
 	s.stopChan <- true
 }
 
-// processDueTimers processes all timers that are due
+// processDueTimers atomically claims and fires all due timers.
 func (s *TimerScheduler) processDueTimers(ctx context.Context) {
-	now := time.Now().UTC()
-
-	timers, err := s.engineRepo.GetDueTimers(ctx, now)
+	timers, err := s.engineRepo.ClaimDueTimers(ctx, 20)
 	if err != nil {
-		log.Printf("Error fetching due timers: %v", err)
+		log.Printf("Error claiming due timers: %v", err)
 		return
 	}
 
@@ -90,13 +88,6 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 		return
 	}
 	defer tx.Rollback()
-
-	// Mark timer as triggered
-	err = s.engineRepo.MarkTimerTriggeredTx(tx, timer.ID)
-	if err != nil {
-		log.Printf("Failed to mark timer %s as triggered: %v", timer.ID, err)
-		return
-	}
 
 	var execID uuid.UUID
 	if timer.ExecutionID != nil {

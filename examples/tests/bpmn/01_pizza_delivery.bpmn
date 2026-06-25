@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_PizzaDelivery"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Boundary Timer Event example
+    SCENARIO: Customer orders pizza. If delivery takes more than 60s (PT60S for tests),
+              an anxious phone call is made to the restaurant.
+    FEATURES TESTED:
+      - User Task with assignee expression (${customer})
+      - Boundary Timer Event (interrupting, PT60S)
+      - Service Task on timer-triggered path (topic: call_restaurant)
+      - Two distinct End Events
+  -->
+  <bpmn:process id="PizzaDeliveryProcess" name="Pizza Delivery" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_Order" name="Hungry">
+      <bpmn:outgoing>Flow_Start_Order</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Customer places the pizza order and waits for delivery -->
+    <bpmn:userTask id="order_pizza" name="Order Pizza" camunda:assignee="${customer}">
+      <bpmn:incoming>Flow_Start_Order</bpmn:incoming>
+      <bpmn:outgoing>Flow_Order_Delivered</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Boundary timer: fires after PT60S if pizza has not arrived -->
+    <bpmn:boundaryEvent id="timer_delivery_timeout" name="60s timeout" attachedToRef="order_pizza" cancelActivity="true">
+      <bpmn:outgoing>Flow_Timeout_Call</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_Delivery">
+        <bpmn:timeDuration>PT60S</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <!-- Normal end: pizza arrives before timeout -->
+    <bpmn:endEvent id="End_PizzaDelivered" name="Pizza Delivered">
+      <bpmn:incoming>Flow_Order_Delivered</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Timer path: call the restaurant anxiously -->
+    <bpmn:serviceTask id="call_restaurant" name="Make Anxious Phone Call" camunda:type="external" camunda:topic="call_restaurant">
+      <bpmn:incoming>Flow_Timeout_Call</bpmn:incoming>
+      <bpmn:outgoing>Flow_Call_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_OrderChecked" name="Order Checked">
+      <bpmn:incoming>Flow_Call_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Order" sourceRef="Start_Order" targetRef="order_pizza" />
+    <bpmn:sequenceFlow id="Flow_Order_Delivered" sourceRef="order_pizza" targetRef="End_PizzaDelivered" />
+    <bpmn:sequenceFlow id="Flow_Timeout_Call" sourceRef="timer_delivery_timeout" targetRef="call_restaurant" />
+    <bpmn:sequenceFlow id="Flow_Call_End" sourceRef="call_restaurant" targetRef="End_OrderChecked" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_PizzaDelivery">
+    <bpmndi:BPMNPlane id="BPMNPlane_PizzaDelivery" bpmnElement="PizzaDeliveryProcess">
+
+      <bpmndi:BPMNShape id="Start_Order_di" bpmnElement="Start_Order">
+        <dc:Bounds x="152" y="119" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="158" y="162" width="25" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="order_pizza_di" bpmnElement="order_pizza">
+        <dc:Bounds x="250" y="97" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <!-- Boundary timer sits on the bottom edge of order_pizza -->
+      <bpmndi:BPMNShape id="timer_delivery_timeout_di" bpmnElement="timer_delivery_timeout">
+        <dc:Bounds x="282" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="270" y="202" width="60" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="call_restaurant_di" bpmnElement="call_restaurant">
+        <dc:Bounds x="240" y="270" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_PizzaDelivered_di" bpmnElement="End_PizzaDelivered">
+        <dc:Bounds x="422" y="119" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="400" y="162" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_OrderChecked_di" bpmnElement="End_OrderChecked">
+        <dc:Bounds x="422" y="292" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="402" y="335" width="76" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Order_di" bpmnElement="Flow_Start_Order">
+        <di:waypoint x="188" y="137" />
+        <di:waypoint x="250" y="137" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Order_Delivered_di" bpmnElement="Flow_Order_Delivered">
+        <di:waypoint x="350" y="137" />
+        <di:waypoint x="422" y="137" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Timeout_Call_di" bpmnElement="Flow_Timeout_Call">
+        <di:waypoint x="300" y="195" />
+        <di:waypoint x="300" y="270" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Call_End_di" bpmnElement="Flow_Call_End">
+        <di:waypoint x="360" y="310" />
+        <di:waypoint x="422" y="310" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

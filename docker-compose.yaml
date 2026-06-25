@@ -14,40 +14,15 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
+      - ./database:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U goflow"]
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # Kafka
-  zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    container_name: goflow-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
-  kafka:
-    image: confluentinc/cp-kafka:latest
-    container_name: goflow-kafka
-    depends_on:
-      - zookeeper
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    ports:
-      - "9092:9092"
-    volumes:
-      - kafka_data:/var/lib/kafka/data
+    networks:
+      - goflow-network
+    restart: unless-stopped
 
   # Redis (for caching)
   redis:
@@ -57,30 +32,97 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goflow-network
+    restart: unless-stopped
 
   # GoFlow Application
   goflow:
     build: .
     container_name: goflow-app
     depends_on:
-      - postgres
-      - kafka
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
+      # Database
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: goflow
-      DB_PASSWORD: goflow123
+      DB_PASS: goflow123
       DB_NAME: goflow
-      KAFKA_BROKERS: kafka:9092
+      
+      # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      REDIS_PREFIX: goflow:queue
+      REDIS_POOL_SIZE: 50
+      REDIS_MIN_IDLE_CONNS: 10
+      REDIS_MAX_RETRIES: 3
+      
+      # Queue Settings
+      QUEUE_MAX_RETRIES: 3
+      QUEUE_RETRY_BACKOFF_BASE: 1s
+      QUEUE_RETRY_MAX_BACKOFF: 5m
+      QUEUE_RETRY_SCHEDULER_INTERVAL: 5s
+      QUEUE_STATS_UPDATE_INTERVAL: 30s
+      QUEUE_CLEANUP_OLDER_THAN: 24h
+      
+      # Server
+      SERVER_PORT: 8080
+      QUEUE_WORKERS: 10
+      
+      # JWT
+      JWT_SECRET_KEY: goflow_secret_key
+      
+      # Super User
+      SUPER_USER_NAME: super_user
+      SUPER_USER_EMAIL: superuser@goflow.com
+      SUPER_USER_PASSWORD: superUser123
+      
+      # Other
+      GOFLOW_ENV: production
     ports:
       - "8080:8080"
+    volumes:
+      - ./migrations:/app/migrations
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - goflow-network
     restart: unless-stopped
+
+  # Optional: Redis Commander for Redis management
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: goflow-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+networks:
+  goflow-network:
+    driver: bridge
 
 volumes:
   postgres_data:
-  kafka_data:
   redis_data:

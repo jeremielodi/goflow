@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_ParallelLaunch"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    TEST COVERAGE:
+      - Parallel Gateway (AND) — fork + join
+      - Two concurrent Service Task branches (notify_marketing + update_inventory)
+      - Exclusive Gateway combined with Parallel Gateway
+      - User Task driving gateway decision
+  -->
+  <bpmn:process id="ParallelLaunchProcess" name="Product Launch Process" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="StartEvent_Launch" name="Launch Initiated">
+      <bpmn:outgoing>Flow_Start_Approve</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Manager decides whether to launch -->
+    <bpmn:userTask id="approve_launch" name="Approve Launch" camunda:assignee="${manager}">
+      <bpmn:incoming>Flow_Start_Approve</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approve_Gateway</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- XOR: approved? -->
+    <bpmn:exclusiveGateway id="launch_gateway" name="Launch Approved?">
+      <bpmn:incoming>Flow_Approve_Gateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved_Fork</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Rejected_Cancel</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Parallel fork: two branches execute simultaneously -->
+    <bpmn:parallelGateway id="parallel_fork" name="">
+      <bpmn:incoming>Flow_Approved_Fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fork_Marketing</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Inventory</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- Branch A: Notify marketing team -->
+    <bpmn:serviceTask id="notify_marketing" name="Notify Marketing" camunda:type="external" camunda:topic="notify_marketing">
+      <bpmn:incoming>Flow_Fork_Marketing</bpmn:incoming>
+      <bpmn:outgoing>Flow_Marketing_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Branch B: Update inventory system -->
+    <bpmn:serviceTask id="update_inventory" name="Update Inventory" camunda:type="external" camunda:topic="update_inventory">
+      <bpmn:incoming>Flow_Fork_Inventory</bpmn:incoming>
+      <bpmn:outgoing>Flow_Inventory_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Parallel join: wait for both branches -->
+    <bpmn:parallelGateway id="parallel_join" name="">
+      <bpmn:incoming>Flow_Marketing_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Inventory_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Join_End</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:endEvent id="end_launched" name="Product Launched">
+      <bpmn:incoming>Flow_Join_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="end_cancelled" name="Launch Cancelled">
+      <bpmn:incoming>Flow_Rejected_Cancel</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Approve" sourceRef="StartEvent_Launch" targetRef="approve_launch" />
+    <bpmn:sequenceFlow id="Flow_Approve_Gateway" sourceRef="approve_launch" targetRef="launch_gateway" />
+    <bpmn:sequenceFlow id="Flow_Approved_Fork" sourceRef="launch_gateway" targetRef="parallel_fork">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Rejected_Cancel" sourceRef="launch_gateway" targetRef="end_cancelled">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Fork_Marketing" sourceRef="parallel_fork" targetRef="notify_marketing" />
+    <bpmn:sequenceFlow id="Flow_Fork_Inventory" sourceRef="parallel_fork" targetRef="update_inventory" />
+    <bpmn:sequenceFlow id="Flow_Marketing_Join" sourceRef="notify_marketing" targetRef="parallel_join" />
+    <bpmn:sequenceFlow id="Flow_Inventory_Join" sourceRef="update_inventory" targetRef="parallel_join" />
+    <bpmn:sequenceFlow id="Flow_Join_End" sourceRef="parallel_join" targetRef="end_launched" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ParallelLaunch">
+    <bpmndi:BPMNPlane id="BPMNPlane_ParallelLaunch" bpmnElement="ParallelLaunchProcess">
+
+      <bpmndi:BPMNShape id="StartEvent_Launch_di" bpmnElement="StartEvent_Launch">
+        <dc:Bounds x="152" y="289" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="127" y="332" width="87" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="approve_launch_di" bpmnElement="approve_launch">
+        <dc:Bounds x="250" y="267" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="launch_gateway_di" bpmnElement="launch_gateway" isMarkerVisible="true">
+        <dc:Bounds x="415" y="282" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="405" y="252" width="70" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="parallel_fork_di" bpmnElement="parallel_fork">
+        <dc:Bounds x="535" y="282" width="50" height="50" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="notify_marketing_di" bpmnElement="notify_marketing">
+        <dc:Bounds x="650" y="177" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="update_inventory_di" bpmnElement="update_inventory">
+        <dc:Bounds x="650" y="367" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="parallel_join_di" bpmnElement="parallel_join">
+        <dc:Bounds x="825" y="282" width="50" height="50" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_launched_di" bpmnElement="end_launched">
+        <dc:Bounds x="952" y="289" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="928" y="332" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_cancelled_di" bpmnElement="end_cancelled">
+        <dc:Bounds x="422" y="432" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="398" y="475" width="84" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Approve_di" bpmnElement="Flow_Start_Approve">
+        <di:waypoint x="188" y="307" />
+        <di:waypoint x="250" y="307" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Approve_Gateway_di" bpmnElement="Flow_Approve_Gateway">
+        <di:waypoint x="350" y="307" />
+        <di:waypoint x="415" y="307" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Approved_Fork_di" bpmnElement="Flow_Approved_Fork">
+        <di:waypoint x="465" y="307" />
+        <di:waypoint x="535" y="307" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Rejected_Cancel_di" bpmnElement="Flow_Rejected_Cancel">
+        <di:waypoint x="440" y="332" />
+        <di:waypoint x="440" y="432" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Fork_Marketing_di" bpmnElement="Flow_Fork_Marketing">
+        <di:waypoint x="560" y="282" />
+        <di:waypoint x="560" y="217" />
+        <di:waypoint x="650" y="217" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Fork_Inventory_di" bpmnElement="Flow_Fork_Inventory">
+        <di:waypoint x="560" y="332" />
+        <di:waypoint x="560" y="407" />
+        <di:waypoint x="650" y="407" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Marketing_Join_di" bpmnElement="Flow_Marketing_Join">
+        <di:waypoint x="750" y="217" />
+        <di:waypoint x="850" y="217" />
+        <di:waypoint x="850" y="282" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Inventory_Join_di" bpmnElement="Flow_Inventory_Join">
+        <di:waypoint x="750" y="407" />
+        <di:waypoint x="850" y="407" />
+        <di:waypoint x="850" y="332" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Join_End_di" bpmnElement="Flow_Join_End">
+        <di:waypoint x="875" y="307" />
+        <di:waypoint x="952" y="307" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

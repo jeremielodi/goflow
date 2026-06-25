@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -22,6 +22,9 @@ var (
 	ErrInvalidOutgoingFlows = errors.New("node has invalid number of outgoing flows")
 	ErrNodeNotFound         = errors.New("node not found in graph")
 )
+
+// graphCache holds deserialized ProcessGraph values keyed by process_instance_id string.
+var graphCache sync.Map
 
 type EngineRepository struct {
 	db         *sqlx.DB
@@ -130,18 +133,12 @@ func (r *EngineRepository) GetProcessVariables(instanceID uuid.UUID) (map[string
 }
 
 func (r *EngineRepository) CreateGatewayStateTx(tx *sqlx.Tx, state *models.GatewayState) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Insert("public.gateway_state", []database.QueryParameter{
-		{Key: "id", Value: state.ID},
-		{Key: "process_instance_id", Value: state.ProcessInstanceID},
-		{Key: "gateway_id", Value: state.GatewayID},
-		{Key: "expected_incoming", Value: state.ExpectedIncoming},
-		{Key: "received_incoming", Value: state.ReceivedIncoming},
-		{Key: "joined_flows", Value: state.JoinedFlows},
-		{Key: "status", Value: state.Status},
-		{Key: "created_at", Value: time.Now()},
-	})
+	_, err := tx.Exec(`
+		INSERT INTO public.gateway_state
+		(id, process_instance_id, gateway_id, expected_incoming, received_incoming, joined_flows, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+	`, state.ID, state.ProcessInstanceID, state.GatewayID,
+		state.ExpectedIncoming, state.ReceivedIncoming, state.JoinedFlows, state.Status)
 	return err
 }
 
@@ -166,33 +163,55 @@ func (r *EngineRepository) CreateTimerTx(tx *sqlx.Tx, timer *models.TimerJob) er
 	return err
 }
 
-// GetDueTimers retrieves all timers that are due to be triggered
-// repository/engine_repository.go
-
-// GetDueTimers retrieves all timers that are due to be triggered
+// GetDueTimers retrieves all timers that are due to be triggered (legacy, no locking).
 func (r *EngineRepository) GetDueTimers(ctx context.Context, now time.Time) ([]models.TimerJob, error) {
 	var timers []models.TimerJob
-
-	// Use database time for comparison - this ensures consistency
 	query := `
-        SELECT id, process_instance_id, execution_id, event_type, due_at, payload, 
+        SELECT id, process_instance_id, execution_id, event_type, due_at, payload,
                is_triggered, created_at, triggered_at, cycle_count, total_cycles, repeat_interval
         FROM public.timer_jobs
         WHERE is_triggered = false AND due_at <= NOW()
         ORDER BY due_at ASC
         LIMIT 100
     `
-
 	err := r.db.SelectContext(ctx, &timers, query)
 	if err != nil {
 		return nil, err
 	}
-
 	for _, t := range timers {
 		log.Printf("   - Timer %s: due_at=%s, triggered=%v", t.ID, t.DueAt, t.IsTriggered)
 	}
-
 	return timers, err
+}
+
+// ClaimDueTimers atomically marks due timers as triggered and returns them.
+// Uses FOR UPDATE SKIP LOCKED so concurrent scheduler instances never double-fire.
+func (r *EngineRepository) ClaimDueTimers(ctx context.Context, limit int) ([]models.TimerJob, error) {
+	var timers []models.TimerJob
+	query := `
+        WITH to_claim AS (
+            SELECT id FROM public.timer_jobs
+            WHERE is_triggered = false AND due_at <= NOW()
+            ORDER BY due_at ASC
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE public.timer_jobs t
+        SET is_triggered = true, triggered_at = NOW()
+        FROM to_claim
+        WHERE t.id = to_claim.id
+        RETURNING t.id, t.process_instance_id, t.execution_id, t.event_type, t.due_at,
+                  t.payload, t.is_triggered, t.created_at, t.triggered_at,
+                  t.cycle_count, t.total_cycles, t.repeat_interval
+    `
+	err := r.db.SelectContext(ctx, &timers, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range timers {
+		log.Printf("   ✅ Claimed timer %s due_at=%s", t.ID, t.DueAt)
+	}
+	return timers, nil
 }
 
 func (r *EngineRepository) CreateTimerWithDurationSeconds(tx *sqlx.Tx, timerID, processInstanceID uuid.UUID, executionID *uuid.UUID, durationSeconds int, eventType string, payload []byte, cycleCount, totalCycles int, repeatInterval string) error {
@@ -411,92 +430,51 @@ func (r *EngineRepository) GetChildExecutions(parentExecID uuid.UUID) ([]Executi
 
 // CompleteChildExecution marks a child execution as completed
 func (r *EngineRepository) CompleteChildExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "status", Value: "completed"},
-			{Key: "is_active", Value: false},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+	_, err := tx.Exec(`
+		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE id = $1
+	`, execID)
 	return err
 }
 
 // UpdateExecutionNode updates the current node of an execution
 func (r *EngineRepository) UpdateExecutionNodeTx(tx *sqlx.Tx, execID uuid.UUID, nodeID string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "current_element_id", Value: nodeID},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+	_, err := tx.Exec(`
+		UPDATE public.executions SET current_element_id = $1, updated_at = NOW() WHERE id = $2
+	`, nodeID, execID)
 	return err
 }
 
 // UpdateExecutionStatus updates the status of an execution
 func (r *EngineRepository) UpdateExecutionStatusTx(tx *sqlx.Tx, execID uuid.UUID, status string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "status", Value: status},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+	_, err := tx.Exec(`
+		UPDATE public.executions SET status = $1, updated_at = NOW() WHERE id = $2
+	`, status, execID)
 	return err
 }
 
 // UpdateExecutionStatusAndNode updates both status and current node
 func (r *EngineRepository) UpdateExecutionStatusAndNodeTx(tx *sqlx.Tx, execID uuid.UUID, status, nodeID string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "status", Value: status},
-			{Key: "current_element_id", Value: nodeID},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+	_, err := tx.Exec(`
+		UPDATE public.executions SET status = $1, current_element_id = $2, updated_at = NOW() WHERE id = $3
+	`, status, nodeID, execID)
 	return err
 }
 
 // CompleteExecution marks an execution as completed
 func (r *EngineRepository) CompleteExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "status", Value: "completed"},
-			{Key: "is_active", Value: false},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+	_, err := tx.Exec(`
+		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE id = $1
+	`, execID)
 	return err
 }
 
 // CreateJob creates a new service task job
 func (r *EngineRepository) CreateJobTx(tx *sqlx.Tx, jobID, processInstanceID, executionID uuid.UUID, jobType string, payload []byte) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Insert("public.jobs", []database.QueryParameter{
-		{Key: "id", Value: jobID},
-		{Key: "process_instance_id", Value: processInstanceID},
-		{Key: "execution_id", Value: executionID},
-		{Key: "job_type", Value: jobType},
-		{Key: "status", Value: "pending"},
-		{Key: "payload", Value: payload},
-		{Key: "retries", Value: 3},
-		{Key: "created_at", Value: time.Now()},
-		{Key: "updated_at", Value: time.Now()},
-	})
+	_, err := tx.Exec(`
+		INSERT INTO public.jobs
+		(id, process_instance_id, execution_id, job_type, status, payload, retries, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, 'pending', $5, 3, NOW(), NOW())
+	`, jobID, processInstanceID, executionID, jobType, payload)
 	return err
 }
 
@@ -512,30 +490,12 @@ type UserTask struct {
 
 // CreateUserTask creates a new user task
 func (r *EngineRepository) CreateUserTaskTx(tx *sqlx.Tx, task *UserTask) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	params := []database.QueryParameter{
-		{Key: "id", Value: task.ID},
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "execution_id", Value: task.ExecutionID},
-		{Key: "task_definition_key", Value: task.TaskDefinitionKey},
-		{Key: "status", Value: "created"},
-		{Key: "created_at", Value: time.Now()},
-		{Key: "updated_at", Value: time.Now()},
-	}
-
-	if task.TaskName != nil {
-		params = append(params, database.QueryParameter{Key: "task_name", Value: *task.TaskName})
-	}
-	if task.Assignee != nil {
-		params = append(params, database.QueryParameter{Key: "assignee", Value: *task.Assignee})
-	}
-	if task.CandidateGroup != nil {
-		params = append(params, database.QueryParameter{Key: "candidate_group", Value: *task.CandidateGroup})
-	}
-
-	_, err := adapter.Insert("public.tasks", params)
-
+	_, err := tx.Exec(`
+		INSERT INTO public.tasks
+		(id, process_instance_id, execution_id, task_definition_key, task_name, assignee, candidate_group, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'created', NOW(), NOW())
+	`, task.ID, task.ProcessInstanceID, task.ExecutionID, task.TaskDefinitionKey,
+		task.TaskName, task.Assignee, task.CandidateGroup)
 	return err
 }
 
@@ -555,20 +515,11 @@ func (r *EngineRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, proc
 
 // UpdateProcessInstanceStatusTx updates the status of a process instance
 func (r *EngineRepository) UpdateProcessInstanceStatusTx(tx *sqlx.Tx, instanceID uuid.UUID, status string, endedAt *time.Time) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	params := []database.QueryParameter{
-		{Key: "status", Value: status},
-	}
-
 	if endedAt != nil {
-		params = append(params, database.QueryParameter{Key: "ended_at", Value: *endedAt})
+		_, err := tx.Exec(`UPDATE public.process_instances SET status = $1, ended_at = $2 WHERE id = $3`, status, *endedAt, instanceID)
+		return err
 	}
-
-	_, err := adapter.Update("public.process_instances",
-		params,
-		database.QueryParameter{Key: "id", Value: instanceID},
-	)
+	_, err := tx.Exec(`UPDATE public.process_instances SET status = $1 WHERE id = $2`, status, instanceID)
 	return err
 }
 
@@ -596,32 +547,15 @@ func (r *EngineRepository) UpdateProcessVariablesTx(tx *sqlx.Tx, instanceID uuid
 		return err
 	}
 
-	adapter := database.NewDabaseAdapter(r.db)
-
-	// Check if variables exist
 	var exists bool
-	err = tx.QueryRow(`
-		SELECT EXISTS(SELECT 1 FROM public.variables WHERE process_instance_id = $1)
-	`, instanceID).Scan(&exists)
-	if err != nil {
+	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM public.variables WHERE process_instance_id = $1)`, instanceID).Scan(&exists); err != nil {
 		return err
 	}
 
 	if exists {
-		_, err = adapter.Update("public.variables",
-			[]database.QueryParameter{
-				{Key: "data", Value: jsonData},
-				{Key: "updated_at", Value: time.Now()},
-			},
-			database.QueryParameter{Key: "process_instance_id", Value: instanceID},
-		)
+		_, err = tx.Exec(`UPDATE public.variables SET data = $1, updated_at = NOW() WHERE process_instance_id = $2`, jsonData, instanceID)
 	} else {
-		_, err = adapter.Insert("public.variables", []database.QueryParameter{
-			{Key: "id", Value: uuid.New()},
-			{Key: "process_instance_id", Value: instanceID},
-			{Key: "data", Value: jsonData},
-			{Key: "updated_at", Value: time.Now()},
-		})
+		_, err = tx.Exec(`INSERT INTO public.variables (id, process_instance_id, data, updated_at) VALUES ($1, $2, $3, NOW())`, uuid.New(), instanceID, jsonData)
 	}
 	return err
 }
@@ -669,8 +603,14 @@ func (r *EngineRepository) GetProcessDefinitionByInstanceID(instanceID uuid.UUID
 	return &def, nil
 }
 
-// GetProcessGraphByInstanceID retrieves just the process graph for a process instance
+// GetProcessGraphByInstanceID retrieves the process graph for a process instance.
+// Results are cached in-process to avoid repeated JSON deserialization.
 func (r *EngineRepository) GetProcessGraphByInstanceID(instanceID uuid.UUID) (*engine.ProcessGraph, error) {
+	key := instanceID.String()
+	if cached, ok := graphCache.Load(key); ok {
+		return cached.(*engine.ProcessGraph), nil
+	}
+
 	var graphJSON []byte
 	query := `
 		SELECT pd.parsed_graph
@@ -678,8 +618,7 @@ func (r *EngineRepository) GetProcessGraphByInstanceID(instanceID uuid.UUID) (*e
 		JOIN public.process_instances pi ON pi.process_definition_id = pd.id
 		WHERE pi.id = $1
 	`
-	err := r.db.Get(&graphJSON, query, instanceID)
-	if err != nil {
+	if err := r.db.Get(&graphJSON, query, instanceID); err != nil {
 		return nil, err
 	}
 
@@ -687,6 +626,8 @@ func (r *EngineRepository) GetProcessGraphByInstanceID(instanceID uuid.UUID) (*e
 	if err := json.Unmarshal(graphJSON, &graph); err != nil {
 		return nil, err
 	}
+
+	graphCache.Store(key, &graph)
 	return &graph, nil
 }
 
@@ -718,19 +659,22 @@ func (r *EngineRepository) CreateExecutionTx2(tx *sqlx.Tx, execID, processInstan
 	return err
 }
 
-// CreateExecution creates a new execution
+// CreateExecutionTx creates a new execution within a transaction
 func (r *EngineRepository) CreateExecutionTx(tx *sqlx.Tx, exec *Execution) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Insert("public.executions", []database.QueryParameter{
-		{Key: "id", Value: exec.ID},
-		{Key: "process_instance_id", Value: exec.ProcessInstanceID},
-		{Key: "current_element_id", Value: exec.CurrentElementID},
-		{Key: "status", Value: exec.Status},
-		{Key: "is_active", Value: exec.IsActive},
-		{Key: "created_at", Value: time.Now()},
-		{Key: "updated_at", Value: time.Now()},
-	})
+	query := `
+		INSERT INTO public.executions
+		(id, process_instance_id, parent_execution_id, current_element_id, status, is_active, path_id, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+	`
+	_, err := tx.Exec(query,
+		exec.ID,
+		exec.ProcessInstanceID,
+		exec.ParentExecutionID,
+		exec.CurrentElementID,
+		exec.Status,
+		exec.IsActive,
+		exec.PathID,
+	)
 	return err
 }
 

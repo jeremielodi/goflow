@@ -167,6 +167,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 			assignee = *taskBefore.Assignee
 		}
 
+		processKey := ""
+		if procDef, err := s.procRepo.FindProcessDefinitionByID(defID); err == nil {
+			processKey = procDef.ProcessKey
+		}
+
 		event := &events.TaskEvent{
 			ID:                uuid.New().String(),
 			EventType:         events.TaskCompleted,
@@ -175,9 +180,10 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 			ExecutionID:       task.ExecutionID.String(),
 			TaskName:          task.TaskName,
 			Assignee:          &assignee,
-			OldStatus:         taskBefore.Status,
+			OldStatus:         &taskBefore.Status,
 			NewStatus:         "completed",
 			Timestamp:         time.Now(),
+			ProcessKey:        processKey,
 			Variables: map[string]interface{}{
 				"next_element": nextID,
 				"user_vars":    userVars,
@@ -264,6 +270,13 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 			assignee = *taskBefore.Assignee
 		}
 
+		processKey := ""
+		if defID, err := s.instRepo.GetProcessDefinitionID(task.ProcessInstanceID); err == nil {
+			if procDef, err := s.procRepo.FindProcessDefinitionByID(defID); err == nil {
+				processKey = procDef.ProcessKey
+			}
+		}
+
 		event := &events.TaskEvent{
 			ID:                uuid.New().String(),
 			EventType:         events.TaskCompleted,
@@ -272,9 +285,10 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 			ExecutionID:       task.ExecutionID.String(),
 			TaskName:          task.TaskName,
 			Assignee:          &assignee,
-			OldStatus:         taskBefore.Status,
+			OldStatus:         &taskBefore.Status,
 			NewStatus:         "completed",
 			Timestamp:         time.Now(),
+			ProcessKey:        processKey,
 			Variables: map[string]interface{}{
 				"process_ended": true,
 				"final_vars":    currentVars,

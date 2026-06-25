@@ -183,6 +183,7 @@ CREATE TABLE gateway_state (
     expected_incoming INTEGER NOT NULL, -- How many incoming flows expected
     received_incoming INTEGER DEFAULT 0, -- How many received
     joined_flows JSONB DEFAULT '[]', -- Which flows have joined
+    status VARCHAR(50) NOT NULL DEFAULT 'waiting', -- waiting | completed
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMP,
     UNIQUE(process_instance_id, gateway_id)
@@ -497,6 +498,17 @@ CREATE TABLE IF NOT EXISTS public.multi_instance_children (
 
 CREATE INDEX idx_multi_instance_execs_process ON public.multi_instance_executions(process_instance_id);
 CREATE INDEX idx_multi_instance_children_parent ON public.multi_instance_children(parent_execution_id);
+
+-- Execution-scoped variables for parallel gateway branch isolation
+CREATE TABLE IF NOT EXISTS public.execution_variables (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    execution_id    UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    variables       JSONB NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_execution_variables_exec ON public.execution_variables(execution_id);
 
 -- =========================================================
 -- COMMENTS

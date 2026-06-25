@@ -19,10 +19,11 @@ const (
 )
 
 type Flow struct {
-	ID        string
-	SourceRef string
-	TargetRef string
-	Condition string
+	ID         string
+	SourceRef  string
+	TargetRef  string
+	Condition  string
+	IsBoundary bool // true for flows generated from boundary event attachments
 }
 
 type Node struct {

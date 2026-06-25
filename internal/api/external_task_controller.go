@@ -51,11 +51,12 @@ type CamundaVariable struct {
 }
 
 type FetchAndLockResponse struct {
-	ID        string                     `json:"id"`
-	TopicName string                     `json:"topicName"`
-	Variables map[string]CamundaVariable `json:"variables"`
-	Retries   int                        `json:"retries"`
-	WorkerId  string                     `json:"workerId"`
+	ID                string                     `json:"id"`
+	TopicName         string                     `json:"topicName"`
+	ProcessInstanceID string                     `json:"processInstanceId"`
+	Variables         map[string]CamundaVariable `json:"variables"`
+	Retries           int                        `json:"retries"`
+	WorkerId          string                     `json:"workerId"`
 }
 
 type CompleteRequest struct {
@@ -168,11 +169,12 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 			convertedVars := formatVariablesForResponse(rawVars)
 
 			response = append(response, FetchAndLockResponse{
-				ID:        job.ID.String(),
-				TopicName: topicJob.TopicName,
-				Variables: convertedVars,
-				Retries:   job.Retries,
-				WorkerId:  req.WorkerId,
+				ID:                job.ID.String(),
+				TopicName:         topicJob.TopicName,
+				ProcessInstanceID: job.ProcessInstanceID.String(),
+				Variables:         convertedVars,
+				Retries:           job.Retries,
+				WorkerId:          req.WorkerId,
 			})
 		}
 	}

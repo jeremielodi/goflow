@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_MealPreparation"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Parallel Gateway (AND) example
+    SCENARIO: To optimise time, pasta is cooked AND salad is prepared simultaneously.
+              Both must finish before the meal can be eaten. This saves ~10 minutes
+              compared to sequential execution.
+    FEATURES TESTED:
+      - Parallel Gateway (AND) — fork splits into two concurrent paths
+      - Parallel Gateway (AND) — join waits for both paths to complete
+      - Service Task on parallel branch (topic: cook_pasta)
+      - User Task on parallel branch (candidateGroups: kitchen)
+      - User Task after join (eat meal)
+  -->
+  <bpmn:process id="MealPrepProcess" name="Meal Preparation" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_Meal" name="Start Cooking">
+      <bpmn:outgoing>Flow_Start_Fork</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- AND Split: both branches execute simultaneously -->
+    <bpmn:parallelGateway id="fork_prepare" name="Prepare in parallel">
+      <bpmn:incoming>Flow_Start_Fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fork_Pasta</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Salad</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- Branch A: external service cooks the pasta (25 min) -->
+    <bpmn:serviceTask id="cook_pasta" name="Cook Pasta (25 min)" camunda:type="external" camunda:topic="cook_pasta">
+      <bpmn:incoming>Flow_Fork_Pasta</bpmn:incoming>
+      <bpmn:outgoing>Flow_Pasta_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Branch B: anyone in kitchen prepares the salad (20 min) -->
+    <bpmn:userTask id="prepare_salad" name="Prepare Salad (20 min)" camunda:candidateGroups="kitchen">
+      <bpmn:incoming>Flow_Fork_Salad</bpmn:incoming>
+      <bpmn:outgoing>Flow_Salad_Join</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- AND Join: synchronises both paths before proceeding -->
+    <bpmn:parallelGateway id="join_ready" name="Both ready?">
+      <bpmn:incoming>Flow_Pasta_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Salad_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Join_Eat</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- After both are done, eat the meal -->
+    <bpmn:userTask id="eat_meal" name="Eat Meal" camunda:candidateGroups="everyone">
+      <bpmn:incoming>Flow_Join_Eat</bpmn:incoming>
+      <bpmn:outgoing>Flow_Eat_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="End_Full" name="Not Hungry Anymore">
+      <bpmn:incoming>Flow_Eat_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Fork" sourceRef="Start_Meal" targetRef="fork_prepare" />
+    <bpmn:sequenceFlow id="Flow_Fork_Pasta" sourceRef="fork_prepare" targetRef="cook_pasta" />
+    <bpmn:sequenceFlow id="Flow_Fork_Salad" sourceRef="fork_prepare" targetRef="prepare_salad" />
+    <bpmn:sequenceFlow id="Flow_Pasta_Join" sourceRef="cook_pasta" targetRef="join_ready" />
+    <bpmn:sequenceFlow id="Flow_Salad_Join" sourceRef="prepare_salad" targetRef="join_ready" />
+    <bpmn:sequenceFlow id="Flow_Join_Eat" sourceRef="join_ready" targetRef="eat_meal" />
+    <bpmn:sequenceFlow id="Flow_Eat_End" sourceRef="eat_meal" targetRef="End_Full" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_MealPrep">
+    <bpmndi:BPMNPlane id="BPMNPlane_MealPrep" bpmnElement="MealPrepProcess">
+
+      <bpmndi:BPMNShape id="Start_Meal_di" bpmnElement="Start_Meal">
+        <dc:Bounds x="152" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="130" y="245" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="fork_prepare_di" bpmnElement="fork_prepare">
+        <dc:Bounds x="255" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="240" y="255" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <!-- Upper branch: cook pasta -->
+      <bpmndi:BPMNShape id="cook_pasta_di" bpmnElement="cook_pasta">
+        <dc:Bounds x="380" y="110" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <!-- Lower branch: prepare salad -->
+      <bpmndi:BPMNShape id="prepare_salad_di" bpmnElement="prepare_salad">
+        <dc:Bounds x="380" y="290" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="join_ready_di" bpmnElement="join_ready">
+        <dc:Bounds x="575" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="561" y="255" width="78" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="eat_meal_di" bpmnElement="eat_meal">
+        <dc:Bounds x="690" y="180" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_Full_di" bpmnElement="End_Full">
+        <dc:Bounds x="862" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="835" y="245" width="90" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Fork_di" bpmnElement="Flow_Start_Fork">
+        <di:waypoint x="188" y="220" />
+        <di:waypoint x="255" y="220" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Fork_Pasta_di" bpmnElement="Flow_Fork_Pasta">
+        <di:waypoint x="280" y="195" />
+        <di:waypoint x="280" y="150" />
+        <di:waypoint x="380" y="150" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Fork_Salad_di" bpmnElement="Flow_Fork_Salad">
+        <di:waypoint x="280" y="245" />
+        <di:waypoint x="280" y="330" />
+        <di:waypoint x="380" y="330" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Pasta_Join_di" bpmnElement="Flow_Pasta_Join">
+        <di:waypoint x="500" y="150" />
+        <di:waypoint x="600" y="150" />
+        <di:waypoint x="600" y="195" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Salad_Join_di" bpmnElement="Flow_Salad_Join">
+        <di:waypoint x="500" y="330" />
+        <di:waypoint x="600" y="330" />
+        <di:waypoint x="600" y="245" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Join_Eat_di" bpmnElement="Flow_Join_Eat">
+        <di:waypoint x="625" y="220" />
+        <di:waypoint x="690" y="220" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Eat_End_di" bpmnElement="Flow_Eat_End">
+        <di:waypoint x="790" y="220" />
+        <di:waypoint x="862" y="220" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

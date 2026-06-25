@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_LoanApproval"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    TEST COVERAGE:
+      - User Task (with candidateGroups — requires claim)
+      - User Task (with assignee expression ${reviewer})
+      - Exclusive Gateway (XOR) with conditions ${approved == true/false}
+      - Multiple End Events
+  -->
+  <bpmn:process id="LoanApprovalProcess" name="Loan Approval Process" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="StartEvent_1" name="Loan Request Received">
+      <bpmn:outgoing>Flow_Start_Submit</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Step 1: Any member of "applicants" group submits the application -->
+    <bpmn:userTask id="submit_application" name="Submit Application" camunda:candidateGroups="applicants">
+      <bpmn:incoming>Flow_Start_Submit</bpmn:incoming>
+      <bpmn:outgoing>Flow_Submit_Review</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Step 2: Assigned reviewer evaluates the file -->
+    <bpmn:userTask id="review_application" name="Review Application" camunda:assignee="${reviewer}">
+      <bpmn:incoming>Flow_Submit_Review</bpmn:incoming>
+      <bpmn:outgoing>Flow_Review_Gateway</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- XOR Gateway: approved? -->
+    <bpmn:exclusiveGateway id="approval_decision" name="Approved?">
+      <bpmn:incoming>Flow_Review_Gateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approved_Sign</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Rejected_End</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Step 3 (approved path): Applicant signs contract -->
+    <bpmn:userTask id="sign_contract" name="Sign Contract" camunda:assignee="${applicant}">
+      <bpmn:incoming>Flow_Approved_Sign</bpmn:incoming>
+      <bpmn:outgoing>Flow_Sign_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end_loan_granted" name="Loan Granted">
+      <bpmn:incoming>Flow_Sign_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="end_loan_rejected" name="Loan Rejected">
+      <bpmn:incoming>Flow_Rejected_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Submit" sourceRef="StartEvent_1" targetRef="submit_application" />
+    <bpmn:sequenceFlow id="Flow_Submit_Review" sourceRef="submit_application" targetRef="review_application" />
+    <bpmn:sequenceFlow id="Flow_Review_Gateway" sourceRef="review_application" targetRef="approval_decision" />
+    <bpmn:sequenceFlow id="Flow_Approved_Sign" sourceRef="approval_decision" targetRef="sign_contract">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Sign_End" sourceRef="sign_contract" targetRef="end_loan_granted" />
+    <bpmn:sequenceFlow id="Flow_Rejected_End" sourceRef="approval_decision" targetRef="end_loan_rejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved == false}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_LoanApproval">
+    <bpmndi:BPMNPlane id="BPMNPlane_LoanApproval" bpmnElement="LoanApprovalProcess">
+
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
+        <dc:Bounds x="152" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="127" y="202" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="submit_application_di" bpmnElement="submit_application">
+        <dc:Bounds x="250" y="137" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="review_application_di" bpmnElement="review_application">
+        <dc:Bounds x="420" y="137" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="approval_decision_di" bpmnElement="approval_decision" isMarkerVisible="true">
+        <dc:Bounds x="595" y="152" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="596" y="122" width="49" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="sign_contract_di" bpmnElement="sign_contract">
+        <dc:Bounds x="710" y="137" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_loan_granted_di" bpmnElement="end_loan_granted">
+        <dc:Bounds x="882" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="860" y="202" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_loan_rejected_di" bpmnElement="end_loan_rejected">
+        <dc:Bounds x="602" y="302" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="580" y="345" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Submit_di" bpmnElement="Flow_Start_Submit">
+        <di:waypoint x="188" y="177" />
+        <di:waypoint x="250" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Submit_Review_di" bpmnElement="Flow_Submit_Review">
+        <di:waypoint x="350" y="177" />
+        <di:waypoint x="420" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Review_Gateway_di" bpmnElement="Flow_Review_Gateway">
+        <di:waypoint x="520" y="177" />
+        <di:waypoint x="595" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Approved_Sign_di" bpmnElement="Flow_Approved_Sign">
+        <di:waypoint x="645" y="177" />
+        <di:waypoint x="710" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Sign_End_di" bpmnElement="Flow_Sign_End">
+        <di:waypoint x="810" y="177" />
+        <di:waypoint x="882" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Rejected_End_di" bpmnElement="Flow_Rejected_End">
+        <di:waypoint x="620" y="202" />
+        <di:waypoint x="620" y="302" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

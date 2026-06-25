@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"regexp"
@@ -460,397 +459,45 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
 
-			err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next)
-			if err != nil {
+			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to update execution node: %w", err)
 			}
-
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
 			currentID = next
-
 			r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, currentID, next, variables)
 
 		case engine.ServiceTaskType:
-			if node.MultiInstance != nil {
-				// Check if this execution is already a child
-				if exec.ParentExecutionID != nil {
-					// This is a child - process as regular service task
-					log.Printf("📦 Multi-instance child %s processing service task %s", exec.ID, node.ID)
-					// Fall through to regular service task handling (create job)
-				} else if node.MultiInstance != nil {
-					// This is the parent - handle multi-instance coordination
-					return r.handleMultiInstance(ctx, exec, node, variables)
-				}
+			if node.MultiInstance != nil && exec.ParentExecutionID != nil {
+				log.Printf("📦 Multi-instance child %s processing service task %s", exec.ID, node.ID)
 			}
-
-			// Begin transaction
-			tx, err := r.DB.BeginTxx(ctx, nil)
-			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
-			}
-			defer tx.Rollback()
-
-			// Move token to current service task node
-			err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID)
-			if err != nil {
-				return fmt.Errorf("failed to update execution: %w", err)
-			}
-
-			// Validate job type
-			if node.JobType == nil {
-				return fmt.Errorf("service task %s has no job type", node.ID)
-			}
-
-			// Prepare payload from variables
-			payload, err := json.Marshal(variables)
-			if err != nil {
-				return fmt.Errorf("failed to marshal variables: %w", err)
-			}
-
-			// Create job
-			jobID := uuid.New()
-			err = engineRepo.CreateJobTx(tx, jobID, exec.ProcessInstanceID, exec.ID, *node.JobType, payload)
-			if err != nil {
-				return fmt.Errorf("failed to create job: %w", err)
-			}
-
-			// Update execution status to waiting
-			err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
-			if err != nil {
-				return fmt.Errorf("failed to update execution status: %w", err)
-			}
-
-			// Commit transaction
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-
-			r.auditService.LogJobCreated(exec.ProcessInstanceID, jobID, *node.JobType)
-			return nil
+			return r.executeServiceTask(ctx, engineRepo, exec, node, variables)
 
 		case engine.UserTaskType:
-			if node.MultiInstance != nil {
-				return r.handleMultiInstance(ctx, exec, node, variables)
-			}
-			// Begin transaction
-			tx, err := r.DB.BeginTxx(ctx, nil)
-			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
-			}
-			defer tx.Rollback()
-
-			// Move token to current user task node
-			err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID)
-			if err != nil {
-				return fmt.Errorf("failed to update execution: %w", err)
-			}
-
-			// ✅ CHECK FOR BOUNDARY TIMER EVENT
-			var attachedTimer *engine.Node
-			for _, n := range r.Graph.Nodes {
-				if n.Type == engine.BoundaryTimerEventType && n.AttachedToRef == node.ID {
-					attachedTimer = n
-					break
-				}
-			}
-
-			// If there's a boundary timer, schedule it
-			if attachedTimer != nil && attachedTimer.TimerDefinition != "" {
-				// Check if it's a cycle
-				var totalCycles int = 1
-				var repeatInterval string = ""
-				var cycleCount int = 0
-				var timerDuration time.Duration
-
-				// Parse timer definition for cycles
-				if strings.Contains(attachedTimer.TimerDefinition, "timeCycle") {
-					cycleStr := extractCycleString(attachedTimer.TimerDefinition)
-					cycle, err := ParseTimerCycle(cycleStr)
-					if err == nil {
-						totalCycles = cycle.Remaining
-						repeatInterval = formatDuration(cycle.Interval)
-						cycleCount = 0
-						timerDuration = cycle.Interval
-					} else {
-						log.Printf("⚠️ Failed to parse timer cycle: %v, using fallback", err)
-						timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
-					}
-				} else {
-					timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
-				}
-
-				dueAt := time.Now().Add(timerDuration)
-
-				log.Printf("⏰ [CREATE TIMER] Task: %s, Duration: %v, DueAt: %s, IsCycle: %v, TotalCycles: %d",
-					node.ID, timerDuration, dueAt.Format("15:04:05.000"),
-					totalCycles != 1 || repeatInterval != "", totalCycles)
-
-				// Get the next node after the boundary event
-				var nextNodeID string
-				if len(attachedTimer.Outgoing) > 0 {
-					nextNodeID = attachedTimer.Outgoing[0].TargetRef
-					log.Printf("📌 Next node: %s", nextNodeID)
-				}
-
-				// Create payload with cycle info
-				payload := map[string]interface{}{
-					"target_node_id":    nextNodeID,
-					"event_type":        "boundary",
-					"is_cycle":          totalCycles != 1 || repeatInterval != "",
-					"total_cycles":      totalCycles,
-					"repeat_interval":   repeatInterval,
-					"current_cycle":     0,
-					"original_duration": timerDuration.String(),
-				}
-				payloadBytes, _ := json.Marshal(payload)
-
-				timerID := uuid.New()
-				err = engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt, "boundary", payloadBytes, cycleCount, totalCycles, repeatInterval)
-				if err != nil {
-					return fmt.Errorf("failed to create timer: %w", err)
-				}
-
-				r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "boundary")
-			}
-
-			// Resolve assignee and candidate group
-			var assignee *string
-			if node.AssigneeExpr != nil {
-				resolved := resolveExpression(*node.AssigneeExpr, variables)
-				if resolved != "" {
-					assignee = &resolved
-				}
-			}
-
-			var candidateGroup *string
-			if node.CandidateGroupExpr != nil {
-				resolved := resolveExpression(*node.CandidateGroupExpr, variables)
-				if resolved != "" {
-					candidateGroup = &resolved
-				}
-			}
-
-			// Create user task
-			taskID := uuid.New()
-			taskName := node.Name
-			err = engineRepo.CreateUserTaskTx(tx, &repository.UserTask{
-				ID:                taskID,
-				ProcessInstanceID: exec.ProcessInstanceID,
-				ExecutionID:       exec.ID,
-				TaskDefinitionKey: node.ID,
-				TaskName:          &taskName,
-				Assignee:          assignee,
-				CandidateGroup:    candidateGroup,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to create user task: %w", err)
-			}
-
-			// Update execution status to waiting
-			err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
-			if err != nil {
-				return fmt.Errorf("failed to update execution status: %w", err)
-			}
-
-			// Commit transaction
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-
-			r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
-
-			if r.dispatcher != nil {
-				// Dispatch event using global dispatcher
-				event := &events.TaskEvent{
-					ID:                uuid.New().String(),
-					EventType:         events.TaskCreated,
-					TaskID:            taskID.String(),
-					ProcessInstanceID: exec.ProcessInstanceID.String(),
-					ExecutionID:       exec.ID.String(),
-					TaskName:          taskName,
-					Assignee:          assignee,
-					CandidateGroup:    candidateGroup,
-					NewStatus:         "created",
-					Timestamp:         time.Now(),
-				}
-				go r.dispatcher.Dispatch(context.Background(), event)
-			}
-
-			return nil
+			return r.executeUserTask(ctx, engineRepo, exec, node, graph, variables)
 
 		case engine.ScriptTaskType:
-			// Execute script task
-			if node.Script != nil {
-				log.Printf("📜 Executing script task: %s", node.ID)
-
-				// Execute the script (simplified - you may want to use a proper JS engine)
-				scriptResult, err := executeScript(*node.Script, variables)
-				if err != nil {
-					return fmt.Errorf("script execution failed: %w", err)
-				}
-
-				// Merge script results into variables
-				if scriptResult != nil {
-					for k, v := range scriptResult {
-						variables[k] = v
-					}
-
-					// Update variables in database
-					tx, err := r.DB.Beginx()
-					if err != nil {
-						return err
-					}
-					defer tx.Rollback()
-
-					err = engineRepo.UpdateProcessVariablesTx(tx, exec.ProcessInstanceID, variables)
-					if err != nil {
-						return err
-					}
-
-					if err := tx.Commit(); err != nil {
-						return err
-					}
-				}
-			}
-
-			// Move to next node
-			next, err := common.ResolveNext(node, variables)
+			next, err := r.executeScriptTask(ctx, engineRepo, exec, node, variables)
 			if err != nil {
 				return err
 			}
-
-			tx, err := r.DB.Beginx()
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-
-			err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next)
-			if err != nil {
-				tx.Rollback()
-				return err
-			}
-
-			if err := tx.Commit(); err != nil {
-				return err
-			}
-
 			currentID = next
 			continue
+
 		case engine.BoundaryTimerEventType:
-			// This node is reached when a timer fires
-			// Move to the target node
-			if len(node.Outgoing) == 0 {
-				return fmt.Errorf("boundary timer event %s has no outgoing flow", node.ID)
-			}
-			nextNodeID := node.Outgoing[0].TargetRef
-
-			tx, err := r.DB.BeginTxx(ctx, nil)
+			next, err := r.executeBoundaryTimerNode(ctx, engineRepo, exec, node)
 			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
+				return err
 			}
-			defer tx.Rollback()
-
-			// Update execution to next node
-			err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, nextNodeID)
-			if err != nil {
-				return fmt.Errorf("failed to update execution node: %w", err)
-			}
-
-			// Update execution status to active
-			err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "active")
-			if err != nil {
-				return fmt.Errorf("failed to update execution status: %w", err)
-			}
-
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-
-			currentID = nextNodeID
+			currentID = next
 			continue
 
-			// For intermediate timer events (standalone)
-		case engine.IntermediateCatchEventType:
-			tx, err := r.DB.BeginTxx(ctx, nil)
-			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
-			}
-			defer tx.Rollback()
+		case engine.IntermediateCatchEventType, engine.IntermediateTimerEventType:
+			return r.executeIntermediateTimer(ctx, engineRepo, exec, node)
 
-			if node.TimerDefinition != "" {
-				// Parse timer definition for cycles
-				var totalCycles int = 1
-				var repeatInterval string = ""
-				var cycleCount int = 0
-				var timerDuration time.Duration
-
-				// Check if it's a cycle
-				if strings.Contains(node.TimerDefinition, "timeCycle") {
-					cycleStr := extractCycleString(node.TimerDefinition)
-					cycle, err := ParseTimerCycle(cycleStr)
-					if err == nil {
-						totalCycles = cycle.Remaining
-						repeatInterval = formatDuration(cycle.Interval)
-						cycleCount = 0
-						timerDuration = cycle.Interval
-					} else {
-						log.Printf("⚠️ Failed to parse timer cycle: %v, using fallback", err)
-						timerDuration = parseTimerDuration(node.TimerDefinition)
-					}
-				} else {
-					timerDuration = parseTimerDuration(node.TimerDefinition)
-				}
-
-				dueAt := time.Now().Add(timerDuration)
-
-				var nextNodeID string
-				if len(node.Outgoing) > 0 {
-					nextNodeID = node.Outgoing[0].TargetRef
-				}
-
-				// Create payload with cycle info
-				payload := map[string]interface{}{
-					"target_node_id":    nextNodeID,
-					"event_type":        "intermediate",
-					"is_cycle":          totalCycles != 1 || repeatInterval != "",
-					"total_cycles":      totalCycles,
-					"repeat_interval":   repeatInterval,
-					"current_cycle":     0,
-					"original_duration": timerDuration.String(),
-				}
-				payloadBytes, _ := json.Marshal(payload)
-
-				timerID := uuid.New()
-				err = engineRepo.CreateTimerWithCycleTx(
-					tx,
-					timerID,
-					exec.ProcessInstanceID,
-					&exec.ID,
-					dueAt,
-					"intermediate",
-					payloadBytes,
-					cycleCount,
-					totalCycles,
-					repeatInterval,
-				)
-				if err != nil {
-					return fmt.Errorf("failed to create timer: %w", err)
-				}
-
-				// Move execution to waiting state
-				err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
-				if err != nil {
-					return fmt.Errorf("failed to update execution status: %w", err)
-				}
-
-				r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "intermediate")
-				return nil
-			}
 		case engine.ParallelGatewayType:
 			// Create parallel gateway executor
 			parallelExecutor := NewParallelGatewayExecutor(r.DB, r.dispatcher)
@@ -864,6 +511,18 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				}
 				// Log gateway fork
 				r.auditService.LogGatewayForked(exec.ProcessInstanceID, node.ID, len(node.Outgoing))
+
+				// Execute each child execution so branches advance to their first tasks
+				engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
+				children, err := engineRepo.GetChildExecutions(exec.ID)
+				if err != nil {
+					return fmt.Errorf("failed to get child executions after fork: %w", err)
+				}
+				for _, child := range children {
+					if err := r.ExecuteExecution(ctx, child.ID); err != nil {
+						return fmt.Errorf("failed to execute child execution %s: %w", child.ID, err)
+					}
+				}
 				return nil // Parent waits, children continue
 			} else {
 				// For join, we need to get the expected count from the gateway state
@@ -874,8 +533,8 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 				// Get the gateway state to know expected count
 				var gatewayState struct {
-					ExpectedIncoming int
-					ReceivedIncoming int
+					ExpectedIncoming int `db:"expected_incoming"`
+					ReceivedIncoming int `db:"received_incoming"`
 				}
 
 				err = tx.Get(&gatewayState, `
@@ -901,10 +560,11 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 				// Get updated counts after join
 				var finalState struct {
-					ReceivedIncoming int
+					ReceivedIncoming int `db:"received_incoming"`
+					ExpectedIncoming int `db:"expected_incoming"`
 				}
 				err = r.DB.Get(&finalState, `
-			SELECT received_incoming
+			SELECT received_incoming, expected_incoming
 			FROM public.gateway_state
 			WHERE process_instance_id = $1 AND gateway_id = $2
 			ORDER BY created_at DESC
@@ -913,38 +573,26 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 				if err == nil {
 					receivedCount = finalState.ReceivedIncoming
+					expectedCount = finalState.ExpectedIncoming
 				}
 
 				// Log gateway join
 				r.auditService.LogGatewayJoined(exec.ProcessInstanceID, node.ID, expectedCount, receivedCount)
+
+				// If all branches have joined, resume the parent execution
+				if err == nil && finalState.ReceivedIncoming >= finalState.ExpectedIncoming && exec.ParentExecutionID != nil {
+					joinEngineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
+					parentExec, getErr := joinEngineRepo.GetActiveExecution(ctx, *exec.ParentExecutionID)
+					if getErr == nil && parentExec != nil {
+						if resumeErr := r.ExecuteExecution(ctx, parentExec.ID); resumeErr != nil {
+							return fmt.Errorf("failed to resume parent after join: %w", resumeErr)
+						}
+					}
+				}
 				return nil
 			}
 		case engine.EndEventType:
-			// Begin transaction
-			tx, err := r.DB.BeginTxx(ctx, nil)
-			if err != nil {
-				return fmt.Errorf("failed to begin transaction: %w", err)
-			}
-			defer tx.Rollback()
-
-			// Complete process instance
-			err = engineRepo.CompleteProcessInstanceTx(tx, exec.ProcessInstanceID)
-			if err != nil {
-				return fmt.Errorf("failed to complete process instance: %w", err)
-			}
-
-			// Complete execution
-			err = engineRepo.CompleteExecutionTx(tx, exec.ID)
-			if err != nil {
-				return fmt.Errorf("failed to complete execution: %w", err)
-			}
-
-			// Commit transaction
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit transaction: %w", err)
-			}
-
-			return nil
+			return r.executeEndEvent(ctx, engineRepo, exec)
 
 		default:
 			return fmt.Errorf("unknown node type: %s", node.Type)
@@ -1211,103 +859,3 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 // 	return rt.ExecuteExecution(ctx, parentExecID)
 // }
 
-// ------------------------------------------------------------
-// Timer Worker - Call this from main.go to start timer processing
-// ------------------------------------------------------------
-
-// StartTimerWorker starts a background goroutine that processes due timers
-func StartTimerWorker(db *sqlx.DB, stopCh <-chan struct{}, dispatcher *events.TaskEventDispatcher) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stopCh:
-			return
-		case <-ticker.C:
-			processDueTimers(db, dispatcher)
-		}
-	}
-}
-
-func processDueTimers(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) {
-	ctx := context.Background()
-	engineRepo := repository.NewEngineRepository(db, dispatcher)
-
-	// Get timers that need to fire
-	timers, err := engineRepo.GetDueTimers(ctx, time.Now())
-	if err != nil {
-		return
-	}
-
-	for _, timer := range timers {
-		// Parse payload to get target node ID
-		var payload map[string]interface{}
-		if len(timer.Payload) > 0 {
-			if err := json.Unmarshal(timer.Payload, &payload); err != nil {
-				continue
-			}
-		}
-
-		targetNodeID, ok := payload["target_node_id"].(string)
-		if !ok {
-			continue
-		}
-
-		// Mark timer as fired
-		err = engineRepo.MarkTimerFired(ctx, timer.ID)
-		if err != nil {
-			continue
-		}
-
-		// Get the process graph
-		graph, err := engineRepo.GetProcessGraphByInstanceID(timer.ProcessInstanceID)
-		if err != nil {
-			continue
-		}
-
-		// Get the execution
-		if timer.ExecutionID == nil {
-			continue
-		}
-		exec, err := engineRepo.GetExecutionByID(*timer.ExecutionID)
-		if err != nil {
-			continue
-		}
-
-		// Start transaction
-		tx, err := db.Beginx()
-		if err != nil {
-			continue
-		}
-
-		// Cancel the user task (mark as canceled due to timer)
-		err = engineRepo.CancelUserTaskByExecutionTx(tx, exec.ID)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		// Move execution to the target node (boundary event)
-		err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, targetNodeID)
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		// Update execution status to active
-		err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "active")
-		if err != nil {
-			tx.Rollback()
-			continue
-		}
-
-		if err := tx.Commit(); err != nil {
-			continue
-		}
-
-		// Resume execution
-		rt := NewRuntime(graph, db, dispatcher)
-		go rt.ExecuteExecution(ctx, exec.ID)
-	}
-}

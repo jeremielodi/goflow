@@ -287,10 +287,7 @@ func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
 		return result, err
 	}
 
-	// Dispatch TaskCancelled event (unclaim is like cancelling the claim)
-	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCancelled, map[string]interface{}{
-		"reason": "unclaimed",
-	})
+	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskUnclaimed, nil)
 
 	return result, nil
 }
@@ -491,6 +488,16 @@ func (r *TaskRepository) dispatchTaskEvent(taskID uuid.UUID, task *models.Task, 
 		return
 	}
 
+	// Get process key from process definition
+	processKey := ""
+	if task.ProcessInstanceID != uuid.Nil {
+		engineRepo := NewEngineRepository(r.db, r.dispatcher)
+		procDef, err := engineRepo.GetProcessDefinitionByInstanceID(task.ProcessInstanceID)
+		if err == nil && procDef != nil {
+			processKey = procDef.ProcessKey
+		}
+	}
+
 	// Get the new status based on event type
 	newStatus := r.getStatusForEventType(eventType)
 
@@ -503,10 +510,11 @@ func (r *TaskRepository) dispatchTaskEvent(taskID uuid.UUID, task *models.Task, 
 		TaskName:          task.TaskName,
 		Assignee:          task.Assignee,
 		CandidateGroup:    task.CandidateGroup,
-		OldStatus:         task.Status,
+		OldStatus:         &task.Status,
 		NewStatus:         newStatus,
 		Timestamp:         time.Now(),
 		Variables:         additionalData,
+		ProcessKey:        processKey,
 	}
 
 	// Add assignee to event if present in additional data
@@ -530,6 +538,8 @@ func (r *TaskRepository) getStatusForEventType(eventType events.TaskEventType) s
 		return "created"
 	case events.TaskClaimed:
 		return "claimed"
+	case events.TaskUnclaimed:
+		return "created"
 	case events.TaskCompleted:
 		return "completed"
 	case events.TaskFailed:

@@ -1,1 +1,48 @@
 https://camunda.com/bpmn/reference/
+
+
+
+Features manquantes
+BPMN côté moteur
+
+Inclusive Gateway (OR) — seuls Exclusive (XOR) et Parallel (AND) existent
+Event-based Gateway — choix basé sur quel event arrive en premier
+Message Events — corrélation de messages entre processus (start/intermediate/boundary/end)
+Signal Events — broadcast vers plusieurs instances
+Error Boundary Events — catch d'erreurs sur service tasks
+Sub-process / Call Activity — processus imbriqués, réutilisation
+Compensation — annuler des étapes déjà exécutées
+Moteur et opérations
+
+Versioning des process definitions — aujourd'hui un re-deploy écrase tout, les instances en cours devraient rester sur l'ancienne version
+Incident management — quand un job est définitivement échoué (retries=0), rien ne se passe ; il faudrait un "incident" queryable et resolvable manuellement
+Backoff sur retry — aujourd'hui le retry timeout est un champ libre, pas de stratégie exponentielle
+Migration d'instances — déplacer une instance d'une version à une autre
+Observabilité et historique
+
+API historique — les audits sont écrits mais aucun endpoint ne les expose (GET /history/processes, /history/tasks)
+Métriques Prometheus — throughput, latences, jobs en attente
+OpenTelemetry — tracing distribué entre workers
+Visualization API — retourner l'état courant d'un diagramme BPMN annoté (quel nœud est actif)
+Infrastructure
+
+Swagger/OpenAPI — pas de doc auto-générée
+Webhooks — notifier des systèmes externes d'événements process
+Architecture — mon avis
+Ce qui est bien fait
+
+Le découpage parser → engine → runtime → repository → API est propre. La séparation entre la définition du process (graph statique) et l'état d'exécution (executions, variables, jobs en DB) est le bon modèle. PostgreSQL comme source de vérité unique pour l'ACID, c'est le bon choix pour un moteur de workflow.
+
+Ce qui pose problème
+
+Le bug récurrent de cette session vient d'une convention trompeuse : les méthodes suffixées Tx (ex. UpdateExecutionStatusAndNodeTx(tx, ...)) ignorent leur paramètre tx et utilisent r.db directement. Résultat : des opérations qui devraient être atomiques ne le sont pas, et l'appelant croit qu'elles participent à la transaction. C'est un défaut architectural qui va continuer à générer des bugs à chaque nouvelle feature transactionnelle.
+
+runtime.go est un fichier god-class de ~1000 lignes avec un switch géant. Chaque nouveau type de nœud BPMN ajoute un cas. Il serait plus sain d'avoir une interface NodeExecutor avec une implémentation par type de nœud (ServiceTaskExecutor, UserTaskExecutor, TimerExecutor...) — c'est ce que ParallelGatewayExecutor fait déjà, mais c'est l'exception.
+
+Le timer scheduler poll toutes les 2 secondes avec une simple boucle. Ça marche en dev, mais si tu lances 2 instances du serveur, les deux déclenchent les mêmes timers. Il manque un verrou distribué (ex. SELECT ... FOR UPDATE SKIP LOCKED sur la table des timers, ce que Camunda fait nativement).
+
+Le graph de process est reconstruit depuis la DB à chaque requête dans les controllers. Ce devrait être en cache.
+
+En résumé : c'est une bonne base d'apprentissage/prototype, mais pour aller en prod il faudrait corriger le pattern Tx, refactoriser le runtime en executors, et ajouter le SKIP LOCKED sur les timers.
+
+commence par arranger l'architecture alors, ensuite tu execute le tests pour se rassurer que tout marche bien

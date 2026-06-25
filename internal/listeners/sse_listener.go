@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,9 +16,11 @@ import (
 )
 
 type SSEClient struct {
-	ID         string
-	Channel    chan []byte
-	TaskFilter string
+	ID                 string
+	Channel            chan []byte
+	TaskFilter         string   // Filter by task ID ("*" for all)
+	ProcessKeys        []string // Filter by process keys (empty = all)
+	ExcludeProcessKeys []string // Exclude specific process keys
 }
 
 type SSEListener struct {
@@ -45,6 +49,37 @@ func (l *SSEListener) RemoveClient(clientID string) {
 	}
 }
 
+// shouldFilterEvent checks if the event should be sent to the client
+func (l *SSEListener) shouldFilterEvent(client *SSEClient, event *events.TaskEvent) bool {
+	// Check task filter
+	if client.TaskFilter != "*" && client.TaskFilter != event.TaskID {
+		return true // Filter out
+	}
+
+	// Check process keys include filter
+	if len(client.ProcessKeys) > 0 {
+		found := false
+		for _, pk := range client.ProcessKeys {
+			if event.ProcessKey == pk {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return true // Filter out - process key not in allowed list
+		}
+	}
+
+	// Check process keys exclude filter
+	for _, epk := range client.ExcludeProcessKeys {
+		if event.ProcessKey == epk {
+			return true // Filter out - process key is excluded
+		}
+	}
+
+	return false // Keep the event
+}
+
 func (l *SSEListener) OnTaskEvent(ctx context.Context, event *events.TaskEvent) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
@@ -55,21 +90,81 @@ func (l *SSEListener) OnTaskEvent(ctx context.Context, event *events.TaskEvent) 
 	defer l.clientsMu.RUnlock()
 
 	for _, client := range l.clients {
-		if client.TaskFilter != "*" && client.TaskFilter != event.TaskID {
+		if l.shouldFilterEvent(client, event) {
 			continue
 		}
 
 		select {
 		case client.Channel <- payload:
 		default:
+			// Channel full, skip
 		}
 	}
 
 	return nil
 }
 
+// parseCommaSeparated parses a comma-separated string into a slice of strings
+func parseCommaSeparated(value string) []string {
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+// getMultipleQueryValues gets all values for a query parameter
+func getMultipleQueryValues(c *fiber.Ctx, key string) []string {
+	values := make([]string, 0)
+
+	// Get raw query string and parse manually for multiple values
+	rawQuery := string(c.Context().QueryArgs().QueryString())
+	if rawQuery == "" {
+		return values
+	}
+
+	// Parse query string
+	pairs := strings.Split(rawQuery, "&")
+	for _, pair := range pairs {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 {
+			k, err := url.QueryUnescape(kv[0])
+			if err != nil {
+				k = kv[0]
+			}
+			if k == key {
+				v, err := url.QueryUnescape(kv[1])
+				if err != nil {
+					v = kv[1]
+				}
+				values = append(values, v)
+			}
+		}
+	}
+
+	return values
+}
+
 // SSEHandler handles SSE connections
 func (l *SSEListener) SSEHandler(c *fiber.Ctx) error {
+
+	c.Set("X-Accel-Buffering", "no")
+	c.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Set("Content-Type", "text/event-stream; charset=utf-8")
+	c.Set("Connection", "keep-alive")
+	c.Set("Keep-Alive", "timeout=60")
+
+	// Timeout de connexion (5 minutes)
+	_, cancel := context.WithTimeout(c.Context(), 5*time.Minute)
+	defer cancel()
+
 	clientID := c.Query("clientId")
 	if clientID == "" {
 		clientID = uuid.New().String()
@@ -77,6 +172,24 @@ func (l *SSEListener) SSEHandler(c *fiber.Ctx) error {
 
 	taskFilter := c.Query("taskFilter", "*")
 
+	// Parse process keys from query parameters
+	var processKeys []string
+
+	// Check for comma-separated processKeys parameter
+	if processKeysParam := c.Query("processKeys"); processKeysParam != "" {
+		processKeys = parseCommaSeparated(processKeysParam)
+	} else {
+		// Check for multiple processKey parameters
+		processKeys = getMultipleQueryValues(c, "processKey")
+	}
+
+	// Parse exclude process keys
+	var excludeProcessKeys []string
+	if excludeParam := c.Query("excludeProcessKeys"); excludeParam != "" {
+		excludeProcessKeys = parseCommaSeparated(excludeParam)
+	} else {
+		excludeProcessKeys = getMultipleQueryValues(c, "excludeProcessKey")
+	}
 	// Set SSE headers BEFORE SetBodyStreamWriter
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
@@ -84,15 +197,16 @@ func (l *SSEListener) SSEHandler(c *fiber.Ctx) error {
 	c.Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
 	// Capture the done channel BEFORE entering SetBodyStreamWriter
-	// fasthttp's RequestCtx implements context.Context
 	ctxDone := c.Context().Done()
 
 	// Use SetBodyStreamWriter for proper streaming with flush support
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		client := &SSEClient{
-			ID:         clientID,
-			Channel:    make(chan []byte, 100),
-			TaskFilter: taskFilter,
+			ID:                 clientID,
+			Channel:            make(chan []byte, 100),
+			TaskFilter:         taskFilter,
+			ProcessKeys:        processKeys,
+			ExcludeProcessKeys: excludeProcessKeys,
 		}
 
 		l.AddClient(client)
@@ -112,8 +226,15 @@ func (l *SSEListener) SSEHandler(c *fiber.Ctx) error {
 			return err == nil
 		}
 
-		// Send initial connection message immediately
-		if !writeEvent("connected", clientID) {
+		// Send initial connection message with filter info
+		connInfo := map[string]interface{}{
+			"clientId":           clientID,
+			"taskFilter":         taskFilter,
+			"processKeys":        processKeys,
+			"excludeProcessKeys": excludeProcessKeys,
+		}
+		connInfoJSON, _ := json.Marshal(connInfo)
+		if !writeEvent("connected", string(connInfoJSON)) {
 			return
 		}
 

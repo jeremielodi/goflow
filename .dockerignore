@@ -1,0 +1,22 @@
+# .dockerignore
+.git
+.gitignore
+README.md
+.env.example
+*.log
+*.tmp
+node_modules
+.DS_Store
+coverage
+tmp
+dist
+bin
+vendor
+*.test
+*.exe
+*.out
+.vscode
+.idea
+*.swp
+*.swo
+*~

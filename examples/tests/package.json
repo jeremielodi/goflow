@@ -1,0 +1,23 @@
+{
+  "name": "goflow-tests",
+  "version": "1.0.0",
+  "description": "GoFlow integration tests — TypeScript / Axios",
+  "scripts": {
+    "test": "ts-node run_all.ts",
+    "test:auth": "ts-node 01_auth.test.ts",
+    "test:user-task": "ts-node 02_user_task.test.ts",
+    "test:service-task": "ts-node 03_service_task.test.ts",
+    "test:boundary-timer": "ts-node 04_boundary_timer.test.ts",
+    "test:parallel": "ts-node 05_parallel_gateway.test.ts"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "form-data": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0",
+    "@types/form-data": "^2.5.0"
+  }
+}

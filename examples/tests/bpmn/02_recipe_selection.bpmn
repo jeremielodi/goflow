@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_RecipeSelection"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Exclusive Gateway example
+    SCENARIO: Christian is hungry and must choose a recipe. Depending on the choice,
+              he cooks a hot meal himself (service task) or prepares a salad (user task).
+              After cooking, he serves the meal.
+    FEATURES TESTED:
+      - User Task with assignee expression (${chef})
+      - Exclusive Gateway (XOR) with FEEL/CEL conditions
+      - Service Task (external worker, topic: cook_meal) for hot meal path
+      - User Task (prepare salad) for cold path
+      - Claim / unclaim on candidateGroup task
+      - Two branches merging at a single End Event
+  -->
+  <bpmn:process id="RecipeSelectionProcess" name="Recipe Selection" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_Hungry" name="Hungry">
+      <bpmn:outgoing>Flow_Start_Choose</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Christian decides what to eat -->
+    <bpmn:userTask id="choose_recipe" name="Choose Recipe" camunda:assignee="${chef}">
+      <bpmn:incoming>Flow_Start_Choose</bpmn:incoming>
+      <bpmn:outgoing>Flow_Choose_Gateway</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- XOR: which recipe was chosen? -->
+    <bpmn:exclusiveGateway id="recipe_gateway" name="Which recipe?">
+      <bpmn:incoming>Flow_Choose_Gateway</bpmn:incoming>
+      <bpmn:outgoing>Flow_HotMeal</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Salad</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- Hot meal path (pasta or steak): external service handles cooking -->
+    <bpmn:serviceTask id="cook_meal" name="Cook Hot Meal" camunda:type="external" camunda:topic="cook_meal">
+      <bpmn:incoming>Flow_HotMeal</bpmn:incoming>
+      <bpmn:outgoing>Flow_Cook_Serve</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- After cooking hot meal, serve it -->
+    <bpmn:userTask id="serve_hot_meal" name="Serve Hot Meal" camunda:assignee="${chef}">
+      <bpmn:incoming>Flow_Cook_Serve</bpmn:incoming>
+      <bpmn:outgoing>Flow_Serve_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Salad path: prepare manually, anyone in kitchen can claim -->
+    <bpmn:userTask id="prepare_salad" name="Prepare Salad" camunda:candidateGroups="kitchen">
+      <bpmn:incoming>Flow_Salad</bpmn:incoming>
+      <bpmn:outgoing>Flow_Salad_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="End_MealServed" name="Meal Served">
+      <bpmn:incoming>Flow_Serve_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="End_SaladReady" name="Salad Ready">
+      <bpmn:incoming>Flow_Salad_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Choose" sourceRef="Start_Hungry" targetRef="choose_recipe" />
+    <bpmn:sequenceFlow id="Flow_Choose_Gateway" sourceRef="choose_recipe" targetRef="recipe_gateway" />
+    <bpmn:sequenceFlow id="Flow_HotMeal" sourceRef="recipe_gateway" targetRef="cook_meal">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${recipe == "pasta" || recipe == "steak"}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Salad" sourceRef="recipe_gateway" targetRef="prepare_salad">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${recipe == "salad"}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Cook_Serve" sourceRef="cook_meal" targetRef="serve_hot_meal" />
+    <bpmn:sequenceFlow id="Flow_Serve_End" sourceRef="serve_hot_meal" targetRef="End_MealServed" />
+    <bpmn:sequenceFlow id="Flow_Salad_End" sourceRef="prepare_salad" targetRef="End_SaladReady" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_RecipeSelection">
+    <bpmndi:BPMNPlane id="BPMNPlane_RecipeSelection" bpmnElement="RecipeSelectionProcess">
+
+      <bpmndi:BPMNShape id="Start_Hungry_di" bpmnElement="Start_Hungry">
+        <dc:Bounds x="152" y="202" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="158" y="245" width="25" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="choose_recipe_di" bpmnElement="choose_recipe">
+        <dc:Bounds x="250" y="180" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="recipe_gateway_di" bpmnElement="recipe_gateway" isMarkerVisible="true">
+        <dc:Bounds x="415" y="195" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="405" y="165" width="71" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <!-- Hot meal path (upper) -->
+      <bpmndi:BPMNShape id="cook_meal_di" bpmnElement="cook_meal">
+        <dc:Bounds x="530" y="97" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="serve_hot_meal_di" bpmnElement="serve_hot_meal">
+        <dc:Bounds x="700" y="97" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_MealServed_di" bpmnElement="End_MealServed">
+        <dc:Bounds x="872" y="119" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="851" y="162" width="78" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <!-- Salad path (lower) -->
+      <bpmndi:BPMNShape id="prepare_salad_di" bpmnElement="prepare_salad">
+        <dc:Bounds x="530" y="290" width="100" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_SaladReady_di" bpmnElement="End_SaladReady">
+        <dc:Bounds x="702" y="312" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="682" y="355" width="76" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Choose_di" bpmnElement="Flow_Start_Choose">
+        <di:waypoint x="188" y="220" />
+        <di:waypoint x="250" y="220" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Choose_Gateway_di" bpmnElement="Flow_Choose_Gateway">
+        <di:waypoint x="350" y="220" />
+        <di:waypoint x="415" y="220" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_HotMeal_di" bpmnElement="Flow_HotMeal">
+        <di:waypoint x="440" y="195" />
+        <di:waypoint x="440" y="137" />
+        <di:waypoint x="530" y="137" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Salad_di" bpmnElement="Flow_Salad">
+        <di:waypoint x="440" y="245" />
+        <di:waypoint x="440" y="330" />
+        <di:waypoint x="530" y="330" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Cook_Serve_di" bpmnElement="Flow_Cook_Serve">
+        <di:waypoint x="630" y="137" />
+        <di:waypoint x="700" y="137" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Serve_End_di" bpmnElement="Flow_Serve_End">
+        <di:waypoint x="800" y="137" />
+        <di:waypoint x="872" y="137" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Salad_End_di" bpmnElement="Flow_Salad_End">
+        <di:waypoint x="630" y="330" />
+        <di:waypoint x="702" y="330" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

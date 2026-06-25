@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_OvenTimer"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Intermediate Timer Event example
+    SCENARIO: Preparing a frozen pizza. The oven must heat to 180°C before placing
+              the pizza, then bake for a set time before removal.
+    FEATURES TESTED:
+      - Service Task (topic: turn_on_oven) — starts the oven
+      - Intermediate Timer Catch Event (PT20S) — wait for oven to heat up
+      - User Task (place_pizza) — place pizza in hot oven
+      - Intermediate Timer Catch Event (PT30S) — bake timer
+      - User Task (remove_pizza) — remove pizza when done
+      - Linear process flow with two timers
+  -->
+  <bpmn:process id="OvenTimerProcess" name="Frozen Pizza Preparation" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_Pizza" name="Feeling Like Pizza">
+      <bpmn:outgoing>Flow_Start_Oven</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Turn on the oven at 180°C -->
+    <bpmn:serviceTask id="turn_on_oven" name="Turn On Oven (180°C)" camunda:type="external" camunda:topic="turn_on_oven">
+      <bpmn:incoming>Flow_Start_Oven</bpmn:incoming>
+      <bpmn:outgoing>Flow_Oven_HeatTimer</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Wait for oven to reach temperature (PT20S for tests) -->
+    <bpmn:intermediateCatchEvent id="timer_heat_up" name="Wait — oven heats up (20s)">
+      <bpmn:incoming>Flow_Oven_HeatTimer</bpmn:incoming>
+      <bpmn:outgoing>Flow_Heat_Place</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_HeatUp">
+        <bpmn:timeDuration>PT20S</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <!-- Oven is hot: place the pizza inside -->
+    <bpmn:userTask id="place_pizza" name="Place Pizza in Oven" camunda:assignee="${cook}">
+      <bpmn:incoming>Flow_Heat_Place</bpmn:incoming>
+      <bpmn:outgoing>Flow_Place_BakeTimer</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <!-- Wait for baking to complete (PT30S for tests) -->
+    <bpmn:intermediateCatchEvent id="timer_bake" name="Wait — pizza bakes (30s)">
+      <bpmn:incoming>Flow_Place_BakeTimer</bpmn:incoming>
+      <bpmn:outgoing>Flow_Bake_Remove</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_Bake">
+        <bpmn:timeDuration>PT30S</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <!-- Pizza is done: remove from oven -->
+    <bpmn:userTask id="remove_pizza" name="Remove Pizza from Oven" camunda:assignee="${cook}">
+      <bpmn:incoming>Flow_Bake_Remove</bpmn:incoming>
+      <bpmn:outgoing>Flow_Remove_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="End_PizzaDone" name="Pizza Ready to Eat">
+      <bpmn:incoming>Flow_Remove_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Oven" sourceRef="Start_Pizza" targetRef="turn_on_oven" />
+    <bpmn:sequenceFlow id="Flow_Oven_HeatTimer" sourceRef="turn_on_oven" targetRef="timer_heat_up" />
+    <bpmn:sequenceFlow id="Flow_Heat_Place" sourceRef="timer_heat_up" targetRef="place_pizza" />
+    <bpmn:sequenceFlow id="Flow_Place_BakeTimer" sourceRef="place_pizza" targetRef="timer_bake" />
+    <bpmn:sequenceFlow id="Flow_Bake_Remove" sourceRef="timer_bake" targetRef="remove_pizza" />
+    <bpmn:sequenceFlow id="Flow_Remove_End" sourceRef="remove_pizza" targetRef="End_PizzaDone" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_OvenTimer">
+    <bpmndi:BPMNPlane id="BPMNPlane_OvenTimer" bpmnElement="OvenTimerProcess">
+
+      <bpmndi:BPMNShape id="Start_Pizza_di" bpmnElement="Start_Pizza">
+        <dc:Bounds x="152" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="127" y="202" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="turn_on_oven_di" bpmnElement="turn_on_oven">
+        <dc:Bounds x="250" y="137" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <!-- Intermediate timer 1: heat up -->
+      <bpmndi:BPMNShape id="timer_heat_up_di" bpmnElement="timer_heat_up">
+        <dc:Bounds x="432" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="405" y="202" width="90" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="place_pizza_di" bpmnElement="place_pizza">
+        <dc:Bounds x="530" y="137" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <!-- Intermediate timer 2: bake -->
+      <bpmndi:BPMNShape id="timer_bake_di" bpmnElement="timer_bake">
+        <dc:Bounds x="712" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="686" y="202" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="remove_pizza_di" bpmnElement="remove_pizza">
+        <dc:Bounds x="810" y="137" width="120" height="80" />
+        <bpmndi:BPMNLabel />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_PizzaDone_di" bpmnElement="End_PizzaDone">
+        <dc:Bounds x="1002" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="978" y="202" width="85" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Oven_di" bpmnElement="Flow_Start_Oven">
+        <di:waypoint x="188" y="177" />
+        <di:waypoint x="250" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Oven_HeatTimer_di" bpmnElement="Flow_Oven_HeatTimer">
+        <di:waypoint x="370" y="177" />
+        <di:waypoint x="432" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Heat_Place_di" bpmnElement="Flow_Heat_Place">
+        <di:waypoint x="468" y="177" />
+        <di:waypoint x="530" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Place_BakeTimer_di" bpmnElement="Flow_Place_BakeTimer">
+        <di:waypoint x="650" y="177" />
+        <di:waypoint x="712" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Bake_Remove_di" bpmnElement="Flow_Bake_Remove">
+        <di:waypoint x="748" y="177" />
+        <di:waypoint x="810" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Remove_End_di" bpmnElement="Flow_Remove_End">
+        <di:waypoint x="930" y="177" />
+        <di:waypoint x="1002" y="177" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

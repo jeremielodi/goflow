@@ -211,9 +211,7 @@ func ResolveNext(node *engine.Node, variables map[string]interface{}) (string, e
 	if node.Type == engine.UserTaskType || node.Type == engine.ServiceTaskType {
 		var normalFlows []engine.Flow
 		for _, flow := range node.Outgoing {
-			// Skip flows that go to boundary events
-			if strings.Contains(strings.ToLower(flow.TargetRef), "timer") ||
-				strings.Contains(strings.ToLower(flow.TargetRef), "boundary") {
+			if flow.IsBoundary {
 				continue
 			}
 			normalFlows = append(normalFlows, flow)
