@@ -377,6 +377,7 @@ CREATE TABLE jobs (
     status TEXT NOT NULL DEFAULT 'pending', -- Job state (pending/processing/completed/failed)
     payload JSONB NULL, -- Job-specific input data
     error_message TEXT NULL, -- Last error message if job failed
+    error_code TEXT NULL,   -- BPMN error code thrown by worker (for error boundary events)
     locked_by TEXT NULL, -- Worker ID that locked this job
     locked_until TIMESTAMP NULL, -- When job lock expires
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When job was created
@@ -446,6 +447,33 @@ ON audit_logs(process_instance_id);
 
 CREATE INDEX idx_audit_logs_task_id
 ON audit_logs(task_id);
+
+-- =========================================================
+-- INCIDENTS
+-- Created when a job/task fails permanently with no boundary event
+-- =========================================================
+CREATE TABLE incidents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL
+        REFERENCES process_instances(id)
+        ON DELETE CASCADE,
+    job_id UUID NULL
+        REFERENCES jobs(id)
+        ON DELETE CASCADE,
+    incident_type TEXT NOT NULL,  -- failedExternalTask, failedJob
+    activity_id TEXT NOT NULL,    -- BPMN element ID where failure occurred
+    error_message TEXT NULL,
+    error_code TEXT NULL,
+    state TEXT NOT NULL DEFAULT 'open',  -- open, resolved, deleted
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP NULL
+);
+
+CREATE INDEX idx_incidents_process_instance_id
+ON incidents(process_instance_id);
+
+CREATE INDEX idx_incidents_state
+ON incidents(state);
 
 
 CREATE TABLE process_outbox (
@@ -534,3 +562,18 @@ COMMENT ON TABLE timer_jobs IS 'Stores BPMN timer jobs';
 COMMENT ON TABLE variables IS 'Stores process variables as JSONB';
 
 COMMENT ON TABLE audit_logs IS 'Tracks all important workflow actions';
+
+-- =========================================================
+-- CALL ACTIVITY: parent process tracking
+-- =========================================================
+ALTER TABLE process_instances
+  ADD COLUMN IF NOT EXISTS parent_instance_id UUID NULL REFERENCES process_instances(id),
+  ADD COLUMN IF NOT EXISTS parent_execution_id UUID NULL;
+-- Note: no FK on parent_execution_id to avoid circular reference with executions
+
+-- =========================================================
+-- EVENT-BASED GATEWAY: target element tracking per subscription
+-- =========================================================
+ALTER TABLE event_subscriptions
+  ADD COLUMN IF NOT EXISTS target_element_id TEXT NULL;
+-- Stores the BPMN node to advance to when this subscription fires (EBG routing)

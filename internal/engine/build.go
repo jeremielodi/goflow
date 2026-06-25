@@ -149,6 +149,14 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		})
 	}
 
+	// ---- Inclusive Gateways ----
+	for _, g := range process.InclusiveGateways {
+		register(&Node{
+			ID:   g.ID,
+			Type: InclusiveGatewayType,
+		})
+	}
+
 	// ---- Intermediate Timer Events ----
 	for _, t := range process.IntermediateTimerEvents {
 		node := &Node{
@@ -174,6 +182,90 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			node.TimerDefinition = b.TimerDefinition.RawXML
 		}
 		register(node)
+	}
+
+	// ---- Boundary Error Events ----
+	for _, b := range process.BoundaryErrorEvents {
+		register(&Node{
+			ID:             b.ID,
+			Type:           ErrorBoundaryEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.CancelActivity,
+			ErrorCode:      b.ErrorCode,
+		})
+	}
+
+	// ---- Intermediate Message Catch Events (and signal catch events) ----
+	for _, ev := range process.IntermediateCatchEvents {
+		if ev.MessageEventDefinition != nil {
+			register(&Node{
+				ID:         ev.ID,
+				Name:       ev.Name,
+				Type:       IntermediateMessageCatchEventType,
+				MessageRef: ev.MessageName,
+			})
+		} else if ev.SignalEventDefinition != nil {
+			register(&Node{
+				ID:        ev.ID,
+				Name:      ev.Name,
+				Type:      IntermediateSignalCatchEventType,
+				SignalRef: ev.SignalName,
+			})
+		}
+		// Note: timer events are handled via process.IntermediateTimerEvents (already registered above)
+	}
+
+	// ---- Message Start Events ----
+	for j := range process.StartEvents {
+		sv := &process.StartEvents[j]
+		if sv.MessageEventDefinition != nil {
+			// Update the existing node to be a message start event
+			if n, ok := nodeMap[sv.ID]; ok {
+				n.Type = MessageStartEventType
+				n.MessageRef = sv.MessageName
+			}
+		}
+	}
+
+	// ---- Boundary Message Events ----
+	for _, b := range process.BoundaryMessageEvents {
+		register(&Node{
+			ID:             b.ID,
+			Type:           MessageBoundaryEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.CancelActivity,
+			MessageRef:     b.MessageName,
+		})
+	}
+
+	// ---- Boundary Signal Events ----
+	for _, b := range process.BoundarySignalEvents {
+		register(&Node{
+			ID:             b.ID,
+			Type:           SignalBoundaryEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.CancelActivity,
+			SignalRef:      b.SignalName,
+		})
+	}
+
+	// ---- Event-based Gateways ----
+	for _, g := range process.EventBasedGateways {
+		register(&Node{
+			ID:   g.ID,
+			Name: g.Name,
+			Type: EventBasedGatewayType,
+		})
+	}
+
+	// ---- Call Activities ----
+	for _, ca := range process.CallActivities {
+		register(&Node{
+			ID:            ca.ID,
+			Name:          ca.Name,
+			Type:          CallActivityType,
+			CalledElement: ca.CalledElement,
+		})
 	}
 
 	// ---- Add incoming/outgoing edges from Sequence Flows ----
@@ -412,6 +504,44 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 						targetNode.Incoming = append(targetNode.Incoming, b.ID)
 					}
 				}
+			}
+		}
+	}
+
+	// ---- Add outgoing edges from Boundary Error Events ----
+	for _, b := range process.BoundaryErrorEvents {
+		boundaryNode, ok := nodeMap[b.ID]
+		if !ok {
+			continue
+		}
+		// Mark the attached task node so we can look it up quickly
+		if b.AttachedToRef != "" {
+			boundaryNode.AttachedToRef = b.AttachedToRef
+		}
+		// Add outgoing edges from boundary event to sequence flow targets
+		for _, flow := range process.SequenceFlows {
+			if flow.SourceRef != b.ID {
+				continue
+			}
+			targetNode, ok := nodeMap[flow.TargetRef]
+			if !ok {
+				continue
+			}
+			found := false
+			for _, existing := range boundaryNode.Outgoing {
+				if existing.TargetRef == flow.TargetRef {
+					found = true
+					break
+				}
+			}
+			if !found {
+				boundaryNode.Outgoing = append(boundaryNode.Outgoing, Flow{
+					ID:        flow.ID,
+					SourceRef: b.ID,
+					TargetRef: flow.TargetRef,
+					Condition: flow.Condition,
+				})
+				targetNode.Incoming = append(targetNode.Incoming, b.ID)
 			}
 		}
 	}

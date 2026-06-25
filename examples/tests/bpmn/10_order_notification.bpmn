@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_OrderNotification"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Message Intermediate Catch Event
+    SCENARIO: Order notification process waits for two sequential messages:
+              PaymentReceived then ShipmentReady.
+    FEATURES TESTED: Message Events (suite 10)
+  -->
+
+  <bpmn:message id="msg_payment_received" name="PaymentReceived"/>
+  <bpmn:message id="msg_shipment_ready"   name="ShipmentReady"/>
+
+  <bpmn:process id="orderNotification" name="Order Notification" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Order Created">
+      <bpmn:outgoing>sf1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:intermediateCatchEvent id="waitForPayment" name="Wait for Payment">
+      <bpmn:incoming>sf1</bpmn:incoming>
+      <bpmn:outgoing>sf2</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="med1" messageRef="msg_payment_received"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:serviceTask id="confirmPayment" name="Confirm Payment"
+        camunda:type="external" camunda:topic="confirm-payment">
+      <bpmn:incoming>sf2</bpmn:incoming>
+      <bpmn:outgoing>sf3</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:intermediateCatchEvent id="waitForShipment" name="Wait for Shipment">
+      <bpmn:incoming>sf3</bpmn:incoming>
+      <bpmn:outgoing>sf4</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="med2" messageRef="msg_shipment_ready"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:serviceTask id="notifyCustomer" name="Notify Customer"
+        camunda:type="external" camunda:topic="notify-customer">
+      <bpmn:incoming>sf4</bpmn:incoming>
+      <bpmn:outgoing>sf5</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end" name="Customer Notified">
+      <bpmn:incoming>sf5</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="sf1" sourceRef="start"          targetRef="waitForPayment"/>
+    <bpmn:sequenceFlow id="sf2" sourceRef="waitForPayment"  targetRef="confirmPayment"/>
+    <bpmn:sequenceFlow id="sf3" sourceRef="confirmPayment"  targetRef="waitForShipment"/>
+    <bpmn:sequenceFlow id="sf4" sourceRef="waitForShipment" targetRef="notifyCustomer"/>
+    <bpmn:sequenceFlow id="sf5" sourceRef="notifyCustomer"  targetRef="end"/>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="orderNotification">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="135" y="295" width="70" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="waitForPayment_di" bpmnElement="waitForPayment">
+        <dc:Bounds x="272" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="249" y="295" width="82" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="confirmPayment_di" bpmnElement="confirmPayment">
+        <dc:Bounds x="370" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="waitForShipment_di" bpmnElement="waitForShipment">
+        <dc:Bounds x="532" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="509" y="295" width="82" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="notifyCustomer_di" bpmnElement="notifyCustomer">
+        <dc:Bounds x="630" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="792" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="770" y="295" width="80" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="sf1_di" bpmnElement="sf1">
+        <di:waypoint x="188" y="270" /><di:waypoint x="272" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf2_di" bpmnElement="sf2">
+        <di:waypoint x="308" y="270" /><di:waypoint x="370" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf3_di" bpmnElement="sf3">
+        <di:waypoint x="470" y="270" /><di:waypoint x="532" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf4_di" bpmnElement="sf4">
+        <di:waypoint x="568" y="270" /><di:waypoint x="630" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf5_di" bpmnElement="sf5">
+        <di:waypoint x="730" y="270" /><di:waypoint x="792" y="270" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

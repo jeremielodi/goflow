@@ -22,11 +22,17 @@ type Process struct {
 	EndEvents               []EndEvent               `xml:"endEvent"`
 	ExclusiveGateways       []ExclusiveGateway       `xml:"exclusiveGateway"`
 	ParallelGateways        []ParallelGateway        `xml:"parallelGateway"`
+	InclusiveGateways       []InclusiveGateway       `xml:"inclusiveGateway"`
 	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
 	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
 	ScriptTasks             []ScriptTask             `xml:"scriptTask"`
-	IntermediateTimerEvents []IntermediateTimerEvent
+	CallActivities          []CallActivity           `xml:"callActivity"`
+	EventBasedGateways      []EventBasedGateway      `xml:"eventBasedGateway"`
+	IntermediateTimerEvents  []IntermediateTimerEvent
 	BoundaryTimerEvents     []BoundaryTimerEvent
+	BoundaryErrorEvents     []BoundaryErrorEvent
+	BoundaryMessageEvents   []BoundaryMessageEvent
+	BoundarySignalEvents    []BoundarySignalEvent
 	BoundaryEvents          []BoundaryEvent `xml:"boundaryEvent"`
 }
 
@@ -104,9 +110,45 @@ type ProcessDefinitionCreateModel struct {
 	ParsedGraph  json.RawMessage
 }
 
+type ErrorDefinition struct {
+	ID        string `xml:"id,attr"`
+	Name      string `xml:"name,attr"`
+	ErrorCode string `xml:"errorCode,attr"`
+}
+
+type ErrorEventDefinition struct {
+	ID       string `xml:"id,attr"`
+	ErrorRef string `xml:"errorRef,attr"`
+}
+
+type BoundaryErrorEvent struct {
+	ID             string
+	AttachedToRef  string
+	CancelActivity bool
+	ErrorCode      string
+}
+
+type MessageDefinition struct {
+	ID   string `xml:"id,attr"`
+	Name string `xml:"name,attr"`
+}
+
+type SignalDefinition struct {
+	ID   string `xml:"id,attr"`
+	Name string `xml:"name,attr"`
+}
+
+type SignalEventDefinition struct {
+	ID        string `xml:"id,attr"`
+	SignalRef string `xml:"signalRef,attr"`
+}
+
 type Definitions struct {
-	XMLName   xml.Name  `xml:"definitions"`
-	Processes []Process `xml:"process"`
+	XMLName   xml.Name            `xml:"definitions"`
+	Processes []Process           `xml:"process"`
+	Errors    []ErrorDefinition   `xml:"error"`
+	Messages  []MessageDefinition `xml:"message"`
+	Signals   []SignalDefinition  `xml:"signal"`
 }
 
 type Task struct {
@@ -117,11 +159,13 @@ type Task struct {
 }
 
 type StartEvent struct {
-	ID                   string                `xml:"id,attr"`
-	Outgoing             []string              `xml:"outgoing"`
-	TimerEventDefinition *TimerEventDefinition `xml:"timerEventDefinition"`
-	// Add a helper field for processed timer definition
-	TimerDefinition *TimerDefinition `xml:"-"`
+	ID                     string                  `xml:"id,attr"`
+	Name                   string                  `xml:"name,attr"`
+	Outgoing               []string                `xml:"outgoing"`
+	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
+	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
+	TimerDefinition        *TimerDefinition        `xml:"-"`
+	MessageName            string                  `xml:"-"` // resolved
 }
 
 type EndEvent struct {
@@ -213,14 +257,24 @@ type ParallelGateway struct {
 	Outgoing []string `xml:"outgoing"`
 }
 
+type InclusiveGateway struct {
+	ID       string   `xml:"id,attr"`
+	Incoming []string `xml:"incoming"`
+	Outgoing []string `xml:"outgoing"`
+}
+
 type IntermediateCatchEvent struct {
 	ID       string   `xml:"id,attr"`
+	Name     string   `xml:"name,attr"`
 	Incoming []string `xml:"incoming"`
 	Outgoing []string `xml:"outgoing"`
 
 	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
+	SignalEventDefinition  *SignalEventDefinition  `xml:"signalEventDefinition"`
 	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
 	TimerDefinition        *TimerDefinition        `xml:"-"`
+	MessageName            string                  `xml:"-"` // resolved from Messages map
+	SignalName             string                  `xml:"-"` // resolved from Signals map
 }
 
 type BoundaryEvent struct {
@@ -230,12 +284,46 @@ type BoundaryEvent struct {
 	Name                   string                  `xml:"name,attr"`
 	Outgoing               []string                `xml:"outgoing"`
 	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
+	ErrorEventDefinition   *ErrorEventDefinition   `xml:"errorEventDefinition"`
 	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
+	SignalEventDefinition  *SignalEventDefinition  `xml:"signalEventDefinition"`
 	TimerDefinition        *TimerDefinition        `xml:"-"`
+	MessageName            string                  `xml:"-"` // resolved
+	SignalName             string                  `xml:"-"` // resolved
+}
+
+type BoundaryMessageEvent struct {
+	ID             string
+	AttachedToRef  string
+	CancelActivity bool
+	MessageName    string
+}
+
+type BoundarySignalEvent struct {
+	ID             string
+	AttachedToRef  string
+	CancelActivity bool
+	SignalName     string
+}
+
+type CallActivity struct {
+	ID            string   `xml:"id,attr"`
+	Name          string   `xml:"name,attr"`
+	CalledElement string   `xml:"calledElement,attr"`
+	Incoming      []string `xml:"incoming"`
+	Outgoing      []string `xml:"outgoing"`
+}
+
+type EventBasedGateway struct {
+	ID       string   `xml:"id,attr"`
+	Name     string   `xml:"name,attr"`
+	Incoming []string `xml:"incoming"`
+	Outgoing []string `xml:"outgoing"`
 }
 
 type MessageEventDefinition struct {
-	ID string `xml:"id,attr"`
+	ID         string `xml:"id,attr"`
+	MessageRef string `xml:"messageRef,attr"`
 }
 
 type TimerEventDefinition struct {
@@ -351,6 +439,9 @@ func ParseBPMN(data []byte) (*Definitions, error) {
 		}
 	}
 	PopulateTimerEvents(&defs)
+	PopulateErrorBoundaryEvents(&defs)
+	PopulateMessageEvents(&defs)
+	PopulateSignalEvents(&defs)
 
 	return &defs, nil
 }
@@ -491,6 +582,138 @@ func PopulateTimerEvents(defs *Definitions) {
 					TimerDefinition: event.TimerDefinition,
 				})
 			}
+		}
+	}
+}
+
+// PopulateErrorBoundaryEvents resolves error codes for boundary error events.
+// Must be called after ParseBPMN, passing the Definitions that include bpmn:error elements.
+func PopulateErrorBoundaryEvents(defs *Definitions) {
+	// Build a map from error ID → error code
+	errorCodeByID := make(map[string]string, len(defs.Errors))
+	for _, e := range defs.Errors {
+		errorCodeByID[e.ID] = e.ErrorCode
+	}
+
+	for i := range defs.Processes {
+		process := &defs.Processes[i]
+		process.BoundaryErrorEvents = []BoundaryErrorEvent{}
+
+		for _, event := range process.BoundaryEvents {
+			if event.ErrorEventDefinition == nil {
+				continue
+			}
+			errorCode := ""
+			if event.ErrorEventDefinition.ErrorRef != "" {
+				errorCode = errorCodeByID[event.ErrorEventDefinition.ErrorRef]
+			}
+			process.BoundaryErrorEvents = append(process.BoundaryErrorEvents, BoundaryErrorEvent{
+				ID:             event.ID,
+				AttachedToRef:  event.AttachedToRef,
+				CancelActivity: event.CancelActivity,
+				ErrorCode:      errorCode,
+			})
+		}
+	}
+}
+
+// PopulateMessageEvents resolves message names for intermediate message catch events and boundary message events.
+func PopulateMessageEvents(defs *Definitions) {
+	// Build map: message ID → message name
+	msgNameByID := make(map[string]string, len(defs.Messages))
+	for _, m := range defs.Messages {
+		msgNameByID[m.ID] = m.Name
+	}
+
+	for i := range defs.Processes {
+		process := &defs.Processes[i]
+		process.BoundaryMessageEvents = []BoundaryMessageEvent{}
+
+		// Resolve message names for intermediate catch events
+		for j := range process.IntermediateCatchEvents {
+			ev := &process.IntermediateCatchEvents[j]
+			if ev.MessageEventDefinition != nil && ev.MessageEventDefinition.MessageRef != "" {
+				ev.MessageName = msgNameByID[ev.MessageEventDefinition.MessageRef]
+				if ev.MessageName == "" {
+					ev.MessageName = ev.MessageEventDefinition.MessageRef // fallback to ref ID
+				}
+			}
+		}
+
+		// Resolve message names for start events
+		for j := range process.StartEvents {
+			sv := &process.StartEvents[j]
+			if sv.MessageEventDefinition != nil && sv.MessageEventDefinition.MessageRef != "" {
+				sv.MessageName = msgNameByID[sv.MessageEventDefinition.MessageRef]
+				if sv.MessageName == "" {
+					sv.MessageName = sv.MessageEventDefinition.MessageRef
+				}
+			}
+		}
+
+		// Resolve boundary message events
+		for _, ev := range process.BoundaryEvents {
+			if ev.MessageEventDefinition == nil {
+				continue
+			}
+			msgName := ""
+			if ev.MessageEventDefinition.MessageRef != "" {
+				msgName = msgNameByID[ev.MessageEventDefinition.MessageRef]
+				if msgName == "" {
+					msgName = ev.MessageEventDefinition.MessageRef
+				}
+			}
+			process.BoundaryMessageEvents = append(process.BoundaryMessageEvents, BoundaryMessageEvent{
+				ID:             ev.ID,
+				AttachedToRef:  ev.AttachedToRef,
+				CancelActivity: ev.CancelActivity,
+				MessageName:    msgName,
+			})
+		}
+	}
+}
+
+// PopulateSignalEvents resolves signal names for intermediate signal catch events and boundary signal events.
+func PopulateSignalEvents(defs *Definitions) {
+	// Build map: signal ID → signal name
+	sigNameByID := make(map[string]string, len(defs.Signals))
+	for _, s := range defs.Signals {
+		sigNameByID[s.ID] = s.Name
+	}
+
+	for i := range defs.Processes {
+		process := &defs.Processes[i]
+		process.BoundarySignalEvents = []BoundarySignalEvent{}
+
+		// Resolve signal names for intermediate catch events
+		for j := range process.IntermediateCatchEvents {
+			ev := &process.IntermediateCatchEvents[j]
+			if ev.SignalEventDefinition != nil && ev.SignalEventDefinition.SignalRef != "" {
+				ev.SignalName = sigNameByID[ev.SignalEventDefinition.SignalRef]
+				if ev.SignalName == "" {
+					ev.SignalName = ev.SignalEventDefinition.SignalRef
+				}
+			}
+		}
+
+		// Resolve boundary signal events
+		for _, ev := range process.BoundaryEvents {
+			if ev.SignalEventDefinition == nil {
+				continue
+			}
+			sigName := ""
+			if ev.SignalEventDefinition.SignalRef != "" {
+				sigName = sigNameByID[ev.SignalEventDefinition.SignalRef]
+				if sigName == "" {
+					sigName = ev.SignalEventDefinition.SignalRef
+				}
+			}
+			process.BoundarySignalEvents = append(process.BoundarySignalEvents, BoundarySignalEvent{
+				ID:             ev.ID,
+				AttachedToRef:  ev.AttachedToRef,
+				CancelActivity: ev.CancelActivity,
+				SignalName:     sigName,
+			})
 		}
 	}
 }

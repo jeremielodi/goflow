@@ -284,6 +284,18 @@ func (r *ProcessRepository) FindProcessDefinitionByKeyAndVersion(
 	return def, err
 }
 
+// ListProcessDefinitionsByKey returns all versions for a given process key.
+func (r *ProcessRepository) ListProcessDefinitionsByKey(processKey string) ([]models.ProcessDefinition, error) {
+	var defs []models.ProcessDefinition
+	err := r.db.Select(&defs, `
+		SELECT id, deployment_id, process_key, process_name, version, is_active, bpmn_xml, parsed_graph, created_at
+		FROM public.process_definitions
+		WHERE process_key = $1
+		ORDER BY version DESC
+	`, processKey)
+	return defs, err
+}
+
 // ListProcessDefinitions returns all deployed versions.
 func (r *ProcessRepository) ListProcessDefinitions() (
 	[]models.ProcessDefinition,

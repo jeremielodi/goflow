@@ -131,16 +131,12 @@ func (r *ExternalTaskRepository) CompleteJobTx(tx *sqlx.Tx, jobID uuid.UUID) err
 }
 
 // FailJobPermanently marks a job as failed with no more retries
-func (r *ExternalTaskRepository) FailJobPermanentlyTx(tx *sqlx.Tx, jobID uuid.UUID, errorMessage string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.jobs",
-		[]database.QueryParameter{
-			{Key: "status", Value: "failed"},
-			{Key: "error_message", Value: errorMessage},
-		},
-		database.QueryParameter{Key: "id", Value: jobID},
-	)
+func (r *ExternalTaskRepository) FailJobPermanentlyTx(tx *sqlx.Tx, jobID uuid.UUID, errorMessage string, errorCode string) error {
+	_, err := tx.Exec(`
+		UPDATE public.jobs
+		SET status = 'failed', error_message = $1, error_code = $2, updated_at = NOW()
+		WHERE id = $3
+	`, errorMessage, errorCode, jobID)
 	return err
 }
 

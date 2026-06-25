@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_FitnessPlanner"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Inclusive Gateway (OR) example
+    SCENARIO: A customer registers for fitness activities. Depending on preferences
+              (running, swimming, cycling), one or more activity registrations run
+              concurrently. The inclusive gateway ensures all SELECTED registrations
+              complete before the plan is confirmed.
+
+    FEATURES TESTED:
+      - Inclusive Gateway (OR) fork with conditional branches
+      - Inclusive Gateway (OR) join waiting for only active branches
+      - All 3 branches active (running + swimming + cycling)
+      - Single branch active (running only)
+      - Two branches active (running + swimming)
+  -->
+  <bpmn:process id="FitnessPlannerProcess" name="Fitness Activity Planner" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Plan Created">
+      <bpmn:outgoing>Flow_Start_Fork</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Inclusive gateway: diverge based on selected activities -->
+    <bpmn:inclusiveGateway id="fork_activities" name="Which activities?">
+      <bpmn:incoming>Flow_Start_Fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fork_Running</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Swimming</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_Cycling</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+
+    <!-- Running branch -->
+    <bpmn:serviceTask id="register_running" name="Register for Running" camunda:type="external" camunda:topic="register_running">
+      <bpmn:incoming>Flow_Fork_Running</bpmn:incoming>
+      <bpmn:outgoing>Flow_Running_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Swimming branch -->
+    <bpmn:serviceTask id="register_swimming" name="Register for Swimming" camunda:type="external" camunda:topic="register_swimming">
+      <bpmn:incoming>Flow_Fork_Swimming</bpmn:incoming>
+      <bpmn:outgoing>Flow_Swimming_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Cycling branch -->
+    <bpmn:serviceTask id="register_cycling" name="Register for Cycling" camunda:type="external" camunda:topic="register_cycling">
+      <bpmn:incoming>Flow_Fork_Cycling</bpmn:incoming>
+      <bpmn:outgoing>Flow_Cycling_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Inclusive gateway: converge — wait only for active branches -->
+    <bpmn:inclusiveGateway id="join_activities" name="All registrations done">
+      <bpmn:incoming>Flow_Running_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Swimming_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_Cycling_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Join_End</bpmn:outgoing>
+    </bpmn:inclusiveGateway>
+
+    <bpmn:endEvent id="end" name="Plan Confirmed">
+      <bpmn:incoming>Flow_Join_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Sequence flows -->
+    <bpmn:sequenceFlow id="Flow_Start_Fork" sourceRef="start" targetRef="fork_activities" />
+
+    <bpmn:sequenceFlow id="Flow_Fork_Running" sourceRef="fork_activities" targetRef="register_running">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${wantRunning == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_Fork_Swimming" sourceRef="fork_activities" targetRef="register_swimming">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${wantSwimming == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_Fork_Cycling" sourceRef="fork_activities" targetRef="register_cycling">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${wantCycling == true}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+    <bpmn:sequenceFlow id="Flow_Running_Join" sourceRef="register_running" targetRef="join_activities" />
+    <bpmn:sequenceFlow id="Flow_Swimming_Join" sourceRef="register_swimming" targetRef="join_activities" />
+    <bpmn:sequenceFlow id="Flow_Cycling_Join" sourceRef="register_cycling" targetRef="join_activities" />
+    <bpmn:sequenceFlow id="Flow_Join_End" sourceRef="join_activities" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_FitnessPlanner">
+    <bpmndi:BPMNPlane id="BPMNPlane_FitnessPlanner" bpmnElement="FitnessPlannerProcess">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="139" y="315" width="63" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="fork_activities_di" bpmnElement="fork_activities">
+        <dc:Bounds x="265" y="265" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="249" y="322" width="82" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="register_running_di" bpmnElement="register_running">
+        <dc:Bounds x="390" y="120" width="100" height="80" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="register_swimming_di" bpmnElement="register_swimming">
+        <dc:Bounds x="390" y="250" width="100" height="80" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="register_cycling_di" bpmnElement="register_cycling">
+        <dc:Bounds x="390" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="join_activities_di" bpmnElement="join_activities">
+        <dc:Bounds x="565" y="265" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="543" y="322" width="95" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="692" y="272" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="672" y="315" width="76" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Fork_di" bpmnElement="Flow_Start_Fork">
+        <di:waypoint x="188" y="290" /><di:waypoint x="265" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Running_di" bpmnElement="Flow_Fork_Running">
+        <di:waypoint x="290" y="265" /><di:waypoint x="290" y="160" /><di:waypoint x="390" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Swimming_di" bpmnElement="Flow_Fork_Swimming">
+        <di:waypoint x="315" y="290" /><di:waypoint x="390" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_Cycling_di" bpmnElement="Flow_Fork_Cycling">
+        <di:waypoint x="290" y="315" /><di:waypoint x="290" y="420" /><di:waypoint x="390" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Running_Join_di" bpmnElement="Flow_Running_Join">
+        <di:waypoint x="490" y="160" /><di:waypoint x="590" y="160" /><di:waypoint x="590" y="265" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Swimming_Join_di" bpmnElement="Flow_Swimming_Join">
+        <di:waypoint x="490" y="290" /><di:waypoint x="565" y="290" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Cycling_Join_di" bpmnElement="Flow_Cycling_Join">
+        <di:waypoint x="490" y="420" /><di:waypoint x="590" y="420" /><di:waypoint x="590" y="315" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Join_End_di" bpmnElement="Flow_Join_End">
+        <di:waypoint x="615" y="290" /><di:waypoint x="692" y="290" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

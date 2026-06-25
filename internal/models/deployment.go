@@ -25,15 +25,15 @@ type DeploymentCreateModel struct {
 
 // ProcessDefinition model
 type ProcessDefinition struct {
-	ID           uuid.UUID       `db:"id"`
-	DeploymentID uuid.UUID       `db:"deployment_id"`
-	ProcessKey   string          `db:"process_key"`
-	ProcessName  *string         `db:"process_name"`
-	Version      int             `db:"version"`
-	IsActive     bool            `db:"is_active"`
-	BpmnXML      string          `db:"bpmn_xml"`
-	ParsedGraph  json.RawMessage `db:"parsed_graph"` // JSONB
-	CreatedAt    time.Time       `db:"created_at"`
+	ID           uuid.UUID       `db:"id"            json:"id"`
+	DeploymentID uuid.UUID       `db:"deployment_id" json:"deploymentId"`
+	ProcessKey   string          `db:"process_key"   json:"key"`
+	ProcessName  *string         `db:"process_name"  json:"name,omitempty"`
+	Version      int             `db:"version"       json:"version"`
+	IsActive     bool            `db:"is_active"     json:"isActive"`
+	BpmnXML      string          `db:"bpmn_xml"      json:"bpmnXml,omitempty"`
+	ParsedGraph  json.RawMessage `db:"parsed_graph"  json:"-"`
+	CreatedAt    time.Time       `db:"created_at"    json:"createdAt"`
 }
 
 // ProcessDefinitionCreateModel for INSERT

@@ -9,24 +9,34 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/parser"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
 type ProcessDefinitionController struct {
-	db   *sqlx.DB
-	util common.Util
+	db          *sqlx.DB
+	util        common.Util
+	processRepo *repository.ProcessRepository
+	dispatcher  *events.TaskEventDispatcher
 }
 
 func NewProcessDefinitionController(db *sqlx.DB, rootDirPath *string) *ProcessDefinitionController {
 	return &ProcessDefinitionController{
-		db:   db,
-		util: *common.NewUtil(rootDirPath),
+		db:          db,
+		util:        *common.NewUtil(rootDirPath),
+		processRepo: repository.NewProcessRepository(db),
 	}
+}
+
+func (ctrl *ProcessDefinitionController) SetDispatcher(d *events.TaskEventDispatcher) {
+	ctrl.dispatcher = d
 }
 
 type ProcessDefinition struct {
@@ -212,5 +222,124 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		"name":                       deploymentName,
 		"deployedAt":                 time.Now().Format(time.RFC3339),
 		"deployedProcessDefinitions": deployedProcesses,
+	})
+}
+
+// GET /engine-rest/process-definition
+// Query params: key, latestVersion (bool)
+func (ctrl *ProcessDefinitionController) ListDefinitions(c *fiber.Ctx) error {
+	key := c.Query("key")
+	latestOnly := c.Query("latestVersion") == "true"
+
+	var defs []models.ProcessDefinition
+	var err error
+
+	if key != "" && latestOnly {
+		def, e := ctrl.processRepo.FindLatestProcessDefinitionByKey(key)
+		if e != nil {
+			return c.Status(404).JSON(fiber.Map{"message": "not found"})
+		}
+		defs = []models.ProcessDefinition{def}
+	} else if key != "" {
+		defs, err = ctrl.processRepo.ListProcessDefinitionsByKey(key)
+	} else if latestOnly {
+		defs, err = ctrl.processRepo.ListLatestProcessDefinitions()
+	} else {
+		defs, err = ctrl.processRepo.ListProcessDefinitions()
+	}
+
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+	}
+	return c.JSON(defs)
+}
+
+// GET /engine-rest/process-definition/:id
+func (ctrl *ProcessDefinitionController) GetDefinition(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"message": "invalid id"})
+	}
+	def, err := ctrl.processRepo.FindProcessDefinitionByID(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"message": "not found"})
+	}
+	return c.JSON(def)
+}
+
+// POST /engine-rest/process-definition/:id/start
+// Starts a specific version of a process definition by its UUID.
+func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"message": "invalid definition id"})
+	}
+
+	var body struct {
+		Variables map[string]interface{} `json:"variables"`
+	}
+	if parseErr := c.BodyParser(&body); parseErr != nil {
+		body.Variables = map[string]interface{}{}
+	}
+
+	def, err := ctrl.processRepo.FindProcessDefinitionByID(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"message": "process definition not found"})
+	}
+
+	var graph engine.ProcessGraph
+	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "failed to parse process graph"})
+	}
+
+	var startNodeID string
+	for _, node := range graph.Nodes {
+		if node.Type == engine.StartEventType {
+			startNodeID = node.ID
+			break
+		}
+	}
+	if startNodeID == "" {
+		return c.Status(500).JSON(fiber.Map{"message": "no start event in process definition"})
+	}
+
+	instanceRepo := repository.NewProcessInstanceRepository(ctrl.db)
+	tx, err := ctrl.db.Beginx()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "failed to begin transaction"})
+	}
+	defer tx.Rollback()
+
+	instanceID := uuid.New()
+	now := time.Now()
+
+	if err := instanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "failed to create process instance", "error": err.Error()})
+	}
+	if len(body.Variables) > 0 {
+		if err := instanceRepo.CreateVariablesTx(tx, instanceID, body.Variables, now); err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": "failed to save variables", "error": err.Error()})
+		}
+	}
+
+	execID := uuid.New()
+	if err := instanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "failed to create execution", "error": err.Error()})
+	}
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "failed to commit"})
+	}
+
+	rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
+	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "execution failed", "error": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"processInstanceId": instanceID,
+		"executionId":       execID,
+		"processKey":        def.ProcessKey,
+		"version":           def.Version,
+		"definitionId":      def.ID,
 	})
 }

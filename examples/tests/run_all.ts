@@ -92,6 +92,15 @@ async function main() {
     '01_pizza_delivery.test.ts',
     '02_recipe_selection.test.ts',
     ...(noTimers ? [] : ['03_meal_preparation.test.ts', '04_oven_timer.test.ts']),
+    '05_inclusive_gateway.test.ts',
+    '06_error_boundary.test.ts',
+    '07_incident_management.test.ts',
+    '08_process_versioning.test.ts',
+    '09_history.test.ts',
+    '10_message_events.test.ts',
+    '11_signal_events.test.ts',
+    '12_event_based_gateway.test.ts',
+    '13_call_activity.test.ts',
   ];
 
   const exitCodes: number[] = [];

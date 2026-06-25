@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_InventoryBroadcast"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Signal Intermediate Catch Event
+    SCENARIO: Inventory monitor waits for a RestockAlert signal broadcast.
+              Multiple instances can receive the same signal simultaneously.
+    FEATURES TESTED: Signal Events broadcast (suite 11)
+  -->
+
+  <bpmn:signal id="sig_restock" name="RestockAlert"/>
+
+  <bpmn:process id="inventoryAlert" name="Inventory Alert" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Monitor Started">
+      <bpmn:outgoing>sf1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="checkInventory" name="Check Inventory Level"
+        camunda:type="external" camunda:topic="check-inventory">
+      <bpmn:incoming>sf1</bpmn:incoming>
+      <bpmn:outgoing>sf2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:intermediateCatchEvent id="waitForRestock" name="Wait for Restock Signal">
+      <bpmn:incoming>sf2</bpmn:incoming>
+      <bpmn:outgoing>sf3</bpmn:outgoing>
+      <bpmn:signalEventDefinition id="sed1" signalRef="sig_restock"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:serviceTask id="updateInventory" name="Update Inventory Records"
+        camunda:type="external" camunda:topic="update-inventory">
+      <bpmn:incoming>sf3</bpmn:incoming>
+      <bpmn:outgoing>sf4</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end" name="Inventory Updated">
+      <bpmn:incoming>sf4</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="sf1" sourceRef="start"          targetRef="checkInventory"/>
+    <bpmn:sequenceFlow id="sf2" sourceRef="checkInventory"  targetRef="waitForRestock"/>
+    <bpmn:sequenceFlow id="sf3" sourceRef="waitForRestock"  targetRef="updateInventory"/>
+    <bpmn:sequenceFlow id="sf4" sourceRef="updateInventory" targetRef="end"/>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="inventoryAlert">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="135" y="295" width="70" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="checkInventory_di" bpmnElement="checkInventory">
+        <dc:Bounds x="250" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="waitForRestock_di" bpmnElement="waitForRestock">
+        <dc:Bounds x="412" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="387" y="295" width="86" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="updateInventory_di" bpmnElement="updateInventory">
+        <dc:Bounds x="510" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="672" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="652" y="295" width="76" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="sf1_di" bpmnElement="sf1">
+        <di:waypoint x="188" y="270" /><di:waypoint x="250" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf2_di" bpmnElement="sf2">
+        <di:waypoint x="350" y="270" /><di:waypoint x="412" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf3_di" bpmnElement="sf3">
+        <di:waypoint x="448" y="270" /><di:waypoint x="510" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf4_di" bpmnElement="sf4">
+        <di:waypoint x="610" y="270" /><di:waypoint x="672" y="270" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

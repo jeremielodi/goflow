@@ -495,6 +495,14 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			currentID = next
 			continue
 
+		case engine.ErrorBoundaryEventType:
+			next, err := r.executeErrorBoundaryNode(ctx, engineRepo, exec, node)
+			if err != nil {
+				return err
+			}
+			currentID = next
+			continue
+
 		case engine.IntermediateCatchEventType, engine.IntermediateTimerEventType:
 			return r.executeIntermediateTimer(ctx, engineRepo, exec, node)
 
@@ -591,8 +599,94 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				}
 				return nil
 			}
+		case engine.InclusiveGatewayType:
+			inclusiveExecutor := NewInclusiveGatewayExecutor(r.DB, r.dispatcher)
+
+			if r.isForkGateway(node, exec) {
+				if err := inclusiveExecutor.ExecuteFork(ctx, exec.ID, node, variables); err != nil {
+					return fmt.Errorf("inclusive gateway fork failed: %w", err)
+				}
+				r.auditService.LogGatewayForked(exec.ProcessInstanceID, node.ID, len(node.Outgoing))
+
+				children, err := engineRepo.GetChildExecutions(exec.ID)
+				if err != nil {
+					return fmt.Errorf("failed to get child executions after inclusive fork: %w", err)
+				}
+				for _, child := range children {
+					if err := r.ExecuteExecution(ctx, child.ID); err != nil {
+						return fmt.Errorf("failed to execute inclusive branch %s: %w", child.ID, err)
+					}
+				}
+				return nil
+			}
+
+			if err := inclusiveExecutor.ExecuteJoin(ctx, exec.ID, node); err != nil {
+				return fmt.Errorf("inclusive gateway join failed: %w", err)
+			}
+
+			var finalState struct {
+				ReceivedIncoming int `db:"received_incoming"`
+				ExpectedIncoming int `db:"expected_incoming"`
+			}
+			r.DB.Get(&finalState, `
+				SELECT received_incoming, expected_incoming
+				FROM public.gateway_state
+				WHERE process_instance_id = $1 AND gateway_id = $2
+				ORDER BY created_at DESC LIMIT 1
+			`, exec.ProcessInstanceID, node.ID)
+
+			r.auditService.LogGatewayJoined(exec.ProcessInstanceID, node.ID, finalState.ExpectedIncoming, finalState.ReceivedIncoming)
+
+			if finalState.ReceivedIncoming >= finalState.ExpectedIncoming && exec.ParentExecutionID != nil {
+				parentExec, getErr := engineRepo.GetActiveExecution(ctx, *exec.ParentExecutionID)
+				if getErr == nil && parentExec != nil {
+					if resumeErr := r.ExecuteExecution(ctx, parentExec.ID); resumeErr != nil {
+						return fmt.Errorf("failed to resume parent after inclusive join: %w", resumeErr)
+					}
+				}
+			}
+			return nil
+
 		case engine.EndEventType:
 			return r.executeEndEvent(ctx, engineRepo, exec)
+
+		case engine.IntermediateMessageCatchEventType:
+			return r.executeMessageCatchEvent(ctx, engineRepo, exec, node)
+
+		case engine.MessageBoundaryEventType:
+			return r.executeMessageBoundaryEvent(ctx, engineRepo, exec, node)
+
+		case engine.IntermediateSignalCatchEventType:
+			return r.executeSignalCatchEvent(ctx, engineRepo, exec, node)
+
+		case engine.SignalBoundaryEventType:
+			return r.executeSignalBoundaryEvent(ctx, engineRepo, exec, node)
+
+		case engine.MessageStartEventType:
+			// Message start event: advance past it immediately (started via message endpoint)
+			next, err := common.ResolveNext(node, variables)
+			if err != nil {
+				return err
+			}
+			tx, err := r.DB.BeginTxx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
+				tx.Rollback()
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			currentID = next
+			continue
+
+		case engine.EventBasedGatewayType:
+			return r.executeEventBasedGateway(ctx, engineRepo, exec, node, graph)
+
+		case engine.CallActivityType:
+			return r.executeCallActivity(ctx, engineRepo, exec, node, variables)
 
 		default:
 			return fmt.Errorf("unknown node type: %s", node.Type)

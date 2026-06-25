@@ -23,6 +23,7 @@ type ExternalTaskController struct {
 	db                  *sqlx.DB
 	externalTaskRepo    *repository.ExternalTaskRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
+	incidentRepo        *repository.IncidentRepository
 	dispatcher          *events.TaskEventDispatcher
 }
 
@@ -31,6 +32,7 @@ func NewExternalTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatch
 		db:                  db,
 		externalTaskRepo:    repository.NewExternalTaskRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+		incidentRepo:        repository.NewIncidentRepository(db),
 		dispatcher:          dispatcher,
 	}
 }
@@ -65,6 +67,7 @@ type CompleteRequest struct {
 
 type FailureRequest struct {
 	ErrorMessage string `json:"errorMessage"`
+	ErrorCode    string `json:"errorCode"`
 	Retries      int    `json:"retries"`
 	RetryTimeout int    `json:"retryTimeout"`
 }
@@ -538,12 +541,63 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 
 	if newRetries <= 0 {
 		// No more retries - mark as failed permanently
-		if err := ctrl.externalTaskRepo.FailJobPermanentlyTx(tx, jobID, req.ErrorMessage); err != nil {
+		if err := ctrl.externalTaskRepo.FailJobPermanentlyTx(tx, jobID, req.ErrorMessage, req.ErrorCode); err != nil {
 			return c.Status(500).JSON(fiber.Map{
 				"title":   "Database Error",
 				"message": "failed to mark job as failed",
 				"error":   err.Error(),
 			})
+		}
+
+		// Always load job context: needed for boundary check and incident creation
+		jobCtx, jobErr := ctrl.externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
+
+		// If an error code was provided, check for a matching error boundary event
+		if req.ErrorCode != "" && jobErr == nil && jobCtx != nil {
+			graphJSON, graphErr := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobCtx.ProcessInstanceID)
+			if graphErr == nil {
+				var graph engine.ProcessGraph
+				if jsonErr := json.Unmarshal(graphJSON, &graph); jsonErr == nil {
+					for _, node := range graph.Nodes {
+						if node.Type == engine.ErrorBoundaryEventType &&
+							node.AttachedToRef == jobCtx.CurrentElementID &&
+							node.ErrorCode == req.ErrorCode {
+							if _, execErr := tx.Exec(`
+								UPDATE public.executions
+								SET current_element_id = $1, status = 'active', updated_at = NOW()
+								WHERE id = $2
+							`, node.ID, jobCtx.ExecutionID); execErr == nil {
+								if commitErr := tx.Commit(); commitErr == nil {
+									rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
+									if resumeErr := rt.ExecuteExecution(c.Context(), jobCtx.ExecutionID); resumeErr != nil {
+										log.Printf("Error boundary execution failed: %v", resumeErr)
+									}
+								}
+								return c.JSON(fiber.Map{
+									"title":   "Success",
+									"message": "error boundary event triggered",
+								})
+							}
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// No boundary event handled the failure — create an incident
+		if jobErr == nil && jobCtx != nil {
+			inc := &models.IncidentCreate{
+				ProcessInstanceID: jobCtx.ProcessInstanceID,
+				JobID:             &jobID,
+				IncidentType:      "failedExternalTask",
+				ActivityID:        jobCtx.CurrentElementID,
+				ErrorMessage:      req.ErrorMessage,
+				ErrorCode:         req.ErrorCode,
+			}
+			if _, err := ctrl.incidentRepo.CreateIncidentTx(tx, inc); err != nil {
+				log.Printf("failed to create incident: %v", err)
+			}
 		}
 	} else {
 		// Reset job for retry

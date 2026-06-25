@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_CustomerDecision"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Event-Based Gateway
+    SCENARIO: A quote is sent to the customer. The process waits at an Event-based
+              Gateway for the FIRST message to arrive — either CustomerApproved or
+              CustomerRejected. The winning event determines which branch executes.
+    FEATURES TESTED: Event-based Gateway (suite 12)
+  -->
+
+  <bpmn:message id="msg_approve" name="CustomerApproved"/>
+  <bpmn:message id="msg_reject"  name="CustomerRejected"/>
+
+  <bpmn:process id="customerDecision" name="Customer Decision" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Quote Sent">
+      <bpmn:outgoing>sf1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="sendQuote" name="Send Quote"
+        camunda:type="external" camunda:topic="send-quote">
+      <bpmn:incoming>sf1</bpmn:incoming>
+      <bpmn:outgoing>sf2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:eventBasedGateway id="waitDecision" name="Wait for Customer Decision">
+      <bpmn:incoming>sf2</bpmn:incoming>
+      <bpmn:outgoing>sf3</bpmn:outgoing>
+      <bpmn:outgoing>sf4</bpmn:outgoing>
+    </bpmn:eventBasedGateway>
+
+    <bpmn:intermediateCatchEvent id="catchApprove" name="Approved">
+      <bpmn:incoming>sf3</bpmn:incoming>
+      <bpmn:outgoing>sf5</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="med1" messageRef="msg_approve"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:intermediateCatchEvent id="catchReject" name="Rejected">
+      <bpmn:incoming>sf4</bpmn:incoming>
+      <bpmn:outgoing>sf6</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="med2" messageRef="msg_reject"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:serviceTask id="processOrder" name="Process Order"
+        camunda:type="external" camunda:topic="process-order">
+      <bpmn:incoming>sf5</bpmn:incoming>
+      <bpmn:outgoing>sf7</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="archiveQuote" name="Archive Quote"
+        camunda:type="external" camunda:topic="archive-quote">
+      <bpmn:incoming>sf6</bpmn:incoming>
+      <bpmn:outgoing>sf8</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end" name="Decision Processed">
+      <bpmn:incoming>sf7</bpmn:incoming>
+      <bpmn:incoming>sf8</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="sf1" sourceRef="start"       targetRef="sendQuote"/>
+    <bpmn:sequenceFlow id="sf2" sourceRef="sendQuote"   targetRef="waitDecision"/>
+    <bpmn:sequenceFlow id="sf3" sourceRef="waitDecision" targetRef="catchApprove"/>
+    <bpmn:sequenceFlow id="sf4" sourceRef="waitDecision" targetRef="catchReject"/>
+    <bpmn:sequenceFlow id="sf5" sourceRef="catchApprove" targetRef="processOrder"/>
+    <bpmn:sequenceFlow id="sf6" sourceRef="catchReject"  targetRef="archiveQuote"/>
+    <bpmn:sequenceFlow id="sf7" sourceRef="processOrder" targetRef="end"/>
+    <bpmn:sequenceFlow id="sf8" sourceRef="archiveQuote" targetRef="end"/>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="customerDecision">
+
+      <!-- Main path -->
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="147" y="295" width="46" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="sendQuote_di" bpmnElement="sendQuote">
+        <dc:Bounds x="250" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="waitDecision_di" bpmnElement="waitDecision">
+        <dc:Bounds x="415" y="245" width="50" height="50" />
+        <bpmndi:BPMNLabel><dc:Bounds x="395" y="302" width="90" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <!-- Upper branch: Approved -->
+      <bpmndi:BPMNShape id="catchApprove_di" bpmnElement="catchApprove">
+        <dc:Bounds x="522" y="142" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="515" y="185" width="50" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="processOrder_di" bpmnElement="processOrder">
+        <dc:Bounds x="620" y="120" width="100" height="80" />
+      </bpmndi:BPMNShape>
+
+      <!-- Lower branch: Rejected -->
+      <bpmndi:BPMNShape id="catchReject_di" bpmnElement="catchReject">
+        <dc:Bounds x="522" y="362" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="516" y="405" width="48" height="14" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="archiveQuote_di" bpmnElement="archiveQuote">
+        <dc:Bounds x="620" y="340" width="100" height="80" />
+      </bpmndi:BPMNShape>
+
+      <!-- Shared end event -->
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="792" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="772" y="295" width="76" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <!-- Edges -->
+      <bpmndi:BPMNEdge id="sf1_di" bpmnElement="sf1">
+        <di:waypoint x="188" y="270" /><di:waypoint x="250" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf2_di" bpmnElement="sf2">
+        <di:waypoint x="350" y="270" /><di:waypoint x="415" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf3_di" bpmnElement="sf3">
+        <di:waypoint x="440" y="245" /><di:waypoint x="440" y="160" /><di:waypoint x="522" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf4_di" bpmnElement="sf4">
+        <di:waypoint x="440" y="295" /><di:waypoint x="440" y="380" /><di:waypoint x="522" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf5_di" bpmnElement="sf5">
+        <di:waypoint x="558" y="160" /><di:waypoint x="620" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf6_di" bpmnElement="sf6">
+        <di:waypoint x="558" y="380" /><di:waypoint x="620" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf7_di" bpmnElement="sf7">
+        <di:waypoint x="720" y="160" /><di:waypoint x="810" y="160" /><di:waypoint x="810" y="252" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf8_di" bpmnElement="sf8">
+        <di:waypoint x="720" y="380" /><di:waypoint x="810" y="380" /><di:waypoint x="810" y="288" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

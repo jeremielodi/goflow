@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_PaymentError"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Error Boundary Event example
+    SCENARIO: An order is placed. The payment service processes the charge.
+              If the payment fails with error code PAYMENT_FAILED, an error boundary event
+              catches it and routes to a "Handle Payment Error" user task.
+              On success, the order is confirmed.
+
+    FEATURES TESTED:
+      - Error Boundary Event on a service task
+      - BPMN error element with error code resolution
+      - Normal path: service task succeeds → order confirmed
+      - Error path:  service task fails with PAYMENT_FAILED → error handler fires
+  -->
+
+  <!-- Named error: referenced by the boundary event -->
+  <bpmn:error id="Error_PaymentFailed" name="Payment Failed" errorCode="PAYMENT_FAILED"/>
+
+  <bpmn:process id="PaymentErrorProcess" name="Payment with Error Boundary" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Order Placed">
+      <bpmn:outgoing>Flow_Start_Pay</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- Service task that may fail with a BPMN error -->
+    <bpmn:serviceTask id="processPayment" name="Process Payment" camunda:type="external" camunda:topic="process_payment">
+      <bpmn:incoming>Flow_Start_Pay</bpmn:incoming>
+      <bpmn:outgoing>Flow_Pay_Confirm</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Error boundary: catches PAYMENT_FAILED, interrupting (default) -->
+    <bpmn:boundaryEvent id="boundary_payment_error" attachedToRef="processPayment" cancelActivity="true">
+      <bpmn:errorEventDefinition id="ErrorDef_1" errorRef="Error_PaymentFailed"/>
+      <bpmn:outgoing>Flow_Error_Handle</bpmn:outgoing>
+    </bpmn:boundaryEvent>
+
+    <!-- Normal path: payment succeeded -->
+    <bpmn:endEvent id="end_confirmed" name="Order Confirmed">
+      <bpmn:incoming>Flow_Pay_Confirm</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Error path: payment failed, human reviews -->
+    <bpmn:userTask id="handle_payment_error" name="Handle Payment Error" camunda:assignee="support">
+      <bpmn:incoming>Flow_Error_Handle</bpmn:incoming>
+      <bpmn:outgoing>Flow_Handle_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end_error" name="Order Failed">
+      <bpmn:incoming>Flow_Handle_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- Sequence flows -->
+    <bpmn:sequenceFlow id="Flow_Start_Pay"   sourceRef="start"                targetRef="processPayment" />
+    <bpmn:sequenceFlow id="Flow_Pay_Confirm" sourceRef="processPayment"        targetRef="end_confirmed" />
+    <bpmn:sequenceFlow id="Flow_Error_Handle" sourceRef="boundary_payment_error" targetRef="handle_payment_error" />
+    <bpmn:sequenceFlow id="Flow_Handle_End"  sourceRef="handle_payment_error"  targetRef="end_error" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_PaymentError">
+    <bpmndi:BPMNPlane id="BPMNPlane_PaymentError" bpmnElement="PaymentErrorProcess">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="processPayment_di" bpmnElement="processPayment">
+        <dc:Bounds x="250" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_confirmed_di" bpmnElement="end_confirmed">
+        <dc:Bounds x="422" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="boundary_payment_error_di" bpmnElement="boundary_payment_error">
+        <dc:Bounds x="282" y="292" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="handle_payment_error_di" bpmnElement="handle_payment_error">
+        <dc:Bounds x="250" y="390" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_error_di" bpmnElement="end_error">
+        <dc:Bounds x="422" y="412" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Pay_di" bpmnElement="Flow_Start_Pay">
+        <di:waypoint x="188" y="270" /><di:waypoint x="250" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Pay_Confirm_di" bpmnElement="Flow_Pay_Confirm">
+        <di:waypoint x="350" y="270" /><di:waypoint x="422" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Error_Handle_di" bpmnElement="Flow_Error_Handle">
+        <di:waypoint x="300" y="328" /><di:waypoint x="300" y="390" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Handle_End_di" bpmnElement="Flow_Handle_End">
+        <di:waypoint x="350" y="430" /><di:waypoint x="422" y="430" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

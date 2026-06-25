@@ -115,6 +115,7 @@ func main() {
 	// ============================================================
 
 	processDefinitionCtrl := api.NewProcessDefinitionController(db, &rootDirPath)
+	processDefinitionCtrl.SetDispatcher(taskEventDispatcher)
 	processInstanceCtrl := api.NewProcessInstanceController(db, taskService, workerPool, taskEventDispatcher)
 	taskCtrl := api.NewTaskController(db, &rootDirPath, taskEventDispatcher) // Pass dispatcher
 
@@ -127,8 +128,14 @@ func main() {
 	userController := api.NewUserController(db, jwcService)
 
 	timerController := api.NewTimerController(db)
+	incidentCtrl := api.NewIncidentController(db)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
+
+	messageCtrl := api.NewMessageController(db, taskEventDispatcher)
+	signalCtrl := api.NewSignalController(db, taskEventDispatcher)
+	historyCtrl := api.NewHistoryController(db)
+
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
 	go timerScheduler.Start(context.Background())
 	defer timerScheduler.Stop()
@@ -224,6 +231,9 @@ func main() {
 	// Camunda 8 compatible
 	app.Post("/engine-rest/v2/deployments", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
+	app.Get("/engine-rest/process-definition", processDefinitionCtrl.ListDefinitions)
+	app.Get("/engine-rest/process-definition/:id", processDefinitionCtrl.GetDefinition)
+	app.Post("/engine-rest/process-definition/:id/start", processDefinitionCtrl.StartByDefinitionID)
 
 	// Camunda 7 compatible
 	app.Get("/engine-rest/engine", func(c *fiber.Ctx) error {
@@ -255,12 +265,34 @@ func main() {
 	app.Get("/jobs", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJobs)
 	app.Get("/jobs/:id", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJob)
 	app.Get("/engine-rest/jobs/:id", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.GetJob)
+	app.Post("/engine-rest/job/:id/retries", incidentCtrl.SetJobRetries)
+
+	// ============================================================
+	// INCIDENT ROUTES
+	// ============================================================
+
+	app.Get("/engine-rest/incident", incidentCtrl.ListIncidents)
+	app.Get("/engine-rest/incident/:id", incidentCtrl.GetIncident)
+	app.Delete("/engine-rest/incident/:id", incidentCtrl.DeleteIncident)
+	app.Get("/engine-rest/process-instance/:id/incidents", incidentCtrl.GetByProcessInstance)
 
 	// ============================================================
 	// HISTORY ROUTES
 	// ============================================================
 
 	app.Get("/history/tasks", historicTaskCtrl.GetHistoricTasks)
+
+	// Full historic process/activity instance endpoints (Camunda 7 compatible)
+	app.Get("/engine-rest/history/process-instance", historyCtrl.ListHistoricProcessInstances)
+	app.Get("/engine-rest/history/process-instance/:id", historyCtrl.GetHistoricProcessInstance)
+	app.Get("/engine-rest/history/activity-instance", historyCtrl.ListHistoricActivityInstances)
+
+	// ============================================================
+	// MESSAGE & SIGNAL ROUTES
+	// ============================================================
+
+	app.Post("/engine-rest/message", messageCtrl.CorrelateMessage)
+	app.Post("/engine-rest/signal", signalCtrl.BroadcastSignal)
 
 	// ============================================================
 	// AUDIT ROUTES

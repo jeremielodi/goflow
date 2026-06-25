@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_LoanApplication"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — Call Activity
+    SCENARIO: Loan application main process. The credit check step is delegated
+              to a reusable sub-process (creditCheckProcess) via a Call Activity.
+              The main process waits until the sub-process completes, then makes
+              the final lending decision.
+    FEATURES TESTED: Call Activity (suite 13)
+  -->
+
+  <bpmn:process id="loanApplication" name="Loan Application" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Application Received">
+      <bpmn:outgoing>sf1</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="prepareDocuments" name="Prepare Documents"
+        camunda:type="external" camunda:topic="prepare-documents">
+      <bpmn:incoming>sf1</bpmn:incoming>
+      <bpmn:outgoing>sf2</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:callActivity id="creditCheck" name="Credit Check" calledElement="creditCheckProcess">
+      <bpmn:incoming>sf2</bpmn:incoming>
+      <bpmn:outgoing>sf3</bpmn:outgoing>
+    </bpmn:callActivity>
+
+    <bpmn:serviceTask id="makeDecision" name="Make Loan Decision"
+        camunda:type="external" camunda:topic="make-decision">
+      <bpmn:incoming>sf3</bpmn:incoming>
+      <bpmn:outgoing>sf4</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end" name="Application Processed">
+      <bpmn:incoming>sf4</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="sf1" sourceRef="start"            targetRef="prepareDocuments"/>
+    <bpmn:sequenceFlow id="sf2" sourceRef="prepareDocuments" targetRef="creditCheck"/>
+    <bpmn:sequenceFlow id="sf3" sourceRef="creditCheck"      targetRef="makeDecision"/>
+    <bpmn:sequenceFlow id="sf4" sourceRef="makeDecision"     targetRef="end"/>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="loanApplication">
+
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="126" y="295" width="88" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="prepareDocuments_di" bpmnElement="prepareDocuments">
+        <dc:Bounds x="250" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="creditCheck_di" bpmnElement="creditCheck" isExpanded="false">
+        <dc:Bounds x="420" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="makeDecision_di" bpmnElement="makeDecision">
+        <dc:Bounds x="590" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="762" y="252" width="36" height="36" />
+        <bpmndi:BPMNLabel><dc:Bounds x="737" y="295" width="86" height="27" /></bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="sf1_di" bpmnElement="sf1">
+        <di:waypoint x="188" y="270" /><di:waypoint x="250" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf2_di" bpmnElement="sf2">
+        <di:waypoint x="350" y="270" /><di:waypoint x="420" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf3_di" bpmnElement="sf3">
+        <di:waypoint x="520" y="270" /><di:waypoint x="590" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="sf4_di" bpmnElement="sf4">
+        <di:waypoint x="690" y="270" /><di:waypoint x="762" y="270" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
