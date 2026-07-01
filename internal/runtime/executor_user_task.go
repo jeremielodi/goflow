@@ -56,6 +56,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 
 	taskID := uuid.New()
 	taskName := node.Name
+	taskDefinitionId := node.ID
 	if err := engineRepo.CreateUserTaskTx(tx, &repository.UserTask{
 		ID:                taskID,
 		ProcessInstanceID: exec.ProcessInstanceID,
@@ -90,6 +91,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 			ProcessInstanceID: exec.ProcessInstanceID.String(),
 			ExecutionID:       exec.ID.String(),
 			TaskName:          taskName,
+			TaskDefinitionKey: taskDefinitionId,
 			Assignee:          assignee,
 			CandidateGroup:    candidateGroup,
 			NewStatus:         "created",

@@ -43,6 +43,22 @@ export interface ExternalTask {
   variables: Record<string, { value: unknown; type: string }>;
 }
 
+export interface TaskListenerEvent {
+  id: string;
+  eventType: string;
+  taskId: string;
+  processInstanceId: string;
+  processKey: string;
+  executionId: string;
+  taskName: string;
+  assignee?: string | null;
+  candidateGroup?: string | null;
+  oldStatus?: string | null;
+  newStatus: string;
+  timestamp: string;
+  variables?: Record<string, unknown>;
+}
+
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
 export const sleep = (ms: number): Promise<void> =>
@@ -50,6 +66,81 @@ export const sleep = (ms: number): Promise<void> =>
 
 export function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(`Assertion failed: ${message}`);
+}
+
+// ─── SSE task-listener client ─────────────────────────────────────────────────
+
+/**
+ * Consumes GET /events/tasks (text/event-stream) and buffers "task" events so
+ * tests can assert that the backend's TaskEventDispatcher notified listeners
+ * (e.g. an external client tracking process progress) at each lifecycle step.
+ */
+export class TaskSSEClient {
+  private buffer = '';
+  private closed = false;
+  public readonly events: TaskListenerEvent[] = [];
+
+  private constructor(private readonly stream: NodeJS.ReadableStream) {
+    stream.on('data', (chunk: Buffer) => this.handleChunk(chunk));
+    stream.on('error', () => {});
+  }
+
+  static async connect(
+    api: AxiosInstance,
+    opts: { processKeys?: string[]; taskFilter?: string } = {}
+  ): Promise<TaskSSEClient> {
+    const params: Record<string, string> = {};
+    if (opts.processKeys?.length) params.processKeys = opts.processKeys.join(',');
+    if (opts.taskFilter) params.taskFilter = opts.taskFilter;
+
+    const res = await api.get('/events/tasks', {
+      params,
+      responseType: 'stream',
+      timeout: 0,
+    });
+    return new TaskSSEClient(res.data);
+  }
+
+  private handleChunk(chunk: Buffer): void {
+    this.buffer += chunk.toString('utf8');
+    const frames = this.buffer.split('\n\n');
+    this.buffer = frames.pop() ?? '';
+
+    for (const frame of frames) {
+      let eventName = 'message';
+      let data = '';
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event: ')) eventName = line.slice(7);
+        else if (line.startsWith('data: ')) data = line.slice(6);
+      }
+      if (eventName !== 'task' || !data) continue;
+      try {
+        this.events.push(JSON.parse(data) as TaskListenerEvent);
+      } catch {
+        // ignore malformed frame
+      }
+    }
+  }
+
+  /** Waits until an already-received or future event matches the predicate. */
+  async waitFor(
+    predicate: (e: TaskListenerEvent) => boolean,
+    timeoutMs = 15000
+  ): Promise<TaskListenerEvent> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const found = this.events.find(predicate);
+      if (found) return found;
+      await sleep(200);
+    }
+    throw new Error(`Timeout waiting for SSE task event (received ${this.events.length} events)`);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    (this.stream as any).destroy?.();
+  }
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -81,7 +172,7 @@ export class GoFlowClient {
   }
 
   async loginAsSuperUser(): Promise<LoginResponse> {
-    return this.login('superuser@goflow.com', 'superUser123');
+    return this.login('admin@goflow.com', 'admin123');
   }
 
   async refreshToken(refreshToken: string): Promise<LoginResponse> {

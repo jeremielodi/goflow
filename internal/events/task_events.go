@@ -24,6 +24,7 @@ type TaskEvent struct {
 	ProcessKey        string                 `json:"processKey"` // Add this field
 	ExecutionID       string                 `json:"executionId"`
 	TaskName          string                 `json:"taskName"`
+	TaskDefinitionKey string                 `json:"TaskDefinitionKey"`
 	Assignee          *string                `json:"assignee,omitempty"`
 	CandidateGroup    *string                `json:"candidateGroup,omitempty"`
 	OldStatus         *string                `json:"oldStatus,omitempty"`

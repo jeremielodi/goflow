@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_TaskListener"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A review needs sign-off from a human reviewer, then an external
+              worker runs a notification step, then a second human approves.
+    FEATURES TESTED:
+      - GoFlow's TaskEventDispatcher notifies listeners (SSE clients here) on
+        TASK_CREATED / TASK_CLAIMED / TASK_UNCLAIMED / TASK_COMPLETED
+      - Listener events still fire correctly when a step is driven by an
+        external task worker (fetchAndLock/complete) rather than a human
+  -->
+
+  <bpmn:process id="TaskListenerProcess" name="Task Listener Notification" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="start" name="Request Submitted">
+      <bpmn:outgoing>Flow_Start_Review</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="reviewTask" name="Review Request" camunda:candidateGroups="reviewers">
+      <bpmn:incoming>Flow_Start_Review</bpmn:incoming>
+      <bpmn:outgoing>Flow_Review_Notify</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:serviceTask id="notifyTask" name="Notify Stakeholders" camunda:type="external" camunda:topic="listener_worker_task">
+      <bpmn:incoming>Flow_Review_Notify</bpmn:incoming>
+      <bpmn:outgoing>Flow_Notify_Approve</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:userTask id="approveTask" name="Approve Request" camunda:candidateGroups="approvers">
+      <bpmn:incoming>Flow_Notify_Approve</bpmn:incoming>
+      <bpmn:outgoing>Flow_Approve_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end" name="Request Handled">
+      <bpmn:incoming>Flow_Approve_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Review" sourceRef="start" targetRef="reviewTask" />
+    <bpmn:sequenceFlow id="Flow_Review_Notify" sourceRef="reviewTask" targetRef="notifyTask" />
+    <bpmn:sequenceFlow id="Flow_Notify_Approve" sourceRef="notifyTask" targetRef="approveTask" />
+    <bpmn:sequenceFlow id="Flow_Approve_End" sourceRef="approveTask" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TaskListener">
+    <bpmndi:BPMNPlane id="BPMNPlane_TaskListener" bpmnElement="TaskListenerProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="reviewTask_di" bpmnElement="reviewTask">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="notifyTask_di" bpmnElement="notifyTask">
+        <dc:Bounds x="400" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="approveTask_di" bpmnElement="approveTask">
+        <dc:Bounds x="560" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="722" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Review_di" bpmnElement="Flow_Start_Review">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Review_Notify_di" bpmnElement="Flow_Review_Notify">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Notify_Approve_di" bpmnElement="Flow_Notify_Approve">
+        <di:waypoint x="500" y="270" /><di:waypoint x="560" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Approve_End_di" bpmnElement="Flow_Approve_End">
+        <di:waypoint x="660" y="270" /><di:waypoint x="722" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

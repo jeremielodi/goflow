@@ -13,7 +13,7 @@ async function run() {
       {
         name: 'Login with valid credentials returns access + refresh token',
         async fn() {
-          const res = await client.login('superuser@goflow.com', 'superUser123');
+          const res = await client.login('admin@goflow.com', 'admin123');
           assert(typeof res.access_token === 'string' && res.access_token.length > 0, 'access_token missing');
           assert(typeof res.refresh_token === 'string' && res.refresh_token.length > 0, 'refresh_token missing');
         },
@@ -23,7 +23,7 @@ async function run() {
         async fn() {
           await client.loginAsSuperUser();
           const res = await client.api.get('/users/me');
-          assert(res.data.user?.email === 'superuser@goflow.com', 'wrong email returned');
+          assert(res.data.user?.email === 'admin@goflow.com', 'wrong email returned');
         },
       },
       {
@@ -57,7 +57,7 @@ async function run() {
         name: 'Login with wrong password returns 401',
         async fn() {
           try {
-            await client.login('superuser@goflow.com', 'wrong_password');
+            await client.login('admin@goflow.com', 'wrong_password');
             throw new Error('Expected error was not thrown');
           } catch (e: any) {
             assert(e.response?.status === 401 || e.response?.status === 400,

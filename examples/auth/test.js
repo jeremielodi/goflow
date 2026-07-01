@@ -6,10 +6,9 @@ const BASE_URL = 'http://localhost:8080';
 async function test() {
     console.log('1. Logging in...');
     const loginRes = await axios.post(`${BASE_URL}/auth/login`, {
-        email: 'superuser@goflow.com',
-        password: 'superUser123'
+        email: 'admin@goflow.com',
+        password: 'admin123'
     });
-    console.log(Object.keys(loginRes.data));
     const accessToken = loginRes.data.access_token;
     const refreshToken = loginRes.data.refresh_token;
     

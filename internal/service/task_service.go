@@ -181,6 +181,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 			ProcessInstanceID: task.ProcessInstanceID.String(),
 			ExecutionID:       task.ExecutionID.String(),
 			TaskName:          task.TaskName,
+			TaskDefinitionKey: task.TaskDefinitionKey,
 			Assignee:          &assignee,
 			OldStatus:         &taskBefore.Status,
 			NewStatus:         "completed",
