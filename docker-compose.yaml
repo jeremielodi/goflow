@@ -81,13 +81,13 @@ services:
       SERVER_PORT: 8080
       QUEUE_WORKERS: 10
       
-      # JWT
-      JWT_SECRET_KEY: goflow_secret_key
-      
+      # JWT (must match variable name used in code)
+      goflow_secret_key: goflow_dev_secret_change_in_production
+
       # Super User
-      SUPER_USER_NAME: super_user
-      SUPER_USER_EMAIL: superuser@goflow.com
-      SUPER_USER_PASSWORD: superUser123
+      SUPER_USER_NAME: admin
+      SUPER_USER_EMAIL: admin@goflow.com
+      SUPER_USER_PASSWORD: admin123
       
       # Other
       GOFLOW_ENV: production
@@ -101,6 +101,21 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  # GoFlow Frontend (React + nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: goflow-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      goflow:
+        condition: service_healthy
     networks:
       - goflow-network
     restart: unless-stopped

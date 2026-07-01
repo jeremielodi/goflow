@@ -47,6 +47,7 @@ func (s *TaskService) SetResumeExecutor(fn ResumeExecutionFunc) {
 
 // CompleteTask handles the full task completion flow with a transaction.
 func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVars map[string]interface{}) error {
+
 	// 1. Load the task
 	task, err := s.taskRepo.FindTaskByID(taskID)
 	if err != nil {
@@ -91,13 +92,14 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	// Use common.ResolveNext to find the next node
 	nextID, err := common.ResolveNext(userNode, currentVars)
 	if err != nil {
-		// No outgoing flows → process completed after this user task
-		if err.Error() == "node has no outgoing flows" {
-			return s.completeProcessAndTask(task, currentVars, taskBefore)
-		}
-		return fmt.Errorf("failed to resolve next node: %w", err)
+		fmt.Println(err.Error())
+		return err
 	}
 
+	// node has no outgoing flows
+	if nextID == "" {
+		return s.completeProcessAndTask(task, currentVars, taskBefore)
+	}
 	// 5. Start transaction (move token, complete task, update variables)
 	tx := database.NewTransaction(s.db)
 

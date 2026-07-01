@@ -644,7 +644,7 @@ func (pc *ProcessInstanceController) SuspendProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	status := "active"
+	status := "running"
 	if req.Suspended {
 		status = "suspended"
 	}
