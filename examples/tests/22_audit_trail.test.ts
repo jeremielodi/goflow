@@ -50,12 +50,12 @@ interface TokenHistoryStep {
 }
 
 async function getAuditLogs(instanceId: string): Promise<AuditLogEntry[]> {
-  const res = await client.api.get(`/audit/process/${instanceId}`);
+  const res = await client.api.get(`/engine-rest/audit/process/${instanceId}`);
   return res.data.logs ?? [];
 }
 
 async function getTokenHistory(instanceId: string): Promise<TokenHistoryStep[]> {
-  const res = await client.api.get(`/audit/process/${instanceId}/token-history`);
+  const res = await client.api.get(`/engine-rest/audit/process/${instanceId}/token-history`);
   return res.data.steps ?? [];
 }
 
