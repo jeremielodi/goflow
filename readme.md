@@ -1,6 +1,6 @@
 # GoFlow — Cloud-Native BPMN Workflow Engine
 
-GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, with full API compatibility for both **Camunda 7** and **Camunda 8**. It is designed as a lightweight, self-hosted alternative to traditional Java-based engines, with a PostgreSQL backend and real-time event streaming.
+GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing REST APIs shaped after both **Camunda 7** (`/engine-rest/...`) and **Camunda 8** (`/v2/...`). It is designed as a lightweight, self-hosted alternative to traditional Java-based engines, with a single PostgreSQL backend, real-time event streaming, and a React operations/tasklist frontend. See [Comparison to Camunda 7 / Camunda 8](#comparison-to-camunda-7--camunda-8) for an honest look at what's covered and what isn't.
 
 ---
 
@@ -28,6 +28,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, with full A
 | Boundary Message Event | ✅ |
 | Boundary Signal Event | ✅ |
 | Multi-instance (parallel / sequential) | ✅ |
+| Business Rule Task (DMN decision table) | ✅ |
 
 ### Engine Features
 
@@ -35,20 +36,29 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, with full A
 |---|---|
 | Process definition versioning | ✅ |
 | Process variables (JSONB) | ✅ |
-| CEL / FEEL expression evaluation on flows | ✅ |
+| CEL expression evaluation on flows (FEEL-*like*, not full FEEL) | ✅ |
 | External task worker pattern (fetchAndLock) | ✅ |
 | Job retries with exponential back-off | ✅ |
 | Incident management | ✅ |
 | Timer scheduler (SKIP LOCKED) | ✅ |
 | Message correlation (`POST /engine-rest/message`) | ✅ |
 | Signal broadcast (`POST /engine-rest/signal`) | ✅ |
-| History API (process + activity instances) | ✅ |
+| DMN decision engine (decision tables, standalone evaluation) | ✅ |
+| Multi-tenancy (per-user tenant isolation) | ✅ |
 | JWT authentication + RBAC | ✅ |
+| OIDC bearer-token auth (optional, alongside JWT) | ✅ |
+| Zeebe-style extensions (task headers, I/O mapping, FEEL assignee, form key) | ✅ |
+| Forms (deploy + serve form schemas) | ✅ |
+| Process instance modification ("Move Token") | ✅ |
+| Audit trail (`audit_logs`, one row per state transition) | ✅ |
+| Token-history replay (derived from the audit trail, see below) | ✅ |
+| History API (process + activity instances) | ⚠️ basic — see [gaps](#comparison-to-camunda-7--camunda-8) |
 | SSE real-time events (`/events/tasks`) | ✅ |
 | WebSocket real-time events (`/ws/tasks`) | ✅ |
-| Audit log | ✅ |
+| React frontend (Operate + Tasklist-lite) | ✅ |
 | Docker / Docker Compose deployment | ✅ |
 | Horizontal scaling (PostgreSQL SKIP LOCKED) | ✅ |
+| gRPC / native Zeebe protocol | ❌ not implemented |
 
 ---
 
@@ -62,7 +72,7 @@ cd camunda-like
 # Start everything (PostgreSQL + GoFlow)
 docker compose up -d --build --wait
 
-# Default superuser: admin / admin123 (see .env)
+# Default superuser: admin@goflow.com / admin123 (seeded from docker-compose.yaml)
 ```
 
 The API is available at `http://localhost:8080`.
@@ -194,6 +204,23 @@ DELETE /engine-rest/incident/:id
 POST   /engine-rest/job/:id/retries   { "retries": 3 }
 ```
 
+### Audit Trail & Token-History Replay
+
+Every state transition (process start/complete/terminate/suspend, execution created/moved/waited/completed, task created/claimed/completed/cancelled, job locked/completed/failed, gateway fork/join, timer created/triggered/cancelled, message correlation, signal broadcast) is written to `audit_logs`. The token-history endpoint turns that raw trail into an ordered, human-readable path — this is what the frontend's diagram replay (play/pause/step/scrub, see below) consumes.
+
+```http
+# Raw audit log for an instance, chronological
+GET /engine-rest/audit/process/:processId
+
+# Derived token path: one step per element the token visited, with a
+# readable `detail` string and (where applicable) an `elementId` you can
+# highlight on the BPMN diagram
+GET /engine-rest/audit/process/:processId/token-history
+
+GET  /engine-rest/audit/task/:taskId
+POST /engine-rest/audit/date-range   { "start": "...", "end": "..." }
+```
+
 ### Real-Time Events
 
 ```http
@@ -203,6 +230,53 @@ GET /events/tasks
 # WebSocket
 ws://localhost:8080/ws/tasks
 ```
+
+### Camunda 8 REST API (`/v2/...`)
+
+Parallel to the Camunda-7-style surface above, the same engine is exposed with Camunda 8 ("Orchestration Cluster") request/response shapes — same underlying services, translated shapes only.
+
+```http
+POST /v2/deployments                          (also POST /v2/resources/deployments)
+POST /v2/process-definitions/:key/start
+POST /v2/process-instances
+GET  /v2/process-instances/:id
+POST /v2/process-instances/search
+POST /v2/process-instances/:id/modification   (Move Token)
+
+POST /v2/jobs/activation                      (fetch-and-lock equivalent)
+POST /v2/jobs/:id/completion
+POST /v2/jobs/:id/failure
+POST /v2/jobs/:id/error
+
+POST /v2/user-tasks/search
+POST /v2/user-tasks/:id/assignment            (claim/unclaim)
+POST /v2/user-tasks/:id/completion
+
+POST /v2/messages/publication
+POST /v2/signals/broadcast
+
+POST /v2/decisions/:key/evaluation            (DMN, no process instance needed)
+GET  /v2/forms/:formKey
+
+POST /v2/flownode-instances/search
+POST /v2/incidents/search
+POST /v2/variables/search
+```
+
+---
+
+## Frontend
+
+A React 19 + `bpmn-js` single-page app (`frontend/`, dockerized behind nginx) covering a slice of Camunda's Operate + Tasklist:
+
+- **Dashboard** — at-a-glance counts (running/completed instances, open tasks, incidents)
+- **Process Definitions / Process Instances** — deploy, browse, filter by key/state
+- **Instance Detail** — live BPMN diagram with an active-token overlay, plus a **replay control**: play/pause/step/scrub through the instance's full audit-log-derived token history, with a distinct pulsing marker on the diagram showing where the token was at each step (independent of the live-state overlay). Clicking a row in the Activity History timeline jumps the replay straight to that step. Also supports Move Token (process instance modification) from here.
+- **Tasks** — task inbox with claim/unclaim/complete, filtered to open tasks by default
+- **History** — historic process instance list/filter
+- **Incidents** — incident list with retry/resolve
+
+Not covered by the frontend: a BPMN Modeler (diagrams are authored externally and deployed as files, not edited in-browser), and no Optimize-style analytics/reporting.
 
 ---
 
@@ -247,16 +321,16 @@ ws://localhost:8080/ws/tasks
 
 ## Integration Tests
 
-13 test suites covering all major features:
+22 test suites covering every major feature, run against a real Docker Postgres+app stack:
 
 ```bash
 cd examples/tests
 npm install
 
-# Run all (skip slow timer tests)
+# Run all (skip the two slow 60s-timer suites)
 npx ts-node run_all.ts --no-timers
 
-# Run everything including 60s timer tests
+# Run everything including the timer suites
 npx ts-node run_all.ts
 ```
 
@@ -276,18 +350,55 @@ npx ts-node run_all.ts
 | 11 | Signal Events |
 | 12 | Event-based Gateway |
 | 13 | Call Activity |
+| 14 | Task Listener Notifications (SSE) |
+| 15 | Camunda 8 REST API (`/v2/...`) |
+| 16 | Zeebe BPMN Extensions (task headers, I/O mapping, FEEL assignee, form key) |
+| 17 | DMN Decision Engine |
+| 18 | Tasklist-equivalent (v2 user-tasks search + forms) |
+| 19 | Operate-equivalent (v2 flownode/variables/incidents/modification) |
+| 20 | Multi-tenancy |
+| 21 | OIDC Authentication |
+| 22 | Audit Trail Completeness (token-history replay data source) |
 
 ---
 
-## Environment Variables (`.env`)
+## Environment Variables
+
+The authoritative values are the ones baked into `docker-compose.yaml`'s `goflow` service — `.env` is only used for local (non-Docker) runs and uses different key names than the code expects in a couple of spots, so don't assume the two are in sync.
 
 ```bash
-goflow_db_host=postgres
-goflow_db_port=5432
-goflow_db_user=goflow
-goflow_db_password=goflow123
-goflow_db_name=goflow
-goflow_secret_key=your-jwt-secret-here
-goflow_superuser_email=admin@example.com
-goflow_superuser_password=admin123
+# Database
+DB_HOST=postgres
+DB_PORT=5432
+DB_USER=goflow
+DB_PASS=goflow123
+DB_NAME=goflow
+
+# JWT
+goflow_secret_key=change-me-in-production
+
+# Superuser (seeded on first boot)
+SUPER_USER_NAME=admin
+SUPER_USER_EMAIL=admin@goflow.com
+SUPER_USER_PASSWORD=admin123
+
+# OIDC (optional) — set all three to accept bearer tokens from an external
+# identity provider alongside the built-in JWT login; leave unset to disable
+# OIDC_ISSUER=https://your-idp.example.com/realms/goflow
+# OIDC_AUDIENCE=goflow-api
+# OIDC_JWKS_URL=https://your-idp.example.com/realms/goflow/protocol/openid-connect/certs
 ```
+
+---
+
+## Comparison to Camunda 7 / Camunda 8
+
+GoFlow deliberately targets both REST API shapes with one engine. It is **not** a drop-in replacement for either at scale — an honest summary:
+
+**Solid parity with Camunda 7:** the `/engine-rest/...` surface covers the BPMN element set above, external task workers, DMN, incidents, message/signal correlation, multi-tenancy, and (as of the audit-trail work) a complete write-side audit log. The gap: Camunda 7 has a dedicated, comprehensive History service (historic variables, historic task metrics, rich historic queries); GoFlow's `/engine-rest/history/...` is a thin read over live tables (current state only), and `audit_logs` fills the *replay* use case specifically rather than being a general historic query API.
+
+**Solid REST-shape parity with Camunda 8:** `/v2/...` mirrors job activation, user-tasks, process-instance modification/search, DMN evaluation, forms, and flownode/incident/variable search. Two things are architecturally different, not just missing features:
+- No gRPC / native Zeebe protocol — real Zeebe client libraries won't talk to GoFlow, only HTTP clients.
+- Single Postgres-backed monolith, not Zeebe's partitioned/distributed broker model — fine for small-to-medium workloads, not a horizontal-scaling story like Zeebe's.
+
+**Frontend:** the React app covers a real slice of Operate (instance inspection, plus a token-replay feature Operate doesn't offer by default) and Tasklist (task inbox), but there's no Modeler (BPMN authored externally) and no Optimize-equivalent analytics.

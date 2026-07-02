@@ -90,7 +90,9 @@ func (tc *TaskController) GetTasks(c *fiber.Ctx) error {
 func (tc *TaskController) Claim(c *fiber.Ctx) error {
 	type ClaimBody struct {
 		Assignee string `json:"assignee"`
+		UserId   string `json:"userId"`
 	}
+
 	var req ClaimBody
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -101,6 +103,10 @@ func (tc *TaskController) Claim(c *fiber.Ctx) error {
 
 	assignee := req.Assignee
 	id := c.Params("id")
+
+	if req.UserId != "" {
+		assignee = req.UserId
+	}
 
 	if assignee == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "message": "Assignee not defined"})
