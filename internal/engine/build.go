@@ -10,6 +10,20 @@ type ProcessGraph struct {
 	Nodes map[string]*Node
 }
 
+// applyIoMapping copies a parsed zeebe:ioMapping element onto a node's
+// InputMappings/OutputMappings, if present.
+func applyIoMapping(node *Node, io *parser.ZeebeIoMapping) {
+	if io == nil {
+		return
+	}
+	for _, in := range io.Inputs {
+		node.InputMappings = append(node.InputMappings, IOMapping{Source: in.Source, Target: in.Target})
+	}
+	for _, out := range io.Outputs {
+		node.OutputMappings = append(node.OutputMappings, IOMapping{Source: out.Source, Target: out.Target})
+	}
+}
+
 // ============================================================
 // Build a graph from a single parser.Process (core builder)
 // ============================================================
@@ -62,9 +76,27 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		if t.CamundaCandidateGroups != "" {
 			node.CandidateGroupExpr = &t.CamundaCandidateGroups
 		}
-		// Zeebe (nested extension)
-		if t.ZeebeExt != nil && t.ZeebeExt.Assignment != nil && t.ZeebeExt.Assignment.Assignee != "" {
-			node.AssigneeExpr = &t.ZeebeExt.Assignment.Assignee
+		if t.CamundaFormKey != "" {
+			node.FormKey = t.CamundaFormKey
+		}
+		// Zeebe extension elements (override Camunda 7 attributes when present)
+		if t.Ext != nil {
+			if ad := t.Ext.ZeebeAssignmentDefinition; ad != nil {
+				if ad.Assignee != "" {
+					node.AssigneeExpr = &ad.Assignee
+				}
+				if ad.CandidateGroups != "" {
+					node.CandidateGroupExpr = &ad.CandidateGroups
+				}
+			}
+			if fd := t.Ext.ZeebeFormDefinition; fd != nil {
+				if fd.FormKey != "" {
+					node.FormKey = fd.FormKey
+				} else if fd.FormId != "" {
+					node.FormKey = fd.FormId
+				}
+			}
+			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
 
 		// ✅ Add multi-instance support
@@ -93,9 +125,18 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		if t.CamundaTopic != "" {
 			node.JobType = &t.CamundaTopic
 		}
-		// Zeebe job type
-		if t.ZeebeExt != nil && t.ZeebeExt.TaskDefinition != nil && t.ZeebeExt.TaskDefinition.Type != "" {
-			node.JobType = &t.ZeebeExt.TaskDefinition.Type
+		// Zeebe extension elements
+		if t.Ext != nil {
+			if td := t.Ext.ZeebeTaskDefinition; td != nil && td.Type != "" {
+				node.JobType = &td.Type
+			}
+			if th := t.Ext.ZeebeTaskHeaders; th != nil && len(th.Headers) > 0 {
+				node.TaskHeaders = make(map[string]string, len(th.Headers))
+				for _, h := range th.Headers {
+					node.TaskHeaders[h.Key] = h.Value
+				}
+			}
+			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
 
 		// ✅ Add multi-instance support

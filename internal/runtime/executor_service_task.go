@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
 )
@@ -29,7 +30,18 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("service task %s has no job type", node.ID)
 	}
 
-	payload, err := json.Marshal(variables)
+	payloadVars := variables
+	if mapped := common.EvaluateIOMappings(node.InputMappings, variables); len(mapped) > 0 {
+		payloadVars = make(map[string]interface{}, len(variables)+len(mapped))
+		for k, v := range variables {
+			payloadVars[k] = v
+		}
+		for k, v := range mapped {
+			payloadVars[k] = v
+		}
+	}
+
+	payload, err := json.Marshal(payloadVars)
 	if err != nil {
 		return fmt.Errorf("failed to marshal variables: %w", err)
 	}

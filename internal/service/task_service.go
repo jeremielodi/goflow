@@ -74,19 +74,25 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		return fmt.Errorf("failed to unmarshal graph: %w", err)
 	}
 
-	// 3. Get current variables & merge user variables
+	// 3. Find the user task node
+	userNode, ok := graph.Nodes[task.TaskDefinitionKey]
+	if !ok || userNode.Type != engine.UserTaskType {
+		return fmt.Errorf("user task node not found")
+	}
+
+	// zeebe:ioMapping outputs: if declared, only the mapped (renamed) values
+	// propagate to the process scope instead of the raw completion variables.
+	if len(userNode.OutputMappings) > 0 {
+		userVars = common.EvaluateIOMappings(userNode.OutputMappings, userVars)
+	}
+
+	// 4. Get current variables & merge user variables
 	currentVars, err := s.instRepo.GetVariables(task.ProcessInstanceID)
 	if err != nil {
 		return err
 	}
 	for k, v := range userVars {
 		currentVars[k] = v
-	}
-
-	// 4. Find the user task node and resolve next element
-	userNode, ok := graph.Nodes[task.TaskDefinitionKey]
-	if !ok || userNode.Type != engine.UserTaskType {
-		return fmt.Errorf("user task node not found")
 	}
 
 	// Use common.ResolveNext to find the next node

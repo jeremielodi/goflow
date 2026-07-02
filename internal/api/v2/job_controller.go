@@ -41,6 +41,7 @@ type v2ActivatedJob struct {
 	Retries            int                    `json:"retries"`
 	Worker             string                 `json:"worker"`
 	Variables          map[string]interface{} `json:"variables"`
+	CustomHeaders      map[string]string      `json:"customHeaders,omitempty"`
 }
 
 // ActivateJobs handles POST /v2/jobs/activation.
@@ -79,6 +80,7 @@ func (jc *JobController) ActivateJobs(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 
+	engineRepo := repository.NewEngineRepository(jc.db, jc.dispatcher)
 	jobs := []v2ActivatedJob{}
 	for _, topicJob := range topicJobs {
 		for _, job := range topicJob.Jobs {
@@ -88,6 +90,14 @@ func (jc *JobController) ActivateJobs(c *fiber.Ctx) error {
 					log.Printf("Warning: failed to parse job payload for job %s: %v", job.ID, err)
 				}
 			}
+
+			var headers map[string]string
+			if graph, gerr := engineRepo.GetProcessGraphByInstanceID(job.ProcessInstanceID); gerr == nil && graph != nil {
+				if n, ok := graph.Nodes[job.CurrentElementID]; ok {
+					headers = n.TaskHeaders
+				}
+			}
+
 			jobs = append(jobs, v2ActivatedJob{
 				JobKey:             job.ID.String(),
 				Type:               topicJob.TopicName,
@@ -95,6 +105,7 @@ func (jc *JobController) ActivateJobs(c *fiber.Ctx) error {
 				Retries:            job.Retries,
 				Worker:             req.Worker,
 				Variables:          vars,
+				CustomHeaders:      headers,
 			})
 		}
 	}

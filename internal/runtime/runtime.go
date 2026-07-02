@@ -722,18 +722,11 @@ func (r *Runtime) isForkGateway(node *engine.Node, exec *repository.Execution) b
 // Helper: resolveExpression resolves expression strings like ${variableName}
 // ------------------------------------------------------------
 func resolveExpression(expr string, vars map[string]interface{}) string {
-	expr = strings.TrimSpace(expr)
-	// If it looks like a variable reference: ${...}
-	if strings.HasPrefix(expr, "${") && strings.HasSuffix(expr, "}") {
-		key := expr[2 : len(expr)-1] // extract variable name
-		if val, ok := vars[key]; ok {
-			return fmt.Sprintf("%v", val)
-		}
-		// fallback: return empty if variable not found
+	value, err := common.EvaluateValue(expr, vars)
+	if err != nil || value == nil {
 		return ""
 	}
-	// Otherwise treat as literal string
-	return expr
+	return fmt.Sprintf("%v", value)
 }
 
 // internal/runtime/runtime.go

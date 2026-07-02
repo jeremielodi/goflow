@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -75,6 +76,16 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// zeebe:ioMapping inputs are local to the activity (not the process scope),
+	// so they're stored as the task's form data rather than merged into
+	// process variables.
+	if inputVars := common.EvaluateIOMappings(node.InputMappings, variables); len(inputVars) > 0 {
+		taskRepo := repository.NewTaskRepository(r.DB, r.dispatcher)
+		if _, err := taskRepo.UpdateTaskFormData(taskID, inputVars); err != nil {
+			log.Printf("Warning: failed to store input-mapped variables on task %s: %v", taskID, err)
+		}
 	}
 
 	r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)

@@ -43,54 +43,81 @@ func EvaluateCondition(
 		return true, nil
 	}
 
-	// Normalize BPMN syntax
-	normalized, err := normalizeExpression(expr)
+	normalized, prg, err := compileExpression(expr, variables)
 	if err != nil {
 		return false, err
 	}
 
-	// Generate cache key
-	cacheKey := generateCacheKey(normalized, variables)
+	return executeProgram(prg, variables, normalized)
+}
 
-	// Try to get from cache
-	cached := getCachedProgram(cacheKey)
-	if cached != nil {
-		return executeProgram(cached.program, variables, normalized)
+// EvaluateValue evaluates a FEEL/CEL expression (or Camunda 7 ${...} wrapper)
+// and returns its raw value, rather than requiring a boolean result. Used for
+// assignee/candidateGroups expressions and zeebe:ioMapping source expressions.
+//
+// A value is only treated as an expression when it looks like one (FEEL "="
+// prefix or Camunda 7 "${...}" wrapper) — otherwise it's returned unchanged,
+// since attributes like candidateGroups="sales,marketing" are plain literals,
+// not variable references. A blank expression returns nil.
+func EvaluateValue(expr string, variables map[string]interface{}) (interface{}, error) {
+	trimmed := strings.TrimSpace(expr)
+	if trimmed == "" {
+		return nil, nil
+	}
+	isExpression := strings.HasPrefix(trimmed, "=") ||
+		(strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}"))
+	if !isExpression {
+		return trimmed, nil
 	}
 
-	// Build CEL environment with variable names
+	normalized, prg, err := compileExpression(trimmed, variables)
+	if err != nil {
+		return nil, err
+	}
+
+	out, _, err := prg.Eval(variables)
+	if err != nil {
+		return nil, fmt.Errorf("expression evaluation error for '%s': %w", normalized, err)
+	}
+	return out.Value(), nil
+}
+
+// compileExpression normalizes expr to CEL and returns a compiled (and
+// cached) program ready to Eval against variables.
+func compileExpression(expr string, variables map[string]interface{}) (string, cel.Program, error) {
+	normalized, err := normalizeExpression(expr)
+	if err != nil {
+		return normalized, nil, err
+	}
+
+	cacheKey := generateCacheKey(normalized, variables)
+	if cached := getCachedProgram(cacheKey); cached != nil {
+		return normalized, cached.program, nil
+	}
+
 	envOptions := make([]cel.EnvOption, 0, len(commonEnvOptions)+len(variables))
 	envOptions = append(envOptions, commonEnvOptions...)
-
 	for variableName := range variables {
 		envOptions = append(envOptions, cel.Variable(variableName, cel.DynType))
 	}
 
 	env, err := cel.NewEnv(envOptions...)
 	if err != nil {
-		return false, fmt.Errorf("failed to create CEL environment: %w", err)
+		return normalized, nil, fmt.Errorf("failed to create CEL environment: %w", err)
 	}
 
-	// Compile expression
 	ast, issues := env.Compile(normalized)
 	if issues != nil && issues.Err() != nil {
-		return false, fmt.Errorf("condition compilation error for '%s': %w", normalized, issues.Err())
+		return normalized, nil, fmt.Errorf("expression compilation error for '%s': %w", normalized, issues.Err())
 	}
 
-	// Create executable program
 	prg, err := env.Program(ast)
 	if err != nil {
-		return false, fmt.Errorf("failed to create CEL program: %w", err)
+		return normalized, nil, fmt.Errorf("failed to create CEL program: %w", err)
 	}
 
-	// Cache the program
-	setCachedProgram(cacheKey, &cachedProgram{
-		program: prg,
-		env:     env,
-		expr:    normalized,
-	})
-
-	return executeProgram(prg, variables, normalized)
+	setCachedProgram(cacheKey, &cachedProgram{program: prg, env: env, expr: normalized})
+	return normalized, prg, nil
 }
 
 // normalizeExpression normalizes BPMN/FEEL expression to CEL syntax

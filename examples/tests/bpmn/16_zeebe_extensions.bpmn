@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_ZeebeExtensions"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A Zeebe-style (Camunda 8 namespace) process — a service task
+              maps an input variable into its job payload and remaps its
+              result back via an output mapping, then a user task resolves
+              its assignee via a FEEL expression, and an exclusive gateway
+              routes on the service task's remapped output using FEEL.
+    FEATURES TESTED:
+      - zeebe:taskDefinition (job type) + zeebe:taskHeaders
+      - zeebe:ioMapping (input on both tasks, output on the service task)
+      - zeebe:assignmentDefinition (assignee via FEEL, candidateGroups literal)
+      - zeebe:formDefinition (formId)
+      - FEEL condition on an exclusive gateway sequence flow
+  -->
+
+  <bpmn:process id="ZeebeExtensionsProcess" name="Zeebe Extensions" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Order Placed">
+      <bpmn:outgoing>Flow_Start_Prepare</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="prepareTask" name="Prepare Order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="zeebe_prepare" retries="3" />
+        <zeebe:taskHeaders>
+          <zeebe:header key="priority" value="high" />
+        </zeebe:taskHeaders>
+        <zeebe:ioMapping>
+          <zeebe:input source="=orderId" target="mappedOrderId" />
+          <zeebe:output source="=prepResult" target="prepStatus" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_Prepare</bpmn:incoming>
+      <bpmn:outgoing>Flow_Prepare_Review</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:userTask id="reviewTask" name="Review Order">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition assignee="=reviewer" candidateGroups="reviewers" />
+        <zeebe:formDefinition formId="review-form" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=orderId" target="reviewOrderId" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Prepare_Review</bpmn:incoming>
+      <bpmn:outgoing>Flow_Review_Decision</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:exclusiveGateway id="decisionGateway" name="Prep OK?">
+      <bpmn:incoming>Flow_Review_Decision</bpmn:incoming>
+      <bpmn:outgoing>Flow_Decision_Approved</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Decision_Rejected</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <bpmn:endEvent id="end_approved" name="Order Approved">
+      <bpmn:incoming>Flow_Decision_Approved</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="end_rejected" name="Order Rejected">
+      <bpmn:incoming>Flow_Decision_Rejected</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Prepare" sourceRef="start" targetRef="prepareTask" />
+    <bpmn:sequenceFlow id="Flow_Prepare_Review" sourceRef="prepareTask" targetRef="reviewTask" />
+    <bpmn:sequenceFlow id="Flow_Review_Decision" sourceRef="reviewTask" targetRef="decisionGateway" />
+    <bpmn:sequenceFlow id="Flow_Decision_Approved" name="Approved" sourceRef="decisionGateway" targetRef="end_approved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=prepStatus = "ok"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Decision_Rejected" name="Rejected" sourceRef="decisionGateway" targetRef="end_rejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=prepStatus != "ok"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ZeebeExtensions">
+    <bpmndi:BPMNPlane id="BPMNPlane_ZeebeExtensions" bpmnElement="ZeebeExtensionsProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="prepareTask_di" bpmnElement="prepareTask">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="reviewTask_di" bpmnElement="reviewTask">
+        <dc:Bounds x="400" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="decisionGateway_di" bpmnElement="decisionGateway">
+        <dc:Bounds x="560" y="245" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_approved_di" bpmnElement="end_approved">
+        <dc:Bounds x="680" y="152" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_rejected_di" bpmnElement="end_rejected">
+        <dc:Bounds x="680" y="352" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Prepare_di" bpmnElement="Flow_Start_Prepare">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Prepare_Review_di" bpmnElement="Flow_Prepare_Review">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Review_Decision_di" bpmnElement="Flow_Review_Decision">
+        <di:waypoint x="500" y="270" /><di:waypoint x="560" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Decision_Approved_di" bpmnElement="Flow_Decision_Approved">
+        <di:waypoint x="585" y="245" /><di:waypoint x="585" y="170" /><di:waypoint x="680" y="170" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Decision_Rejected_di" bpmnElement="Flow_Decision_Rejected">
+        <di:waypoint x="585" y="295" /><di:waypoint x="585" y="370" /><di:waypoint x="680" y="370" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

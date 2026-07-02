@@ -71,6 +71,20 @@ type Node struct {
 	// Script task support
 	Script       *string `json:"script,omitempty"`
 	ScriptFormat *string `json:"scriptFormat,omitempty"`
+
+	// Zeebe extension support (see internal/parser.ExtensionElements)
+	FormKey        string            `json:"formKey,omitempty"`
+	TaskHeaders    map[string]string `json:"taskHeaders,omitempty"`
+	InputMappings  []IOMapping       `json:"inputMappings,omitempty"`
+	OutputMappings []IOMapping       `json:"outputMappings,omitempty"`
+}
+
+// IOMapping is a zeebe:ioMapping input or output entry. Source is a FEEL
+// expression (conventionally prefixed with "="); Target is the variable name
+// the evaluated result is written to.
+type IOMapping struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
 }
 
 // MultiInstanceConfig holds multi-instance configuration

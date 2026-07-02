@@ -173,18 +173,6 @@ type EndEvent struct {
 	Incoming []string `xml:"incoming"`
 }
 
-type CamundaExtensions struct {
-	Assignee        string `xml:"assignee,attr"`
-	CandidateGroups string `xml:"candidateGroups,attr"`
-	TaskDefinition  *struct {
-		Topic string `xml:"topic,attr"`
-	} `xml:"taskDefinition"`
-}
-
-type CamundaTaskDefinition struct {
-	Topic string `xml:"topic,attr"`
-}
-
 // MultiInstanceLoopCharacteristics represents BPMN multi-instance configuration
 type MultiInstanceLoopCharacteristics struct {
 	IsSequential        bool   `xml:"isSequential,attr"`
@@ -195,18 +183,51 @@ type MultiInstanceLoopCharacteristics struct {
 	ElementVariable     string `xml:"elementVariable,attr"` // Variable name for current item
 }
 
-// ZeebeExtensions (for Camunda 8)
-type ZeebeExtensions struct {
-	TaskDefinition *ZeebeTaskDefinition `xml:"taskDefinition"`
-	Assignment     *ZeebeAssignment     `xml:"assignment"`
-}
-
+// Zeebe extension elements (for Camunda 8). Each of these is a direct child
+// of <bpmn:extensionElements>, as siblings — not nested inside one another —
+// so UserTask/ServiceTask each hold a single ExtensionElements field rather
+// than one field per zeebe: element.
 type ZeebeTaskDefinition struct {
-	Type string `xml:"type,attr"`
+	Type    string `xml:"type,attr"`
+	Retries string `xml:"retries,attr"`
 }
 
-type ZeebeAssignment struct {
-	Assignee string `xml:"assignee,attr"`
+type ZeebeAssignmentDefinition struct {
+	Assignee        string `xml:"assignee,attr"`
+	CandidateGroups string `xml:"candidateGroups,attr"`
+	CandidateUsers  string `xml:"candidateUsers,attr"`
+}
+
+type ZeebeFormDefinition struct {
+	FormId  string `xml:"formId,attr"`
+	FormKey string `xml:"formKey,attr"`
+}
+
+type ZeebeHeader struct {
+	Key   string `xml:"key,attr"`
+	Value string `xml:"value,attr"`
+}
+
+type ZeebeTaskHeaders struct {
+	Headers []ZeebeHeader `xml:"header"`
+}
+
+type ZeebeIOEntry struct {
+	Source string `xml:"source,attr"`
+	Target string `xml:"target,attr"`
+}
+
+type ZeebeIoMapping struct {
+	Inputs  []ZeebeIOEntry `xml:"input"`
+	Outputs []ZeebeIOEntry `xml:"output"`
+}
+
+type ExtensionElements struct {
+	ZeebeTaskDefinition       *ZeebeTaskDefinition       `xml:"taskDefinition"`
+	ZeebeAssignmentDefinition *ZeebeAssignmentDefinition `xml:"assignmentDefinition"`
+	ZeebeFormDefinition       *ZeebeFormDefinition       `xml:"formDefinition"`
+	ZeebeTaskHeaders          *ZeebeTaskHeaders          `xml:"taskHeaders"`
+	ZeebeIoMapping            *ZeebeIoMapping            `xml:"ioMapping"`
 }
 
 type UserTask struct {
@@ -214,11 +235,10 @@ type UserTask struct {
 	Name                   string                            `xml:"name,attr"`
 	Incoming               []string                          `xml:"incoming"`
 	Outgoing               []string                          `xml:"outgoing"`
-	CamundaExt             *CamundaExtensions                `xml:"extensionElements>camunda:taskListener?omitempty"`
 	CamundaAssignee        string                            `xml:"http://camunda.org/schema/1.0/bpmn assignee,attr"`
 	CamundaCandidateGroups string                            `xml:"http://camunda.org/schema/1.0/bpmn candidateGroups,attr"`
 	CamundaFormKey         string                            `xml:"http://camunda.org/schema/1.0/bpmn formKey,attr"`
-	ZeebeExt               *ZeebeExtensions                  `xml:"extensionElements>zeebe:assignment"?`
+	Ext                    *ExtensionElements                `xml:"extensionElements"`
 	MultiInstance          *MultiInstanceLoopCharacteristics `xml:"multiInstanceLoopCharacteristics"`
 }
 
@@ -228,8 +248,7 @@ type ServiceTask struct {
 	Incoming []string `xml:"incoming"`
 	Outgoing []string `xml:"outgoing"`
 
-	CamundaExt *CamundaExtensions `xml:"extensionElements>camunda:taskListener"?`
-	ZeebeExt   *ZeebeExtensions   `xml:"extensionElements>zeebe:assignment"?`
+	Ext *ExtensionElements `xml:"extensionElements"`
 
 	CamundaType  string `xml:"http://camunda.org/schema/1.0/bpmn type,attr"`
 	CamundaTopic string `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`

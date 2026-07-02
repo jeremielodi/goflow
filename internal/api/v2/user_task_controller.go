@@ -12,6 +12,7 @@ type UserTaskController struct {
 	db         *sqlx.DB
 	dispatcher *events.TaskEventDispatcher
 	taskRepo   *repository.TaskRepository
+	engineRepo *repository.EngineRepository
 }
 
 func NewUserTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *UserTaskController {
@@ -19,6 +20,7 @@ func NewUserTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) 
 		db:         db,
 		dispatcher: dispatcher,
 		taskRepo:   repository.NewTaskRepository(db, dispatcher),
+		engineRepo: repository.NewEngineRepository(db, dispatcher),
 	}
 }
 
@@ -39,7 +41,14 @@ func userTaskState(status string) string {
 	}
 }
 
-func toV2UserTask(t *models.Task) fiber.Map {
+func (uc *UserTaskController) toV2UserTask(t *models.Task) fiber.Map {
+	var formKey string
+	if graph, err := uc.engineRepo.GetProcessGraphByInstanceID(t.ProcessInstanceID); err == nil && graph != nil {
+		if n, ok := graph.Nodes[t.TaskDefinitionKey]; ok {
+			formKey = n.FormKey
+		}
+	}
+
 	return fiber.Map{
 		"userTaskKey":        t.ID,
 		"elementId":          t.TaskDefinitionKey,
@@ -49,6 +58,7 @@ func toV2UserTask(t *models.Task) fiber.Map {
 		"candidateGroups":    t.CandidateGroup,
 		"state":              userTaskState(t.Status),
 		"creationDate":       t.CreatedAt,
+		"formKey":            formKey,
 	}
 }
 
@@ -97,7 +107,7 @@ func (uc *UserTaskController) SearchUserTasks(c *fiber.Ctx) error {
 
 	items := make([]fiber.Map, 0, len(tasks))
 	for i := range tasks {
-		items = append(items, toV2UserTask(&tasks[i]))
+		items = append(items, uc.toV2UserTask(&tasks[i]))
 	}
 
 	return c.JSON(fiber.Map{"items": items})

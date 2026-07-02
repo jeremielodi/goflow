@@ -59,6 +59,7 @@ type FetchAndLockResponse struct {
 	Variables         map[string]CamundaVariable `json:"variables"`
 	Retries           int                        `json:"retries"`
 	WorkerId          string                     `json:"workerId"`
+	Headers           map[string]string          `json:"headers,omitempty"` // zeebe:taskHeaders
 }
 
 type CompleteRequest struct {
@@ -157,6 +158,7 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 	}
 
 	// Build response
+	engineRepo := repository.NewEngineRepository(ctrl.db, ctrl.dispatcher)
 	response := []FetchAndLockResponse{}
 	for _, topicJob := range topicJobs {
 		for _, job := range topicJob.Jobs {
@@ -171,6 +173,13 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 			// Convert to Camunda variable format (typed)
 			convertedVars := formatVariablesForResponse(rawVars)
 
+			var headers map[string]string
+			if graph, gerr := engineRepo.GetProcessGraphByInstanceID(job.ProcessInstanceID); gerr == nil && graph != nil {
+				if n, ok := graph.Nodes[job.CurrentElementID]; ok {
+					headers = n.TaskHeaders
+				}
+			}
+
 			response = append(response, FetchAndLockResponse{
 				ID:                job.ID.String(),
 				TopicName:         topicJob.TopicName,
@@ -178,6 +187,7 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 				Variables:         convertedVars,
 				Retries:           job.Retries,
 				WorkerId:          req.WorkerId,
+				Headers:           headers,
 			})
 		}
 	}
@@ -238,6 +248,18 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 			"title":   "Invalid State",
 			"message": fmt.Sprintf("job cannot be completed, current status: %s", jobWithExec.Status),
 		})
+	}
+
+	// zeebe:ioMapping outputs: if the completed activity declares output
+	// mappings, only the mapped (renamed) values propagate to the process
+	// scope instead of the raw job variables.
+	if graphJSON, gerr := ctrl.externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID); gerr == nil {
+		var g engine.ProcessGraph
+		if json.Unmarshal(graphJSON, &g) == nil {
+			if n, ok := g.Nodes[jobWithExec.CurrentElementID]; ok && len(n.OutputMappings) > 0 {
+				normalizedVars = common.EvaluateIOMappings(n.OutputMappings, normalizedVars)
+			}
+		}
 	}
 
 	// Merge variables
