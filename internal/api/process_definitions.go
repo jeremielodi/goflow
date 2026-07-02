@@ -153,9 +153,17 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		Version      int    `json:"version"`
 		ResourceName string `json:"resourceName"`
 	}
+	type FormInfo struct {
+		ID           string `json:"id"`
+		Key          string `json:"key"`
+		Version      int    `json:"version"`
+		ResourceName string `json:"resourceName"`
+	}
 	deployedProcesses := make(map[string]ProcessDefInfo)
 	deployedDecisions := make(map[string]DecisionInfo)
+	deployedForms := make(map[string]FormInfo)
 	dmnRepo := repository.NewDMNRepository(processDef.db)
+	formRepo := repository.NewFormRepository(processDef.db)
 
 	for _, fh := range fileHeaders {
 		file, err := fh.Open()
@@ -166,6 +174,30 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		file.Close()
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "failed to read file " + fh.Filename})
+		}
+
+		if strings.HasSuffix(strings.ToLower(fh.Filename), ".form") {
+			var schema struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(fileBytes, &schema); err != nil || schema.ID == "" {
+				return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("failed to parse form %s: expected JSON with an \"id\" field", fh.Filename)})
+			}
+			formID, version, err := formRepo.CreateForm(models.FormCreateModel{
+				DeploymentID: deploy.ID,
+				FormId:       schema.ID,
+				Schema:       fileBytes,
+			})
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("failed to store form %s: %v", schema.ID, err)})
+			}
+			deployedForms[schema.ID] = FormInfo{
+				ID:           formID.String(),
+				Key:          schema.ID,
+				Version:      version,
+				ResourceName: fh.Filename,
+			}
+			continue
 		}
 
 		if strings.HasSuffix(strings.ToLower(fh.Filename), ".dmn") {
@@ -261,6 +293,7 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		"deployedAt":                 time.Now().Format(time.RFC3339),
 		"deployedProcessDefinitions": deployedProcesses,
 		"deployedDecisions":          deployedDecisions,
+		"deployedForms":              deployedForms,
 	})
 }
 

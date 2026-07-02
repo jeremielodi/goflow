@@ -228,6 +228,12 @@ type ZeebeCalledDecision struct {
 	ResultVariable string `xml:"resultVariable,attr"`
 }
 
+// ZeebePriorityDefinition sets a user task's priority (0-100, default 50).
+// The value can be a literal integer or a FEEL expression (prefixed "=").
+type ZeebePriorityDefinition struct {
+	Priority string `xml:"priority,attr"`
+}
+
 type ExtensionElements struct {
 	ZeebeTaskDefinition       *ZeebeTaskDefinition       `xml:"taskDefinition"`
 	ZeebeAssignmentDefinition *ZeebeAssignmentDefinition `xml:"assignmentDefinition"`
@@ -235,6 +241,7 @@ type ExtensionElements struct {
 	ZeebeTaskHeaders          *ZeebeTaskHeaders          `xml:"taskHeaders"`
 	ZeebeIoMapping            *ZeebeIoMapping            `xml:"ioMapping"`
 	ZeebeCalledDecision       *ZeebeCalledDecision       `xml:"calledDecision"`
+	ZeebePriorityDefinition   *ZeebePriorityDefinition   `xml:"priorityDefinition"`
 }
 
 type UserTask struct {

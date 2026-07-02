@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_TasklistProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A single user task with a linked form (zeebe:formDefinition
+              formId, resolved via GET /v2/forms/:formKey against a .form
+              JSON resource deployed alongside this BPMN) and a per-instance
+              priority (zeebe:priorityDefinition, resolved via FEEL from the
+              "taskPriority" process variable) — exercises the Tasklist-
+              equivalent v2 search filters (state, candidateGroup, priority).
+  -->
+
+  <bpmn:process id="TasklistProcess" name="Tasklist Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Request Submitted">
+      <bpmn:outgoing>Flow_Start_Review</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="reviewTask" name="Review Request">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition candidateGroups="reviewers" />
+        <zeebe:formDefinition formId="review-form" />
+        <zeebe:priorityDefinition priority="=taskPriority" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_Review</bpmn:incoming>
+      <bpmn:outgoing>Flow_Review_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end" name="Reviewed">
+      <bpmn:incoming>Flow_Review_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Review" sourceRef="start" targetRef="reviewTask" />
+    <bpmn:sequenceFlow id="Flow_Review_End" sourceRef="reviewTask" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TasklistProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_TasklistProcess" bpmnElement="TasklistProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="reviewTask_di" bpmnElement="reviewTask">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="400" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Review_di" bpmnElement="Flow_Start_Review">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Review_End_di" bpmnElement="Flow_Review_End">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

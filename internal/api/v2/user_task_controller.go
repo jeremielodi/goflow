@@ -59,6 +59,7 @@ func (uc *UserTaskController) toV2UserTask(t *models.Task) fiber.Map {
 		"state":              userTaskState(t.Status),
 		"creationDate":       t.CreatedAt,
 		"formKey":            formKey,
+		"priority":           t.Priority,
 	}
 }
 
@@ -69,6 +70,8 @@ type SearchUserTasksRequest struct {
 		Assignee           string `json:"assignee"`
 		State              string `json:"state"`
 		ElementId          string `json:"elementId"`
+		CandidateGroup     string `json:"candidateGroup"`
+		Priority           *int   `json:"priority"`
 	} `json:"filter"`
 }
 
@@ -86,6 +89,12 @@ func (uc *UserTaskController) SearchUserTasks(c *fiber.Ctx) error {
 	}
 	if req.Filter.ElementId != "" {
 		params["task_definition_key"] = req.Filter.ElementId
+	}
+	if req.Filter.CandidateGroup != "" {
+		params["candidate_group"] = req.Filter.CandidateGroup
+	}
+	if req.Filter.Priority != nil {
+		params["priority"] = *req.Filter.Priority
 	}
 	if req.Filter.State != "" {
 		switch req.Filter.State {

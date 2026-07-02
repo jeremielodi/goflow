@@ -222,3 +222,69 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 
 	return c.JSON(fiber.Map{"items": items})
 }
+
+// ModifyProcessInstanceRequest matches the (simplified) Camunda 8 modification body.
+type ModifyProcessInstanceRequest struct {
+	MoveInstructions []struct {
+		SourceElementId string `json:"sourceElementId"`
+		TargetElementId string `json:"targetElementId"`
+	} `json:"moveInstructions"`
+}
+
+// ModifyProcessInstance handles POST /v2/process-instances/:id/modification —
+// moves one or more running tokens from a source element to a target
+// element, cancelling the source execution (and any open task/job attached
+// to it) and creating a fresh one at the target, preserving process
+// variables (see internal/runtime/modification.go).
+func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
+	instanceID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"title": "INVALID_ARGUMENT", "detail": "invalid process instance key",
+		})
+	}
+
+	var req ModifyProcessInstanceRequest
+	if err := c.BodyParser(&req); err != nil || len(req.MoveInstructions) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"title": "INVALID_ARGUMENT", "detail": "at least one moveInstruction is required",
+		})
+	}
+
+	inst, err := pc.processInstanceRepo.FindByID(instanceID)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title": "NOT_FOUND", "detail": "process instance not found or not active",
+		})
+	}
+
+	def, err := pc.processRepo.FindProcessDefinitionByID(inst.ProcessDefinitionID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
+	}
+
+	var graph engine.ProcessGraph
+	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"title": "INTERNAL_ERROR", "detail": "failed to parse process graph",
+		})
+	}
+
+	moves := make([]runtime.MoveInstruction, len(req.MoveInstructions))
+	for i, m := range req.MoveInstructions {
+		moves[i] = runtime.MoveInstruction{SourceElementID: m.SourceElementId, TargetElementID: m.TargetElementId}
+	}
+
+	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
+	newExecutionIDs, err := rt.ModifyInstance(c.Context(), instanceID, moves)
+	if err != nil {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"title": "MODIFICATION_FAILED", "detail": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"processInstanceKey": instanceID,
+		"newExecutionIds":    newExecutionIDs,
+	})
+}

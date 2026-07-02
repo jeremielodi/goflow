@@ -144,6 +144,10 @@ func main() {
 	v2MessageCtrl := apiv2.NewMessageController(messageCtrl)
 	v2SignalCtrl := apiv2.NewSignalController(signalCtrl)
 	v2DecisionCtrl := apiv2.NewDecisionController(db)
+	v2FormCtrl := apiv2.NewFormController(db)
+	v2IncidentCtrl := apiv2.NewIncidentController(db)
+	v2FlownodeInstanceCtrl := apiv2.NewFlownodeInstanceController(db)
+	v2VariableCtrl := apiv2.NewVariableController(db)
 
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
 	go timerScheduler.Start(context.Background())
@@ -326,6 +330,12 @@ func main() {
 	app.Post("/v2/messages/publication", v2MessageCtrl.PublishMessage)
 	app.Post("/v2/signals/broadcast", v2SignalCtrl.BroadcastSignal)
 	app.Post("/v2/decisions/:key/evaluation", v2DecisionCtrl.EvaluateDecision)
+	app.Get("/v2/forms/:formKey", v2FormCtrl.GetForm)
+
+	app.Post("/v2/incidents/search", v2IncidentCtrl.SearchIncidents)
+	app.Post("/v2/flownode-instances/search", v2FlownodeInstanceCtrl.SearchFlownodeInstances)
+	app.Post("/v2/variables/search", v2VariableCtrl.SearchVariables)
+	app.Post("/v2/process-instances/:id/modification", v2ProcessInstanceCtrl.ModifyProcessInstance)
 
 	// ============================================================
 	// AUDIT ROUTES

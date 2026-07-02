@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,24 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 		}
 	}
 
+	priority := 50
+	if node.PriorityExpr != nil {
+		if resolved, err := common.EvaluateValue(*node.PriorityExpr, variables); err == nil && resolved != nil {
+			switch v := resolved.(type) {
+			case int:
+				priority = v
+			case int64:
+				priority = int(v)
+			case float64:
+				priority = int(v)
+			case string:
+				if n, err := strconv.Atoi(v); err == nil {
+					priority = n
+				}
+			}
+		}
+	}
+
 	taskID := uuid.New()
 	taskName := node.Name
 	taskDefinitionId := node.ID
@@ -66,6 +85,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 		TaskName:          &taskName,
 		Assignee:          assignee,
 		CandidateGroup:    candidateGroup,
+		Priority:          priority,
 	}); err != nil {
 		return fmt.Errorf("failed to create user task: %w", err)
 	}

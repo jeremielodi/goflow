@@ -16,6 +16,7 @@ type Task struct {
 	Assignee          *string          `db:"assignee" json:"assignee,omitempty"`
 	CandidateGroup    *string          `db:"candidate_group" json:"candidateGroup,omitempty"`
 	Status            string           `db:"status" json:"status"` // created, claimed, completed
+	Priority          int              `db:"priority" json:"priority"`
 	FormData          *json.RawMessage `db:"form_data" json:"formData,omitempty"`
 	CreatedAt         time.Time        `db:"created_at" json:"createdAt"`
 	ClaimedAt         *time.Time       `db:"claimed_at" json:"claimedAt,omitempty"`

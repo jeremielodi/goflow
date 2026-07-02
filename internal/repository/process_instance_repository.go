@@ -291,10 +291,26 @@ func (r *ProcessInstanceRepository) UpdateStatusTx(tx *sqlx.Tx, instanceID uuid.
 func (r *ProcessInstanceRepository) GetActiveExecutions(instanceID uuid.UUID) ([]Execution, error) {
 	var executions []Execution
 	err := r.db.Select(&executions, `
-		SELECT id, process_instance_id, current_element_id, status, is_active, 
+		SELECT id, process_instance_id, current_element_id, status, is_active,
 		       parent_execution_id, path_id, created_at, updated_at
 		FROM public.executions
 		WHERE process_instance_id = $1 AND is_active = true
+	`, instanceID)
+	return executions, err
+}
+
+// FindExecutionsByInstance retrieves every execution (active or completed)
+// for a process instance — completed executions are never deleted, only
+// marked is_active=false, so this doubles as the flow-node instance history
+// for the Operate-equivalent GET /v2/flownode-instances/search.
+func (r *ProcessInstanceRepository) FindExecutionsByInstance(instanceID uuid.UUID) ([]Execution, error) {
+	var executions []Execution
+	err := r.db.Select(&executions, `
+		SELECT id, process_instance_id, current_element_id, status, is_active,
+		       parent_execution_id, path_id, created_at, updated_at
+		FROM public.executions
+		WHERE process_instance_id = $1
+		ORDER BY created_at ASC
 	`, instanceID)
 	return executions, err
 }

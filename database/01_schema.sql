@@ -604,3 +604,32 @@ ON dmn_decisions(decision_key);
 
 CREATE INDEX IF NOT EXISTS idx_dmn_decisions_deployment_id
 ON dmn_decisions(deployment_id);
+
+-- =========================================================
+-- TASK PRIORITY
+-- Camunda 8 zeebe:priorityDefinition support (0-100, default 50)
+-- =========================================================
+ALTER TABLE tasks
+  ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 50;
+
+-- =========================================================
+-- FORMS
+-- Stores linked form definitions (.form JSON resources deployed
+-- alongside BPMN/DMN files, referenced from a userTask via
+-- zeebe:formDefinition formId="..."), versioned like process
+-- definitions and DMN decisions.
+-- =========================================================
+CREATE TABLE IF NOT EXISTS forms (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deployment_id UUID NOT NULL
+        REFERENCES deployments(id)
+        ON DELETE CASCADE,
+    form_id TEXT NOT NULL, -- .form JSON "id" field, referenced by zeebe:formDefinition formId
+    version INTEGER NOT NULL DEFAULT 1,
+    schema JSONB NOT NULL, -- Raw form JSON schema
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(form_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_forms_form_id
+ON forms(form_id);

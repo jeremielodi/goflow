@@ -96,6 +96,9 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 					node.FormKey = fd.FormId
 				}
 			}
+			if pd := t.Ext.ZeebePriorityDefinition; pd != nil && pd.Priority != "" {
+				node.PriorityExpr = &pd.Priority
+			}
 			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
 

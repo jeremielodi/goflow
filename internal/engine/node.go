@@ -78,6 +78,7 @@ type Node struct {
 	TaskHeaders    map[string]string `json:"taskHeaders,omitempty"`
 	InputMappings  []IOMapping       `json:"inputMappings,omitempty"`
 	OutputMappings []IOMapping       `json:"outputMappings,omitempty"`
+	PriorityExpr   *string           `json:"priorityExpr,omitempty"` // zeebe:priorityDefinition
 
 	// Business Rule Task support (zeebe:calledDecision)
 	DecisionKey    string `json:"decisionKey,omitempty"`

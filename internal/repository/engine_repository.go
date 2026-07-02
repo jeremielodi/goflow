@@ -486,16 +486,21 @@ type UserTask struct {
 	TaskName          *string
 	Assignee          *string
 	CandidateGroup    *string
+	Priority          int
 }
 
 // CreateUserTask creates a new user task
 func (r *EngineRepository) CreateUserTaskTx(tx *sqlx.Tx, task *UserTask) error {
+	priority := task.Priority
+	if priority == 0 {
+		priority = 50
+	}
 	_, err := tx.Exec(`
 		INSERT INTO public.tasks
-		(id, process_instance_id, execution_id, task_definition_key, task_name, assignee, candidate_group, status, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'created', NOW(), NOW())
+		(id, process_instance_id, execution_id, task_definition_key, task_name, assignee, candidate_group, priority, status, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'created', NOW(), NOW())
 	`, task.ID, task.ProcessInstanceID, task.ExecutionID, task.TaskDefinitionKey,
-		task.TaskName, task.Assignee, task.CandidateGroup)
+		task.TaskName, task.Assignee, task.CandidateGroup, priority)
 	return err
 }
 

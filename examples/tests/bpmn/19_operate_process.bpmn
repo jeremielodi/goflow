@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_OperateProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: Two sequential user tasks — used to exercise the
+              Operate-equivalent v2 endpoints: flow-node-instance search
+              (observe the token parked at taskA), variables search, and
+              process instance modification (move the token from taskA
+              straight to taskB, cancelling taskA's open task).
+  -->
+
+  <bpmn:process id="OperateProcess" name="Operate Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Request Started">
+      <bpmn:outgoing>Flow_Start_A</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="taskA" name="Task A">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition candidateGroups="opsA" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_A</bpmn:incoming>
+      <bpmn:outgoing>Flow_A_B</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:userTask id="taskB" name="Task B">
+      <bpmn:extensionElements>
+        <zeebe:assignmentDefinition candidateGroups="opsB" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_A_B</bpmn:incoming>
+      <bpmn:outgoing>Flow_B_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end" name="Request Done">
+      <bpmn:incoming>Flow_B_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_A" sourceRef="start" targetRef="taskA" />
+    <bpmn:sequenceFlow id="Flow_A_B" sourceRef="taskA" targetRef="taskB" />
+    <bpmn:sequenceFlow id="Flow_B_End" sourceRef="taskB" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_OperateProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_OperateProcess" bpmnElement="OperateProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="taskA_di" bpmnElement="taskA">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="taskB_di" bpmnElement="taskB">
+        <dc:Bounds x="400" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="560" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_A_di" bpmnElement="Flow_Start_A">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_A_B_di" bpmnElement="Flow_A_B">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_B_End_di" bpmnElement="Flow_B_End">
+        <di:waypoint x="500" y="270" /><di:waypoint x="560" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

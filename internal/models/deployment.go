@@ -70,3 +70,20 @@ type DMNDecisionCreateModel struct {
 	DmnXML       string
 	ParsedTable  json.RawMessage
 }
+
+// Form model — a linked form definition (.form JSON resource)
+type Form struct {
+	ID           uuid.UUID       `db:"id"            json:"id"`
+	DeploymentID uuid.UUID       `db:"deployment_id" json:"deploymentId"`
+	FormId       string          `db:"form_id"       json:"formId"`
+	Version      int             `db:"version"       json:"version"`
+	Schema       json.RawMessage `db:"schema"        json:"schema"`
+	CreatedAt    time.Time       `db:"created_at"    json:"createdAt"`
+}
+
+// FormCreateModel for INSERT
+type FormCreateModel struct {
+	DeploymentID uuid.UUID
+	FormId       string
+	Schema       json.RawMessage
+}

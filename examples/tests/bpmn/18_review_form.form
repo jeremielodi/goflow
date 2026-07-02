@@ -1,0 +1,16 @@
+{
+  "id": "review-form",
+  "schemaVersion": 1,
+  "components": [
+    {
+      "key": "comments",
+      "type": "textfield",
+      "label": "Comments"
+    },
+    {
+      "key": "approved",
+      "type": "checkbox",
+      "label": "Approved"
+    }
+  ]
+}
