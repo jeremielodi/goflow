@@ -28,6 +28,8 @@ func (r *UserRepository) Create(user models.UserCreateModel) (sql.Result, error)
 		{Key: "full_name", Value: user.FullName},
 		{Key: "password_hash", Value: user.PasswordHash},
 		{Key: "is_active", Value: user.IsActive},
+		{Key: "tenant_id", Value: user.TenantID},
+		{Key: "oidc_subject", Value: user.OIDCSubject},
 		{Key: "created_at", Value: time.Now()},
 		{Key: "updated_at", Value: time.Now()},
 	})
@@ -42,6 +44,7 @@ func (r *UserRepository) CreateWithTx(tx *sqlx.Tx, user models.UserCreateModel) 
 		{Key: "full_name", Value: user.FullName},
 		{Key: "password_hash", Value: user.PasswordHash},
 		{Key: "is_active", Value: user.IsActive},
+		{Key: "tenant_id", Value: user.TenantID},
 		{Key: "created_at", Value: time.Now()},
 		{Key: "updated_at", Value: time.Now()},
 	})
@@ -86,18 +89,36 @@ func (r *UserRepository) GetPasswordHash(id uuid.UUID) (models.UserPassword, err
 func (r *UserRepository) FindByEmail(email string) (models.User, error) {
 	var user models.User
 	err := r.db.Get(&user, `
-        SELECT id, email, full_name, is_active, created_at, updated_at
+        SELECT id, email, full_name, is_active, tenant_id, created_at, updated_at
         FROM public.users
         WHERE email = $1
     `, email)
 	return user, err
 }
 
+// FindByOIDCSubject returns a user previously linked to an OIDC subject.
+func (r *UserRepository) FindByOIDCSubject(subject string) (models.User, error) {
+	var user models.User
+	err := r.db.Get(&user, `
+        SELECT id, email, full_name, is_active, tenant_id, created_at, updated_at
+        FROM public.users
+        WHERE oidc_subject = $1
+    `, subject)
+	return user, err
+}
+
+// SetOIDCSubject links a user to an OIDC subject (used the first time an
+// existing local-password user authenticates via OIDC with a matching email).
+func (r *UserRepository) SetOIDCSubject(id uuid.UUID, subject string) error {
+	_, err := r.db.Exec(`UPDATE public.users SET oidc_subject = $1, updated_at = NOW() WHERE id = $2`, subject, id)
+	return err
+}
+
 // FindByID returns a user by UUID.
 func (r *UserRepository) FindByID(id uuid.UUID) (models.User, error) {
 	var user models.User
 	err := r.db.Get(&user, `
-        SELECT id, email, full_name, is_active, created_at, updated_at
+        SELECT id, email, full_name, is_active, tenant_id, created_at, updated_at
         FROM public.users
         WHERE id = $1
     `, id)
@@ -108,7 +129,7 @@ func (r *UserRepository) FindByID(id uuid.UUID) (models.User, error) {
 func (r *UserRepository) List() ([]models.User, error) {
 	var users []models.User
 	err := r.db.Select(&users, `
-        SELECT id, email, full_name, is_active, created_at, updated_at
+        SELECT id, email, full_name, is_active, tenant_id, created_at, updated_at
         FROM public.users
         ORDER BY created_at DESC
     `)

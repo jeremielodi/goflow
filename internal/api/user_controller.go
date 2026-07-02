@@ -241,6 +241,7 @@ func (uc *UserController) CreateUser(c *fiber.Ctx) error {
 		FullName string      `json:"full_name"`
 		Password string      `json:"password"`
 		RoleIDs  []uuid.UUID `json:"role_ids,omitempty"`
+		TenantID *string     `json:"tenant_id,omitempty"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -311,6 +312,7 @@ func (uc *UserController) CreateUser(c *fiber.Ctx) error {
 		FullName:     req.FullName,
 		PasswordHash: passwordHash,
 		IsActive:     true,
+		TenantID:     req.TenantID,
 	}
 
 	_, err = uc.userRepo.CreateWithTx(tx, user)

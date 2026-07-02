@@ -2,6 +2,7 @@ package models
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,32 @@ type Incident struct {
 	State             string         `db:"state" json:"state"`
 	CreatedAt         time.Time      `db:"created_at" json:"createdAt"`
 	ResolvedAt        sql.NullTime   `db:"resolved_at" json:"resolvedAt,omitempty"`
+}
+
+// MarshalJSON flattens the sql.Null* fields to plain JSON values (or omits
+// them) instead of serializing Go's internal {String,Valid}/{Time,Valid}
+// struct shape, which API consumers (the frontend, external clients) have no
+// reason to know about.
+func (i Incident) MarshalJSON() ([]byte, error) {
+	type Alias Incident
+	aux := struct {
+		Alias
+		ErrorMessage string     `json:"errorMessage,omitempty"`
+		ErrorCode    string     `json:"errorCode,omitempty"`
+		ResolvedAt   *time.Time `json:"resolvedAt,omitempty"`
+	}{Alias: Alias(i)}
+
+	if i.ErrorMessage.Valid {
+		aux.ErrorMessage = i.ErrorMessage.String
+	}
+	if i.ErrorCode.Valid {
+		aux.ErrorCode = i.ErrorCode.String
+	}
+	if i.ResolvedAt.Valid {
+		t := i.ResolvedAt.Time
+		aux.ResolvedAt = &t
+	}
+	return json.Marshal(aux)
 }
 
 type IncidentCreate struct {

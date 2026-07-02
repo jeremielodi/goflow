@@ -35,6 +35,7 @@ var PublicRoutes = []string{
 	"/drivers",
 	"/ws",
 	"/health",
+	"/token-history",
 }
 
 func WithinPublicRoutes(value string, urls []string) bool {
@@ -246,8 +247,10 @@ func AuthenticationMiddleware(jwtService *authentication.JWTService,
 	}
 }
 
-// CombinedAuthMiddleware handles both JWT and Basic Auth
-func CombinedAuthMiddleware(db *sqlx.DB, jwtService *authentication.JWTService, util common.Util) fiber.Handler {
+// CombinedAuthMiddleware handles both JWT and Basic Auth, plus OIDC bearer
+// tokens if oidcService is non-nil (see authentication.NewOIDCService — it
+// returns nil when OIDC isn't configured, so this stays a no-op by default).
+func CombinedAuthMiddleware(db *sqlx.DB, jwtService *authentication.JWTService, oidcService *authentication.OIDCService, util common.Util) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Check if route is public
 		requestPath := c.Path()
@@ -278,6 +281,9 @@ func CombinedAuthMiddleware(db *sqlx.DB, jwtService *authentication.JWTService, 
 							if err == nil {
 								// Basic Auth successful
 								common.SetUserUuid(c, user.ID.String())
+								if user.TenantID != nil {
+									common.SetTenantId(c, *user.TenantID)
+								}
 								c.Locals("user_id", user.ID)
 								c.Locals("user_email", user.Email)
 								c.Locals("auth_type", "basic")
@@ -309,11 +315,30 @@ func CombinedAuthMiddleware(db *sqlx.DB, jwtService *authentication.JWTService, 
 		}
 
 		if len(token) > 0 {
-			userId, err := jwtService.ParseAccessToken(token)
-			if err == nil && userId != "" {
-				common.SetUserUuid(c, userId)
+			claims, err := jwtService.ParseAccessTokenClaims(token)
+			if err == nil && claims.UserId != "" {
+				common.SetUserUuid(c, claims.UserId)
+				common.SetTenantId(c, claims.TenantID)
 				c.Locals("auth_type", "jwt")
 				return c.Next()
+			}
+
+			// Internal JWT didn't validate — try it as an OIDC token from an
+			// external identity provider, if one is configured.
+			if oidcService != nil {
+				if oidcClaims, oidcErr := oidcService.ValidateToken(token); oidcErr == nil {
+					user, provisionErr := ResolveOIDCUser(db, oidcClaims)
+					if provisionErr == nil && user != nil {
+						common.SetUserUuid(c, user.ID.String())
+						if user.TenantID != nil {
+							common.SetTenantId(c, *user.TenantID)
+						}
+						c.Locals("user_id", user.ID)
+						c.Locals("user_email", user.Email)
+						c.Locals("auth_type", "oidc")
+						return c.Next()
+					}
+				}
 			}
 		}
 

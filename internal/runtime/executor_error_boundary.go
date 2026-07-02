@@ -6,6 +6,7 @@ import (
 
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeErrorBoundaryNode is called when an error boundary event fires.
@@ -31,6 +32,7 @@ func (r *Runtime) executeErrorBoundaryNode(ctx context.Context, engineRepo *repo
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit error boundary transaction: %w", err)
 	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, nextNodeID, nil))
 
 	return nextNodeID, nil
 }

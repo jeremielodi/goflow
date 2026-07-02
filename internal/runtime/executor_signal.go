@@ -6,6 +6,7 @@ import (
 
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeSignalCatchEvent parks the execution until a matching signal is broadcast.
@@ -32,7 +33,11 @@ func (r *Runtime) executeSignalCatchEvent(ctx context.Context, engineRepo *repos
 		return fmt.Errorf("signal catch: set waiting: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	service.LogAuditErr("execution waited", r.auditService.LogExecutionWaited(exec.ID, exec.ProcessInstanceID, node.ID, "signal"))
+	return nil
 }
 
 // executeSignalBoundaryEvent advances the execution to the boundary event's outgoing node.
@@ -51,5 +56,9 @@ func (r *Runtime) executeSignalBoundaryEvent(ctx context.Context, engineRepo *re
 	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
 		return fmt.Errorf("signal boundary: update node: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, nil))
+	return nil
 }

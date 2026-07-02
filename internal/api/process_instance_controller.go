@@ -14,6 +14,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/internal/worker"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -24,6 +25,7 @@ type ProcessInstanceController struct {
 	processInstanceRepo *repository.ProcessInstanceRepository
 	workerPool          *worker.WorkerPool
 	dispatcher          *events.TaskEventDispatcher
+	auditService        *service.AuditService
 }
 
 func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService, workerPool *worker.WorkerPool, dispatcher *events.TaskEventDispatcher) *ProcessInstanceController {
@@ -34,6 +36,7 @@ func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService,
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
 		workerPool:          workerPool,
 		dispatcher:          dispatcher,
+		auditService:        service.NewAuditService(db),
 	}
 }
 
@@ -204,6 +207,10 @@ func (pc *ProcessInstanceController) SetProcessVariables(c *fiber.Ctx) error {
 			"message": err.Error(),
 		})
 	}
+	oldVars := make(map[string]interface{}, len(existingVars))
+	for k, v := range existingVars {
+		oldVars[k] = v
+	}
 
 	// Merge variables
 	for k, v := range normalizedVars {
@@ -217,6 +224,7 @@ func (pc *ProcessInstanceController) SetProcessVariables(c *fiber.Ctx) error {
 			"message": err.Error(),
 		})
 	}
+	service.LogAuditErr("variables updated", pc.auditService.LogVariablesUpdated(instanceID, oldVars, existingVars))
 
 	return c.Status(204).Send(nil)
 }
@@ -258,6 +266,7 @@ func (pc *ProcessInstanceController) SetProcessVariable(c *fiber.Ctx) error {
 	}
 
 	// Set variable
+	oldValue := existingVars[varName]
 	existingVars[varName] = req.Value
 
 	// Save variables
@@ -267,6 +276,11 @@ func (pc *ProcessInstanceController) SetProcessVariable(c *fiber.Ctx) error {
 			"message": err.Error(),
 		})
 	}
+	service.LogAuditErr("variables updated", pc.auditService.LogVariablesUpdated(
+		instanceID,
+		map[string]interface{}{varName: oldValue},
+		map[string]interface{}{varName: req.Value},
+	))
 
 	return c.Status(204).Send(nil)
 }
@@ -414,7 +428,7 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 	now := time.Now()
 
 	// Create process instance using repository
-	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now); err != nil {
+	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
 			"message": "failed to create process instance",
@@ -448,6 +462,8 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 			"error":   err.Error(),
 		})
 	}
+	service.LogAuditErr("process started", pc.auditService.LogProcessStarted(instanceID, normalizedVars, nil))
+	service.LogAuditErr("execution created", pc.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	// Run the runtime
 	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
@@ -569,7 +585,7 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 	}
 
 	instance, err := pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil {
+	if err != nil || instance == nil || !common.TenantMatches(instance.TenantID, common.GetTenantId(c)) {
 		return c.Status(404).JSON(fiber.Map{
 			"type":    "NotFound",
 			"message": "Process instance not found",
@@ -584,7 +600,7 @@ func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error 
 	status := c.Query("status")
 	processKey := c.Query("processKey")
 
-	instances, err := pc.processInstanceRepo.FindAll(status, processKey)
+	instances, err := pc.processInstanceRepo.FindAll(status, processKey, common.GetTenantId(c))
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -656,6 +672,11 @@ func (pc *ProcessInstanceController) SuspendProcess(c *fiber.Ctx) error {
 			"message": err.Error(),
 		})
 	}
+	if req.Suspended {
+		service.LogAuditErr("process suspended", pc.auditService.LogProcessSuspended(instanceID))
+	} else {
+		service.LogAuditErr("process resumed", pc.auditService.LogProcessResumed(instanceID))
+	}
 
 	message := "resumed"
 	if req.Suspended {
@@ -704,6 +725,13 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 		// Log error but continue with deletion
 		fmt.Printf("Warning: Failed to add termination variables: %v\n", err)
 	}
+
+	// NOTE: Delete() hard-deletes the process_instances row, and audit_logs.
+	// process_instance_id is ON DELETE CASCADE — so this log entry (and every
+	// prior one for this instance) is wiped a moment after being written.
+	// Known limitation, not fixed here: TerminateProcess would need to become
+	// a soft-delete (status='terminated') to make termination replayable.
+	service.LogAuditErr("process terminated", pc.auditService.LogProcessTerminated(instanceID, reason))
 
 	// Delete the process instance
 	if err := pc.processInstanceRepo.Delete(instanceID); err != nil {

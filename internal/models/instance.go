@@ -17,5 +17,6 @@ type ProcessInstance struct {
 	ProcessKey          string     `db:"process_key" json:"processKey,omitempty"`
 	ProcessName         string     `db:"process_name" json:"processName,omitempty"`
 	Version             int        `db:"version" json:"version,omitempty"`
+	TenantID            *string    `db:"tenant_id" json:"tenantId,omitempty"`
 	UpdatedAt           *time.Time `db:"updated_at" json:"updatedAt,omitempty"`
 }

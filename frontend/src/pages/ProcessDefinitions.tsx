@@ -116,7 +116,7 @@ export default function ProcessDefinitions() {
                       </button>
                     )}
                   </Td>
-                  <Td><span className="text-xs">{formatDate(def.deployedAt)}</span></Td>
+                  <Td><span className="text-xs">{formatDate(def.createdAt)}</span></Td>
                   <Td>
                     <div className="flex items-center gap-2 justify-end">
                       <Button

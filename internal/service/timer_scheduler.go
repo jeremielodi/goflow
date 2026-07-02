@@ -17,18 +17,20 @@ import (
 )
 
 type TimerScheduler struct {
-	db         *sqlx.DB
-	engineRepo *repository.EngineRepository
-	stopChan   chan bool
-	resumer    func(ctx context.Context, execID uuid.UUID) error
+	db           *sqlx.DB
+	engineRepo   *repository.EngineRepository
+	stopChan     chan bool
+	resumer      func(ctx context.Context, execID uuid.UUID) error
+	auditService *AuditService
 }
 
 func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher) *TimerScheduler {
 	return &TimerScheduler{
-		db:         db,
-		engineRepo: repository.NewEngineRepository(db, dispatcher),
-		stopChan:   make(chan bool),
-		resumer:    resumer,
+		db:           db,
+		engineRepo:   repository.NewEngineRepository(db, dispatcher),
+		stopChan:     make(chan bool),
+		resumer:      resumer,
+		auditService: NewAuditService(db),
 	}
 }
 
@@ -90,9 +92,11 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 	defer tx.Rollback()
 
 	var execID uuid.UUID
+	var fromNodeID string
+	var cancelledTaskIDs []uuid.UUID
 	if timer.ExecutionID != nil {
 		execID = *timer.ExecutionID
-		err = s.resumeExecution(tx, execID, timer)
+		fromNodeID, cancelledTaskIDs, err = s.resumeExecution(tx, execID, timer)
 		if err != nil {
 			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
 			return
@@ -149,6 +153,16 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 		log.Printf("Failed to commit transaction for timer %s: %v", timer.ID, err)
 		return
 	}
+	LogAuditErr("timer triggered", s.auditService.LogTimerTriggered(timer.ProcessInstanceID, timer.ID, timer.EventType))
+	for _, taskID := range cancelledTaskIDs {
+		LogAuditErr("task cancelled", s.auditService.LogTaskCancelled(taskID, timer.ProcessInstanceID, "boundary timer fired"))
+	}
+	if fromNodeID != "" && execID != uuid.Nil {
+		var toNodeID string
+		if err := s.db.Get(&toNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err == nil {
+			LogAuditErr("execution moved", s.auditService.LogExecutionMoved(execID, timer.ProcessInstanceID, fromNodeID, toNodeID, nil))
+		}
+	}
 
 	// Continue execution after transaction is committed
 	if execID != uuid.Nil && s.resumer != nil {
@@ -160,38 +174,43 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 	}
 }
 
-// resumeExecution resumes an execution that was waiting for a timer
-func (s *TimerScheduler) resumeExecution(tx *sqlx.Tx, execID uuid.UUID, timer models.TimerJob) error {
+// resumeExecution resumes an execution that was waiting for a timer. Returns
+// the node the execution moved from and the IDs of any tasks it cancelled,
+// so the caller can audit-log both once the transaction has committed.
+func (s *TimerScheduler) resumeExecution(tx *sqlx.Tx, execID uuid.UUID, timer models.TimerJob) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
 	// Parse payload to get the target node
 	var payload map[string]interface{}
 	if len(timer.Payload) > 0 {
 		if err := json.Unmarshal(timer.Payload, &payload); err != nil {
-			return fmt.Errorf("failed to parse timer payload: %w", err)
+			return "", nil, fmt.Errorf("failed to parse timer payload: %w", err)
 		}
 	}
 
 	targetNodeID, ok := payload["target_node_id"].(string)
 	if !ok {
-		return fmt.Errorf("target_node_id not found in timer payload")
+		return "", nil, fmt.Errorf("target_node_id not found in timer payload")
+	}
+
+	if err := tx.Get(&fromNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err != nil {
+		return "", nil, fmt.Errorf("failed to load current node: %w", err)
 	}
 
 	// Cancel the user task
-	_, err := tx.Exec(`
-		UPDATE public.tasks 
+	if err := tx.Select(&cancelledTaskIDs, `
+		UPDATE public.tasks
 		SET status = 'cancelled', updated_at = NOW()
 		WHERE execution_id = $1 AND status = 'created'
-	`, execID)
-	if err != nil {
-		return fmt.Errorf("failed to cancel user task: %w", err)
+		RETURNING id
+	`, execID); err != nil {
+		return "", nil, fmt.Errorf("failed to cancel user task: %w", err)
 	}
 
 	// Update execution to move to the target node
-	err = s.engineRepo.UpdateExecutionStatusAndNodeTx(tx, execID, "active", targetNodeID)
-	if err != nil {
-		return fmt.Errorf("failed to update execution: %w", err)
+	if err := s.engineRepo.UpdateExecutionStatusAndNodeTx(tx, execID, "active", targetNodeID); err != nil {
+		return "", nil, fmt.Errorf("failed to update execution: %w", err)
 	}
 
 	log.Printf("Execution %s resumed after timer, moving to node %s (user task cancelled)", execID, targetNodeID)
 
-	return nil
+	return fromNodeID, cancelledTaskIDs, nil
 }

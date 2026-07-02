@@ -343,7 +343,7 @@ func (r *EngineRepository) DeleteTimersByExecutionTx(tx *sqlx.Tx, executionID uu
 func (r *EngineRepository) CancelUserTaskByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
 	_, err := tx.Exec(`
 		UPDATE public.tasks
-		SET status = 'canceled', updated_at = NOW()
+		SET status = 'cancelled', updated_at = NOW()
 		WHERE execution_id = $1 AND status = 'created'
 	`, executionID)
 	return err
@@ -506,15 +506,17 @@ func (r *EngineRepository) CreateUserTaskTx(tx *sqlx.Tx, task *UserTask) error {
 
 // repository/engine_repository.go
 
-// CreateProcessInstanceTx creates a new process instance within a transaction
-func (r *EngineRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, processDefinitionID uuid.UUID, startedAt time.Time) error {
+// CreateProcessInstanceTx creates a new process instance within a
+// transaction. tenantID is stamped from the process definition being
+// instantiated (nil = no tenant / untenanted deployment).
+func (r *EngineRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, processDefinitionID uuid.UUID, startedAt time.Time, tenantID *string) error {
 	query := `
-        INSERT INTO public.process_instances 
-        (id, process_definition_id, status, started_at)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO public.process_instances
+        (id, process_definition_id, status, started_at, tenant_id)
+        VALUES ($1, $2, $3, $4, $5)
     `
 	// Use 'running' from the enum
-	_, err := tx.Exec(query, instanceID, processDefinitionID, "running", startedAt)
+	_, err := tx.Exec(query, instanceID, processDefinitionID, "running", startedAt, tenantID)
 	return err
 }
 
@@ -780,7 +782,7 @@ func (r *EngineRepository) LockJob(jobID uuid.UUID, workerID string, lockDuratio
 func (r *EngineRepository) FindLatestProcessDefinitionByKey(processKey string) (*models.ProcessDefinition, error) {
 	var def models.ProcessDefinition
 	query := `
-        SELECT id, deployment_id, process_key, process_name, version, is_active, bpmn_xml, parsed_graph, created_at
+        SELECT id, deployment_id, process_key, process_name, tenant_id, version, is_active, bpmn_xml, parsed_graph, created_at
         FROM public.process_definitions
         WHERE process_key = $1 AND is_active = true
         ORDER BY version DESC
@@ -951,7 +953,7 @@ func (r *EngineRepository) CreateProcessInstanceWithVariables(processKey string,
 	// Create process instance
 	instanceID := uuid.New()
 	now := time.Now()
-	err = r.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now)
+	err = r.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now, procDef.TenantID)
 	if err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}

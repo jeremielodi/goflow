@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { CheckSquare, RefreshCw, User, UserCheck } from 'lucide-react';
 import { listTasks, completeTask, claimTask, unclaimTask } from '../api/tasks';
+import { getForm } from '../api/forms';
 import { useAuth } from '../hooks/useAuth';
 import { Card, CardHeader, Table, Thead, Th, Tr, Td, Badge, Button, Modal, Spinner, EmptyState } from '../components/ui';
 import { formatDate } from '../utils/format';
+import type { UserTask } from '../types';
 
 export default function Tasks() {
   const qc = useQueryClient();
@@ -14,9 +16,29 @@ export default function Tasks() {
   const [searchParams] = useSearchParams();
 
   const [assigneeFilter, setAssigneeFilter] = useState('');
-  const [completeTaskId, setCompleteTaskId] = useState<string | null>(null);
+  const [completeTask_, setCompleteTask_]   = useState<UserTask | null>(null);
   const [completeVars, setCompleteVars]     = useState('{}');
   const [completeError, setCompleteError]   = useState('');
+  const [formValues, setFormValues]         = useState<Record<string, unknown>>({});
+
+  const { data: form, isLoading: formLoading } = useQuery({
+    queryKey: ['form', completeTask_?.formKey],
+    queryFn: () => getForm(completeTask_!.formKey!),
+    enabled: !!completeTask_?.formKey,
+    retry: false,
+  });
+
+  // Reset the dynamic form's values whenever a new form loads for the task
+  // currently being completed.
+  useEffect(() => {
+    if (form?.schema?.components) {
+      const initial: Record<string, unknown> = {};
+      for (const c of form.schema.components) {
+        initial[c.key] = c.type === 'checkbox' ? false : '';
+      }
+      setFormValues(initial);
+    }
+  }, [form]);
 
   const instanceFilter = searchParams.get('instance') ?? undefined;
 
@@ -36,7 +58,7 @@ export default function Tasks() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tasks'] });
       qc.invalidateQueries({ queryKey: ['instances'] });
-      setCompleteTaskId(null);
+      setCompleteTask_(null);
     },
   });
 
@@ -50,12 +72,18 @@ export default function Tasks() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tasks'] }),
   });
 
+  const usingDynamicForm = !!completeTask_?.formKey && !!form?.schema?.components?.length;
+
   const handleComplete = () => {
-    if (!completeTaskId) return;
+    if (!completeTask_) return;
     setCompleteError('');
+    if (usingDynamicForm) {
+      completeMut.mutate({ id: completeTask_.id, vars: formValues });
+      return;
+    }
     try {
       const vars = JSON.parse(completeVars);
-      completeMut.mutate({ id: completeTaskId, vars });
+      completeMut.mutate({ id: completeTask_.id, vars });
     } catch {
       setCompleteError('Invalid JSON');
     }
@@ -120,15 +148,18 @@ export default function Tasks() {
                 <Th>Task Name</Th>
                 <Th>Process Instance</Th>
                 <Th>Assignee</Th>
+                <Th>Status</Th>
                 <Th>Created</Th>
                 <Th></Th>
               </tr>
             </Thead>
             <tbody>
-              {allTasks.map(task => (
+              {allTasks.map(task => {
+                const isOpen = task.status === 'created' || task.status === 'claimed';
+                return (
                 <Tr key={task.id}>
                   <Td>
-                    <p className="font-medium text-sm">{task.name}</p>
+                    <p className="font-medium text-sm">{task.taskName}</p>
                     <p className="text-xs text-gray-400">{task.taskDefinitionKey}</p>
                   </Td>
                   <Td>
@@ -151,57 +182,90 @@ export default function Tasks() {
                       </span>
                     )}
                   </Td>
-                  <Td><span className="text-xs">{formatDate(task.created)}</span></Td>
+                  <Td><Badge value={task.status} /></Td>
+                  <Td><span className="text-xs">{formatDate(task.createdAt)}</span></Td>
                   <Td>
-                    <div className="flex items-center gap-1 justify-end">
-                      {!task.assignee ? (
+                    {isOpen && (
+                      <div className="flex items-center gap-1 justify-end">
+                        {!task.assignee ? (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => claimMut.mutate({ id: task.id, userId: user?.email ?? 'admin' })}
+                          >
+                            Claim
+                          </Button>
+                        ) : task.assignee === user?.email ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => unclaimMut.mutate(task.id)}
+                          >
+                            Unclaim
+                          </Button>
+                        ) : null}
                         <Button
                           size="sm"
-                          variant="secondary"
-                          onClick={() => claimMut.mutate({ id: task.id, userId: user?.email ?? 'admin' })}
+                          onClick={() => { setCompleteTask_(task); setCompleteVars('{}'); setCompleteError(''); setFormValues({}); }}
                         >
-                          Claim
+                          Complete
                         </Button>
-                      ) : task.assignee === user?.email ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => unclaimMut.mutate(task.id)}
-                        >
-                          Unclaim
-                        </Button>
-                      ) : null}
-                      <Button
-                        size="sm"
-                        onClick={() => { setCompleteTaskId(task.id); setCompleteVars('{}'); setCompleteError(''); }}
-                      >
-                        Complete
-                      </Button>
-                    </div>
+                      </div>
+                    )}
                   </Td>
                 </Tr>
-              ))}
+                );
+              })}
             </tbody>
           </Table>
         )}
       </Card>
 
       {/* Complete task modal */}
-      <Modal open={!!completeTaskId} onClose={() => setCompleteTaskId(null)} title="Complete Task">
+      <Modal open={!!completeTask_} onClose={() => setCompleteTask_(null)} title="Complete Task">
         <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1.5">
-              Output Variables (JSON)
-            </label>
-            <textarea
-              value={completeVars}
-              onChange={e => setCompleteVars(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono h-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            {completeError && <p className="text-xs text-red-500 mt-1">{completeError}</p>}
-          </div>
+          {completeTask_?.formKey && formLoading ? (
+            <div className="flex justify-center py-6"><Spinner className="w-5 h-5 text-blue-500" /></div>
+          ) : usingDynamicForm ? (
+            <div className="space-y-3">
+              {form!.schema.components!.map(component => (
+                <div key={component.key}>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">
+                    {component.label ?? component.key}
+                  </label>
+                  {component.type === 'checkbox' ? (
+                    <input
+                      type="checkbox"
+                      checked={!!formValues[component.key]}
+                      onChange={e => setFormValues(v => ({ ...v, [component.key]: e.target.checked }))}
+                      className="h-4 w-4 rounded border-gray-300 focus:ring-2 focus:ring-blue-500"
+                    />
+                  ) : (
+                    <input
+                      type="text"
+                      value={(formValues[component.key] as string) ?? ''}
+                      onChange={e => setFormValues(v => ({ ...v, [component.key]: e.target.value }))}
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1.5">
+                Output Variables (JSON)
+              </label>
+              <textarea
+                value={completeVars}
+                onChange={e => setCompleteVars(e.target.value)}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono h-28 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {completeError && <p className="text-xs text-red-500 mt-1">{completeError}</p>}
+            </div>
+          )}
           <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => setCompleteTaskId(null)}>Cancel</Button>
+            <Button variant="secondary" onClick={() => setCompleteTask_(null)}>Cancel</Button>
             <Button onClick={handleComplete} disabled={completeMut.isPending}>
               {completeMut.isPending && <Spinner className="w-4 h-4 text-white" />}
               Complete Task

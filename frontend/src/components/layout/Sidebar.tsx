@@ -50,11 +50,11 @@ export function Sidebar() {
       <div className="border-t border-gray-800 p-4">
         <div className="flex items-center gap-3 mb-3">
           <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-xs font-bold">
-            {(user?.firstName?.[0] ?? user?.email?.[0] ?? '?').toUpperCase()}
+            {(user?.full_name?.[0] ?? user?.email?.[0] ?? '?').toUpperCase()}
           </div>
           <div className="min-w-0">
             <p className="text-white text-xs font-medium truncate">
-              {user?.firstName ? `${user.firstName} ${user.lastName ?? ''}` : user?.email}
+              {user?.full_name || user?.email}
             </p>
             <p className="text-gray-500 text-xs truncate">{user?.email}</p>
           </div>

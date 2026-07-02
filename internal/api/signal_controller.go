@@ -7,16 +7,18 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
 type SignalController struct {
-	db         *sqlx.DB
-	dispatcher *events.TaskEventDispatcher
+	db           *sqlx.DB
+	dispatcher   *events.TaskEventDispatcher
+	auditService *service.AuditService
 }
 
 func NewSignalController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *SignalController {
-	return &SignalController{db: db, dispatcher: dispatcher}
+	return &SignalController{db: db, dispatcher: dispatcher, auditService: service.NewAuditService(db)}
 }
 
 type BroadcastSignalRequest struct {
@@ -67,6 +69,10 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 	resumed := 0
 
 	for _, sub := range subs {
+		// Node the execution is currently parked at, for audit purposes.
+		var currentNodeID string
+		sc.db.QueryRow(`SELECT current_element_id FROM executions WHERE id = $1`, sub.ExecutionID).Scan(&currentNodeID)
+
 		// Determine target element
 		targetElementID := ""
 		if sub.TargetElementID != nil && *sub.TargetElementID != "" {
@@ -75,8 +81,6 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 			subRepo.CancelSiblingSubscriptions(sub.ExecutionID, sub.ID)
 		} else {
 			// Regular signal catch: advance to catchNode's outgoing
-			var currentNodeID string
-			sc.db.QueryRow(`SELECT current_element_id FROM executions WHERE id = $1`, sub.ExecutionID).Scan(&currentNodeID)
 			graph, err := engineRepo.GetProcessGraphByInstanceID(sub.ProcessInstanceID)
 			if err == nil && graph != nil {
 				if catchNode, ok := graph.Nodes[currentNodeID]; ok && len(catchNode.Outgoing) > 0 {
@@ -98,7 +102,9 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 			tx, err := sc.db.Beginx()
 			if err == nil {
 				engineRepo.UpdateProcessVariablesTx(tx, sub.ProcessInstanceID, merged)
-				tx.Commit()
+				if err := tx.Commit(); err == nil {
+					service.LogAuditErr("variables merged", sc.auditService.LogVariablesMerged(sub.ProcessInstanceID, variables, "signal"))
+				}
 			}
 		}
 
@@ -108,12 +114,16 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 			errs = append(errs, fmt.Sprintf("exec %s: %v", sub.ExecutionID, err))
 			continue
 		}
+		if currentNodeID != "" && targetElementID != "" {
+			service.LogAuditErr("execution moved", sc.auditService.LogExecutionMoved(sub.ExecutionID, sub.ProcessInstanceID, currentNodeID, targetElementID, variables))
+		}
 		if err := runtime.ResumeExecution(sc.db, sub.ExecutionID, sc.dispatcher); err != nil {
 			errs = append(errs, fmt.Sprintf("resume %s: %v", sub.ExecutionID, err))
 			continue
 		}
 		resumed++
 	}
+	service.LogAuditErr("signal broadcast", sc.auditService.LogSignalBroadcast(name, resumed))
 
 	return resumed, errs, nil
 }

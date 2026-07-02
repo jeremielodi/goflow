@@ -240,8 +240,23 @@ func (hc *HistoryController) ListHistoricActivityInstances(c *fiber.Ctx) error {
 
 	resp := make([]HistoricActivityInstanceResponse, len(rows))
 	for i, r := range rows {
-		dur := r.UpdatedAt.Sub(r.CreatedAt).Milliseconds()
 		completed := r.Status == "completed"
+		terminal := completed || r.Status == "terminated"
+
+		// EndTime/DurationInMillis only make sense once the execution has
+		// actually reached a terminal state — a still-active/waiting token
+		// (e.g. a user task not yet completed) must report a nil EndTime,
+		// otherwise every consumer that filters "active" activities by
+		// `!endTime` (e.g. the frontend's InstanceDetail page) sees nothing.
+		var endTime *time.Time
+		var dur *int64
+		if terminal {
+			t := r.UpdatedAt
+			endTime = &t
+			d := r.UpdatedAt.Sub(r.CreatedAt).Milliseconds()
+			dur = &d
+		}
+
 		resp[i] = HistoricActivityInstanceResponse{
 			ID:                  r.ID.String(),
 			ActivityID:          r.CurrentElementID,
@@ -249,8 +264,8 @@ func (hc *HistoryController) ListHistoricActivityInstances(c *fiber.Ctx) error {
 			ProcessInstanceID:   r.ProcessInstanceID.String(),
 			ProcessDefinitionID: r.ProcessDefinitionID.String(),
 			StartTime:           &r.CreatedAt,
-			EndTime:             func() *time.Time { t := r.UpdatedAt; return &t }(),
-			DurationInMillis:    &dur,
+			EndTime:             endTime,
+			DurationInMillis:    dur,
 			CompleteScope:       completed,
 		}
 	}

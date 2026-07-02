@@ -95,17 +95,17 @@ export default function Incidents() {
                     </button>
                   </Td>
                   <Td>
-                    <span className="text-xs text-gray-600 max-w-xs truncate block" title={inc.incidentMessage}>
-                      {inc.incidentMessage ?? '—'}
+                    <span className="text-xs text-gray-600 max-w-xs truncate block" title={inc.errorMessage}>
+                      {inc.errorMessage ?? '—'}
                     </span>
                   </Td>
-                  <Td><span className="text-xs">{formatDate(inc.incidentTimestamp)}</span></Td>
+                  <Td><span className="text-xs">{formatDate(inc.createdAt)}</span></Td>
                   <Td>
                     <div className="flex items-center gap-1 justify-end">
                       <Button
                         size="sm"
                         variant="secondary"
-                        onClick={() => retryMut.mutate(inc.configuration ?? inc.id)}
+                        onClick={() => retryMut.mutate(inc.jobId ?? inc.id)}
                         disabled={retryMut.isPending}
                         title="Retry job (3 retries)"
                       >

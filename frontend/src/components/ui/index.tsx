@@ -13,6 +13,10 @@ const badgeVariants: Record<string, string> = {
   pending:    'bg-gray-100 text-gray-700',
   locked:     'bg-orange-100 text-orange-800',
   default:    'bg-gray-100 text-gray-700',
+  // task_status enum (database/01_schema.sql) — one badge per DB value
+  created:    'bg-gray-100 text-gray-700',
+  claimed:    'bg-blue-100 text-blue-800',
+  cancelled:  'bg-red-100 text-red-800',
 };
 
 export function Badge({ value, label }: { value: string; label?: string }) {

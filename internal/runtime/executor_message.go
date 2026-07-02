@@ -6,6 +6,7 @@ import (
 
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeMessageCatchEvent parks the execution until a matching message arrives.
@@ -32,7 +33,11 @@ func (r *Runtime) executeMessageCatchEvent(ctx context.Context, engineRepo *repo
 		return fmt.Errorf("message catch: set waiting: %w", err)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	service.LogAuditErr("execution waited", r.auditService.LogExecutionWaited(exec.ID, exec.ProcessInstanceID, node.ID, "message"))
+	return nil
 }
 
 // executeMessageBoundaryEvent advances the execution to the boundary event's outgoing node.
@@ -51,5 +56,9 @@ func (r *Runtime) executeMessageBoundaryEvent(ctx context.Context, engineRepo *r
 	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
 		return fmt.Errorf("message boundary: update node: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, nil))
+	return nil
 }

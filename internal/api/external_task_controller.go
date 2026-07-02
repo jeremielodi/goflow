@@ -16,6 +16,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -25,6 +26,7 @@ type ExternalTaskController struct {
 	processInstanceRepo *repository.ProcessInstanceRepository
 	incidentRepo        *repository.IncidentRepository
 	dispatcher          *events.TaskEventDispatcher
+	auditService        *service.AuditService
 }
 
 func NewExternalTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *ExternalTaskController {
@@ -34,6 +36,7 @@ func NewExternalTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatch
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
 		incidentRepo:        repository.NewIncidentRepository(db),
 		dispatcher:          dispatcher,
+		auditService:        service.NewAuditService(db),
 	}
 }
 
@@ -155,6 +158,11 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 			"message": "failed to commit transaction",
 			"error":   err.Error(),
 		})
+	}
+	for _, topicJob := range topicJobs {
+		for _, job := range topicJob.Jobs {
+			service.LogAuditErr("job locked", ctrl.auditService.LogJobLocked(job.ID, job.ProcessInstanceID, req.WorkerId))
+		}
 	}
 
 	// Build response
@@ -301,6 +309,9 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	// Check if this is a multi-instance child
 	var isChild bool
 	var parentExecID uuid.UUID
+	var miParentMoved bool
+	var miParentExecID uuid.UUID
+	var miParentFromNode, miParentToNode string
 
 	err = tx.Get(&isChild, `
 		SELECT EXISTS(SELECT 1 FROM public.multi_instance_children WHERE child_execution_id = $1)
@@ -413,12 +424,17 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 				if parentNode, ok := graph.Nodes[parentNodeID]; ok && len(parentNode.Outgoing) > 0 {
 					nextNodeID := parentNode.Outgoing[0].TargetRef
 					_, err = tx.Exec(`
-						UPDATE public.executions 
+						UPDATE public.executions
 						SET current_element_id = $1, status = 'active', updated_at = NOW()
 						WHERE id = $2
 					`, nextNodeID, parentExecID)
 					if err != nil {
 						log.Printf("Warning: failed to move parent: %v", err)
+					} else {
+						miParentMoved = true
+						miParentExecID = parentExecID
+						miParentFromNode = parentNodeID
+						miParentToNode = nextNodeID
 					}
 				}
 			}
@@ -467,6 +483,12 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 			if err := tx.Commit(); err != nil {
 				return err
 			}
+			service.LogAuditErr("job completed", ctrl.auditService.LogJobCompleted(jobID, processInstanceID, normalizedVars))
+			if len(normalizedVars) > 0 {
+				service.LogAuditErr("variables merged", ctrl.auditService.LogVariablesMerged(processInstanceID, normalizedVars, "jobComplete"))
+			}
+			service.LogAuditErr("execution completed", ctrl.auditService.LogExecutionCompleted(executionID, processInstanceID, currentElementID))
+			service.LogAuditErr("process completed", ctrl.auditService.LogProcessCompleted(processInstanceID, existingVars))
 			return c.JSON(fiber.Map{
 				"title":   "Success",
 				"message": "process completed",
@@ -503,6 +525,14 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	service.LogAuditErr("job completed", ctrl.auditService.LogJobCompleted(jobID, processInstanceID, normalizedVars))
+	if len(normalizedVars) > 0 {
+		service.LogAuditErr("variables merged", ctrl.auditService.LogVariablesMerged(processInstanceID, normalizedVars, "jobComplete"))
+	}
+	if miParentMoved {
+		service.LogAuditErr("execution moved", ctrl.auditService.LogExecutionMoved(miParentExecID, processInstanceID, miParentFromNode, miParentToNode, nil))
+	}
+	service.LogAuditErr("execution moved", ctrl.auditService.LogExecutionMoved(executionID, processInstanceID, currentElementID, nextNodeID, existingVars))
 
 	// Resume current execution
 	rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
@@ -561,6 +591,10 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 	// Decrement retries
 	newRetries := req.Retries - 1
 
+	// Load job context up front — needed for audit logging on every branch,
+	// as well as the pre-existing boundary check / incident creation below.
+	jobCtxEarly, jobCtxErr := ctrl.externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
+
 	if newRetries <= 0 {
 		// No more retries - mark as failed permanently
 		if err := ctrl.externalTaskRepo.FailJobPermanentlyTx(tx, jobID, req.ErrorMessage, req.ErrorCode); err != nil {
@@ -571,8 +605,7 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 			})
 		}
 
-		// Always load job context: needed for boundary check and incident creation
-		jobCtx, jobErr := ctrl.externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
+		jobCtx, jobErr := jobCtxEarly, jobCtxErr
 
 		// If an error code was provided, check for a matching error boundary event
 		if req.ErrorCode != "" && jobErr == nil && jobCtx != nil {
@@ -590,6 +623,8 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 								WHERE id = $2
 							`, node.ID, jobCtx.ExecutionID); execErr == nil {
 								if commitErr := tx.Commit(); commitErr == nil {
+									service.LogAuditErr("job failed", ctrl.auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, req.ErrorMessage, 0))
+									service.LogAuditErr("execution moved", ctrl.auditService.LogExecutionMoved(jobCtx.ExecutionID, jobCtx.ProcessInstanceID, jobCtx.CurrentElementID, node.ID, nil))
 									rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
 									if resumeErr := rt.ExecuteExecution(c.Context(), jobCtx.ExecutionID); resumeErr != nil {
 										log.Printf("Error boundary execution failed: %v", resumeErr)
@@ -638,6 +673,9 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 			"message": "failed to commit transaction",
 			"error":   err.Error(),
 		})
+	}
+	if jobCtxErr == nil && jobCtxEarly != nil {
+		service.LogAuditErr("job failed", ctrl.auditService.LogJobFailed(jobID, jobCtxEarly.ProcessInstanceID, req.ErrorMessage, newRetries))
 	}
 
 	message := "failure recorded, job will be retried"

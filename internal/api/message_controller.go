@@ -10,6 +10,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -18,12 +19,13 @@ import (
 var ErrNoMatchingSubscription = errors.New("no process instance found waiting for this message")
 
 type MessageController struct {
-	db         *sqlx.DB
-	dispatcher *events.TaskEventDispatcher
+	db           *sqlx.DB
+	dispatcher   *events.TaskEventDispatcher
+	auditService *service.AuditService
 }
 
 func NewMessageController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *MessageController {
-	return &MessageController{db: db, dispatcher: dispatcher}
+	return &MessageController{db: db, dispatcher: dispatcher, auditService: service.NewAuditService(db)}
 }
 
 type CorrelateMessageRequest struct {
@@ -88,6 +90,10 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 	// Correlate to the first matching subscription (1:1 message correlation)
 	sub := subs[0]
 
+	// Node the execution is currently parked at, for audit purposes.
+	var fromNode string
+	mc.db.QueryRow(`SELECT current_element_id FROM executions WHERE id = $1`, sub.ExecutionID).Scan(&fromNode)
+
 	// Determine target element (for regular catch event: next outgoing; stored in target_element_id for EBG)
 	targetElementID := ""
 	if sub.TargetElementID != nil && *sub.TargetElementID != "" {
@@ -97,16 +103,11 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 		subRepo.CancelSiblingSubscriptions(sub.ExecutionID, sub.ID)
 	} else {
 		// Regular intermediate catch event: advance to catch event's outgoing node
-		var nextNode string
-		mc.db.QueryRow(`
-			SELECT current_element_id FROM executions WHERE id = $1
-		`, sub.ExecutionID).Scan(&nextNode)
-
 		// Load the graph to find the outgoing flow
 		engineRepo := repository.NewEngineRepository(mc.db, mc.dispatcher)
 		graph, err := engineRepo.GetProcessGraphByInstanceID(sub.ProcessInstanceID)
 		if err == nil && graph != nil {
-			if catchNode, ok := graph.Nodes[nextNode]; ok && len(catchNode.Outgoing) > 0 {
+			if catchNode, ok := graph.Nodes[fromNode]; ok && len(catchNode.Outgoing) > 0 {
 				targetElementID = catchNode.Outgoing[0].TargetRef
 			}
 		}
@@ -126,7 +127,9 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 		tx, err := mc.db.Beginx()
 		if err == nil {
 			engineRepo.UpdateProcessVariablesTx(tx, sub.ProcessInstanceID, merged)
-			tx.Commit()
+			if err := tx.Commit(); err == nil {
+				service.LogAuditErr("variables merged", mc.auditService.LogVariablesMerged(sub.ProcessInstanceID, variables, "message"))
+			}
 		}
 	}
 
@@ -136,6 +139,10 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 	// Reactivate the execution and advance to target node
 	if err := repository.ResumeWaitingExecution(mc.db, sub.ExecutionID, targetElementID); err != nil {
 		return uuid.Nil, uuid.Nil, err
+	}
+	service.LogAuditErr("message correlated", mc.auditService.LogMessageCorrelated(sub.ProcessInstanceID, messageName))
+	if fromNode != "" && targetElementID != "" {
+		service.LogAuditErr("execution moved", mc.auditService.LogExecutionMoved(sub.ExecutionID, sub.ProcessInstanceID, fromNode, targetElementID, variables))
 	}
 
 	// Resume execution

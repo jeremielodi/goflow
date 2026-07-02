@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeBoundaryTimerNode is called when a timer fires and execution reaches the BoundaryTimerEvent node.
@@ -36,6 +37,7 @@ func (r *Runtime) executeBoundaryTimerNode(ctx context.Context, engineRepo *repo
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, nextNodeID, nil))
 
 	return nextNodeID, nil
 }
@@ -103,6 +105,7 @@ func (r *Runtime) executeIntermediateTimer(ctx context.Context, engineRepo *repo
 		return fmt.Errorf("failed to commit intermediate timer transaction: %w", err)
 	}
 
-	r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "intermediate")
+	service.LogAuditErr("timer created", r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "intermediate"))
+	service.LogAuditErr("execution waited", r.auditService.LogExecutionWaited(exec.ID, exec.ProcessInstanceID, node.ID, "timer"))
 	return nil
 }

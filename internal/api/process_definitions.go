@@ -18,22 +18,25 @@ import (
 	"github.com/jeremielodi/goflow/internal/parser"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
 type ProcessDefinitionController struct {
-	db          *sqlx.DB
-	util        common.Util
-	processRepo *repository.ProcessRepository
-	dispatcher  *events.TaskEventDispatcher
+	db           *sqlx.DB
+	util         common.Util
+	processRepo  *repository.ProcessRepository
+	dispatcher   *events.TaskEventDispatcher
+	auditService *service.AuditService
 }
 
 func NewProcessDefinitionController(db *sqlx.DB, rootDirPath *string) *ProcessDefinitionController {
 	return &ProcessDefinitionController{
-		db:          db,
-		util:        *common.NewUtil(rootDirPath),
-		processRepo: repository.NewProcessRepository(db),
+		db:           db,
+		util:         *common.NewUtil(rootDirPath),
+		processRepo:  repository.NewProcessRepository(db),
+		auditService: service.NewAuditService(db),
 	}
 }
 
@@ -111,7 +114,10 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 	if deploymentName == "" {
 		deploymentName = fileHeaders[0].Filename
 	}
-	tenantID := c.FormValue("tenant-id") // optional
+	tenantID := c.FormValue("tenant-id") // optional; defaults to the caller's own tenant
+	if tenantID == "" {
+		tenantID = common.GetTenantId(c)
+	}
 
 	// ------------------------------------------------------------
 	// 4. Create deployment record in DB
@@ -302,22 +308,23 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 func (ctrl *ProcessDefinitionController) ListDefinitions(c *fiber.Ctx) error {
 	key := c.Query("key")
 	latestOnly := c.Query("latestVersion") == "true"
+	tenantID := common.GetTenantId(c)
 
 	var defs []models.ProcessDefinition
 	var err error
 
 	if key != "" && latestOnly {
 		def, e := ctrl.processRepo.FindLatestProcessDefinitionByKey(key)
-		if e != nil {
+		if e != nil || (tenantID != "" && def.TenantID != nil && *def.TenantID != tenantID) {
 			return c.Status(404).JSON(fiber.Map{"message": "not found"})
 		}
 		defs = []models.ProcessDefinition{def}
 	} else if key != "" {
-		defs, err = ctrl.processRepo.ListProcessDefinitionsByKey(key)
+		defs, err = ctrl.processRepo.ListProcessDefinitionsByKey(key, tenantID)
 	} else if latestOnly {
-		defs, err = ctrl.processRepo.ListLatestProcessDefinitions()
+		defs, err = ctrl.processRepo.ListLatestProcessDefinitions(tenantID)
 	} else {
-		defs, err = ctrl.processRepo.ListProcessDefinitions()
+		defs, err = ctrl.processRepo.ListProcessDefinitions(tenantID)
 	}
 
 	if err != nil {
@@ -385,7 +392,7 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 	instanceID := uuid.New()
 	now := time.Now()
 
-	if err := instanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now); err != nil {
+	if err := instanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to create process instance", "error": err.Error()})
 	}
 	if len(body.Variables) > 0 {
@@ -401,6 +408,8 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 	if err := tx.Commit(); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to commit"})
 	}
+	service.LogAuditErr("process started", ctrl.auditService.LogProcessStarted(instanceID, body.Variables, nil))
+	service.LogAuditErr("execution created", ctrl.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
 	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {

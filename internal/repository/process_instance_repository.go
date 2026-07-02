@@ -19,13 +19,16 @@ func NewProcessInstanceRepository(db *sqlx.DB) *ProcessInstanceRepository {
 	return &ProcessInstanceRepository{db: db}
 }
 
-// CreateProcessInstance creates a new process instance
-func (r *ProcessInstanceRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, processDefID uuid.UUID, startedAt time.Time) error {
+// CreateProcessInstance creates a new process instance. tenantID is
+// stamped from the process definition being instantiated (nil = no
+// tenant / untenanted deployment) so list/search/get endpoints can filter
+// by the caller's tenant without a join.
+func (r *ProcessInstanceRepository) CreateProcessInstanceTx(tx *sqlx.Tx, instanceID, processDefID uuid.UUID, startedAt time.Time, tenantID *string) error {
 	_, err := tx.Exec(`
 		INSERT INTO public.process_instances
-			(id, process_definition_id, status, started_at)
-		VALUES ($1, $2, 'running', $3)
-	`, instanceID, processDefID, startedAt)
+			(id, process_definition_id, status, started_at, tenant_id)
+		VALUES ($1, $2, 'running', $3, $4)
+	`, instanceID, processDefID, startedAt, tenantID)
 	return err
 }
 
@@ -151,11 +154,12 @@ func (r *ProcessInstanceRepository) UpsertVariables(instanceID uuid.UUID, variab
 	return err
 }
 
-// FindAll retrieves process instances with optional filters
-func (r *ProcessInstanceRepository) FindAll(status, processKey string) ([]models.ProcessInstance, error) {
+// FindAll retrieves process instances with optional filters. An empty
+// tenantID means "no tenant filter" (superuser / untenanted deployment).
+func (r *ProcessInstanceRepository) FindAll(status, processKey, tenantID string) ([]models.ProcessInstance, error) {
 	var instances []models.ProcessInstance
 	query := `
-		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at,
+		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at, pi.tenant_id,
 		       pd.process_key, pd.process_name, pd.version
 		FROM public.process_instances pi
 		LEFT JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
@@ -172,6 +176,11 @@ func (r *ProcessInstanceRepository) FindAll(status, processKey string) ([]models
 	if processKey != "" {
 		query += fmt.Sprintf(" AND pd.process_key = $%d", argIndex)
 		args = append(args, processKey)
+		argIndex++
+	}
+	if tenantID != "" {
+		query += fmt.Sprintf(" AND pi.tenant_id = $%d", argIndex)
+		args = append(args, tenantID)
 		argIndex++
 	}
 
@@ -214,6 +223,7 @@ func (r *ProcessInstanceRepository) FindByID(id uuid.UUID) (*models.ProcessInsta
 			pi.transaction_scope_id,
 			pi.started_at,
 			pi.ended_at,
+			pi.tenant_id,
 			pd.process_key,
 			pd.process_name,
 			pd.version
@@ -361,6 +371,7 @@ func (r *ProcessInstanceRepository) FindHistoricByID(instanceID uuid.UUID) (*mod
 			pi.started_by,
 			pi.started_at,
 			pi.ended_at,
+			pi.tenant_id,
 			pd.process_key,
 			pd.process_name,
 			pd.version

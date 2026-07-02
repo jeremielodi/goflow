@@ -24,6 +24,7 @@ type TaskService struct {
 	instRepo       *repository.ProcessInstanceRepository
 	resumeExecutor ResumeExecutionFunc // Callback for resuming execution
 	dispatcher     *events.TaskEventDispatcher
+	auditService   *AuditService
 }
 
 // ResumeExecutionFunc is a function type for resuming execution
@@ -32,11 +33,12 @@ type ResumeExecutionFunc func(ctx context.Context, graph *engine.ProcessGraph, e
 // NewTaskService creates a new TaskService
 func NewTaskService(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *TaskService {
 	return &TaskService{
-		db:         db,
-		taskRepo:   repository.NewTaskRepository(db, dispatcher),
-		procRepo:   repository.NewProcessRepository(db),
-		instRepo:   repository.NewProcessInstanceRepository(db),
-		dispatcher: dispatcher,
+		db:           db,
+		taskRepo:     repository.NewTaskRepository(db, dispatcher),
+		procRepo:     repository.NewProcessRepository(db),
+		instRepo:     repository.NewProcessInstanceRepository(db),
+		dispatcher:   dispatcher,
+		auditService: NewAuditService(db),
 	}
 }
 
@@ -104,7 +106,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 
 	// node has no outgoing flows
 	if nextID == "" {
-		return s.completeProcessAndTask(task, currentVars, taskBefore)
+		return s.completeProcessAndTask(task, currentVars, taskBefore, userVars)
 	}
 	// 5. Start transaction (move token, complete task, update variables)
 	tx := database.NewTransaction(s.db)
@@ -167,6 +169,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if err != nil || !success {
 		return fmt.Errorf("transaction failed: %w", err)
 	}
+	LogAuditErr("task completed", s.auditService.LogTaskCompleted(task.ID, task.ProcessInstanceID, nil, userVars))
+	if len(userVars) > 0 {
+		LogAuditErr("variables merged", s.auditService.LogVariablesMerged(task.ProcessInstanceID, userVars, "taskComplete"))
+	}
+	LogAuditErr("execution moved", s.auditService.LogExecutionMoved(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey, nextID, currentVars))
 
 	// Dispatch TASK_COMPLETED event
 	if s.dispatcher != nil {
@@ -211,7 +218,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 }
 
 // Helper to finish process when no next node exists
-func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}, taskBefore models.Task) error {
+func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}, taskBefore models.Task, userVars map[string]interface{}) error {
 	tx := database.NewTransaction(s.db)
 
 	// Mark task as completed
@@ -271,6 +278,12 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 	if err != nil || !success {
 		return fmt.Errorf("transaction failed while ending process: %w", err)
 	}
+	LogAuditErr("task completed", s.auditService.LogTaskCompleted(task.ID, task.ProcessInstanceID, nil, userVars))
+	if len(userVars) > 0 {
+		LogAuditErr("variables merged", s.auditService.LogVariablesMerged(task.ProcessInstanceID, userVars, "taskComplete"))
+	}
+	LogAuditErr("execution completed", s.auditService.LogExecutionCompleted(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey))
+	LogAuditErr("process completed", s.auditService.LogProcessCompleted(task.ProcessInstanceID, currentVars))
 
 	// Dispatch TASK_COMPLETED event for final task
 	if s.dispatcher != nil {

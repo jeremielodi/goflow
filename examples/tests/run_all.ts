@@ -107,6 +107,9 @@ async function main() {
     '17_dmn.test.ts',
     '18_tasklist.test.ts',
     '19_operate.test.ts',
+    '20_multitenancy.test.ts',
+    '21_oidc.test.ts',
+    '22_audit_trail.test.ts',
   ];
 
   const exitCodes: number[] = [];

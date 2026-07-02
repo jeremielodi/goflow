@@ -9,6 +9,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/dmn"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeBusinessRuleTask evaluates the DMN decision referenced by
@@ -78,6 +79,7 @@ func (r *Runtime) executeBusinessRuleTask(ctx context.Context, engineRepo *repos
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, variables))
 
 	return next, nil
 }

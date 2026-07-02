@@ -29,6 +29,7 @@ type ProcessDefinition struct {
 	DeploymentID uuid.UUID       `db:"deployment_id" json:"deploymentId"`
 	ProcessKey   string          `db:"process_key"   json:"key"`
 	ProcessName  *string         `db:"process_name"  json:"name,omitempty"`
+	TenantID     *string         `db:"tenant_id"      json:"tenantId,omitempty"`
 	Version      int             `db:"version"       json:"version"`
 	IsActive     bool            `db:"is_active"     json:"isActive"`
 	BpmnXML      string          `db:"bpmn_xml"      json:"bpmnXml,omitempty"`

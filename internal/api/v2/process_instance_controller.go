@@ -18,6 +18,8 @@ import (
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -26,6 +28,7 @@ type ProcessInstanceController struct {
 	dispatcher          *events.TaskEventDispatcher
 	processRepo         *repository.ProcessRepository
 	processInstanceRepo *repository.ProcessInstanceRepository
+	auditService        *service.AuditService
 }
 
 func NewProcessInstanceController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *ProcessInstanceController {
@@ -34,6 +37,7 @@ func NewProcessInstanceController(db *sqlx.DB, dispatcher *events.TaskEventDispa
 		dispatcher:          dispatcher,
 		processRepo:         repository.NewProcessRepository(db),
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
+		auditService:        service.NewAuditService(db),
 	}
 }
 
@@ -127,7 +131,7 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 	instanceID := uuid.New()
 	now := time.Now()
 
-	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now); err != nil {
+	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, req.Variables, now); err != nil {
@@ -141,6 +145,8 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 	if err := tx.Commit(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
+	service.LogAuditErr("process started", pc.auditService.LogProcessStarted(instanceID, req.Variables, nil))
+	service.LogAuditErr("execution created", pc.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
 	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {
@@ -168,17 +174,26 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
+	callerTenant := common.GetTenantId(c)
+
 	inst, err := pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil {
+	if err != nil || inst == nil {
 		// Fall back to history for completed/terminated instances.
 		hist, histErr := pc.processInstanceRepo.FindHistoricByID(instanceID)
-		if histErr != nil || hist == nil {
+		if histErr != nil || hist == nil || !common.TenantMatches(hist.TenantID, callerTenant) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"title":  "NOT_FOUND",
 				"detail": "process instance not found",
 			})
 		}
 		return c.JSON(toV2ProcessInstance(hist))
+	}
+
+	if !common.TenantMatches(inst.TenantID, callerTenant) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title":  "NOT_FOUND",
+			"detail": "process instance not found",
+		})
 	}
 
 	return c.JSON(toV2ProcessInstance(inst))
@@ -210,7 +225,7 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 		status = "suspended"
 	}
 
-	instances, err := pc.processInstanceRepo.FindAll(status, req.Filter.ProcessDefinitionId)
+	instances, err := pc.processInstanceRepo.FindAll(status, req.Filter.ProcessDefinitionId, common.GetTenantId(c))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}

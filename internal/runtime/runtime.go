@@ -467,8 +467,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return fmt.Errorf("failed to commit transaction: %w", err)
 			}
 
+			fromNode := currentID
 			currentID = next
-			r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, currentID, next, variables)
+			service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, fromNode, next, variables))
 
 		case engine.ServiceTaskType:
 			if node.MultiInstance != nil && exec.ParentExecutionID != nil {

@@ -1,28 +1,53 @@
 export interface ProcessDefinition {
   id: string;
   key: string;
-  name: string;
+  name?: string;
   version: number;
   deploymentId: string;
-  deployedAt: string;
-  resource: string;
+  createdAt: string;
+  isActive?: boolean;
   tenantId?: string;
-  historyTimeToLive?: number;
 }
 
+// GET /engine-rest/process-instance(/:id) returns internal/models.ProcessInstance
+// marshaled as-is — field names below match that JSON shape, which differs
+// from the Camunda-7-style HistoricProcessInstance shape below (that one
+// comes from a dedicated history_controller.go response struct).
 export interface ProcessInstance {
   id: string;
   processDefinitionId: string;
-  processDefinitionKey: string;
-  processDefinitionName?: string;
-  businessKey?: string;
   status: 'running' | 'completed' | 'suspended' | 'terminated';
+  startedBy?: string;
+  startedAt: string;
+  endedAt?: string;
+  processKey?: string;
+  processName?: string;
+  version?: number;
+  tenantId?: string;
+}
+
+// GET /audit/process/:id/token-history returns internal/service.TokenHistoryStep[]
+// (see token-history-service.go) — a derived, ordered timeline reconstructed
+// from audit_logs, unlike HistoricActivityInstance below which reflects only
+// the *current* state of the live executions table.
+export interface TokenHistoryStep {
+  timestamp: string;
+  action: string;
+  elementId?: string;
+  elementName?: string;
+  executionId?: string;
+  taskId?: string;
+  detail?: string;
+}
+
+export interface HistoricProcessInstance {
+  id: string;
+  processDefinitionId: string;
+  processDefinitionKey: string;
+  businessKey?: string;
   startTime: string;
   endTime?: string;
   durationInMillis?: number;
-}
-
-export interface HistoricProcessInstance extends ProcessInstance {
   state: 'active' | 'completed' | 'suspended' | 'terminated';
   startUserId?: string;
 }
@@ -41,35 +66,40 @@ export interface HistoricActivityInstance {
   completeScope: boolean;
 }
 
+// Mirrors the database's task_status enum (database/01_schema.sql) exactly.
+export type TaskStatus = 'created' | 'claimed' | 'completed' | 'cancelled';
+
 export interface UserTask {
   id: string;
-  name: string;
+  // The GoFlow /engine-rest/tasks response is models.Task marshaled as-is
+  // (see internal/models/task.go) — field names below match that JSON
+  // shape exactly, not the Camunda 7 REST API's naming.
+  taskName?: string;
   assignee?: string;
-  created: string;
+  status: TaskStatus;
+  createdAt: string;
   due?: string;
   processInstanceId: string;
-  processDefinitionId: string;
+  processDefinitionId?: string;
   processDefinitionKey?: string;
   taskDefinitionKey: string;
-  candidateGroups?: string[];
+  candidateGroup?: string;
   priority?: number;
   description?: string;
+  formKey?: string;
 }
 
 export interface Incident {
   id: string;
-  processDefinitionId: string;
   processInstanceId: string;
-  executionId: string;
+  jobId?: string;
   incidentType: string;
   activityId: string;
-  failedActivityId?: string;
-  causeIncidentId?: string;
-  rootCauseIncidentId?: string;
-  configuration?: string;
-  incidentMessage?: string;
-  incidentTimestamp?: string;
-  jobDefinitionId?: string;
+  errorMessage?: string;
+  errorCode?: string;
+  state: string;
+  createdAt: string;
+  resolvedAt?: string;
 }
 
 export interface Variable {
@@ -97,8 +127,7 @@ export interface Job {
 export interface User {
   id: string;
   email: string;
-  firstName?: string;
-  lastName?: string;
+  fullName?: string;
   roles?: string[];
 }
 

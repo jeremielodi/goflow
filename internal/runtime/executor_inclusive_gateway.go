@@ -12,6 +12,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -186,8 +187,13 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 		return fmt.Errorf("failed to complete child execution: %w", err)
 	}
 
+	joined := false
+	var mergedVariables map[string]interface{}
+	var nextNodeID string
+
 	if gatewayState.ReceivedIncoming == gatewayState.ExpectedIncoming {
-		mergedVariables, err := e.mergeBranchVariables(tx, exec.ParentExecutionID)
+		joined = true
+		mergedVariables, err = e.mergeBranchVariables(tx, exec.ParentExecutionID)
 		if err != nil {
 			return fmt.Errorf("failed to merge branch variables: %w", err)
 		}
@@ -197,7 +203,7 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 			}
 		}
 
-		nextNodeID := gatewayNode.Outgoing[0].TargetRef
+		nextNodeID = gatewayNode.Outgoing[0].TargetRef
 		if err = e.engineRepo.UpdateExecutionStatusAndNodeTx(tx, *exec.ParentExecutionID, "active", nextNodeID); err != nil {
 			return fmt.Errorf("failed to resume parent execution: %w", err)
 		}
@@ -213,7 +219,19 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 			gatewayNode.ID, gatewayState.ExpectedIncoming)
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	if joined {
+		auditService := service.NewAuditService(e.db)
+		if len(mergedVariables) > 0 {
+			service.LogAuditErr("variables merged", auditService.LogVariablesMerged(exec.ProcessInstanceID, mergedVariables, "gatewayJoin"))
+		}
+		service.LogAuditErr("execution moved", auditService.LogExecutionMoved(*exec.ParentExecutionID, exec.ProcessInstanceID, gatewayNode.ID, nextNodeID, nil))
+	}
+
+	return nil
 }
 
 func (e *InclusiveGatewayExecutor) getChildExecutionCount(tx *sqlx.Tx, parentExecID *uuid.UUID) (int, error) {

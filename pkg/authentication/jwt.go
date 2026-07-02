@@ -19,6 +19,7 @@ const (
 type CustomClaims struct {
 	UserId    string `json:"user_id"`
 	Email     string `json:"email,omitempty"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	TokenType string `json:"token_type"` // "access" or "refresh"
 	jwt.RegisteredClaims
 }
@@ -74,11 +75,16 @@ func (s *JWTService) CreateTokenPair(user models.User) (*TokenPair, error) {
 // CreateAccessToken creates a short-lived access token
 func (s *JWTService) CreateAccessToken(user models.User) (string, error) {
 	now := time.Now()
+	tenantID := ""
+	if user.TenantID != nil {
+		tenantID = *user.TenantID
+	}
 	token := jwt.NewWithClaims(
 		jwt.SigningMethodHS256,
 		CustomClaims{
 			UserId:    user.ID.String(),
 			Email:     user.Email,
+			TenantID:  tenantID,
 			TokenType: "access",
 			RegisteredClaims: jwt.RegisteredClaims{
 				ExpiresAt: jwt.NewNumericDate(now.Add(s.accessExpireDuration)), // Fixed: removed 3x multiplier
@@ -112,8 +118,10 @@ func (s *JWTService) CreateRefreshToken(user models.User) (string, error) {
 	return token.SignedString(s.refreshSignKey)
 }
 
-// ParseAccessToken parses and validates access token
-func (s *JWTService) ParseAccessToken(tokenString string) (string, error) {
+// ParseAccessTokenClaims parses and validates an access token, returning its
+// full claims (used where the caller needs more than just the user ID, e.g.
+// the tenant ID for multi-tenancy).
+func (s *JWTService) ParseAccessTokenClaims(tokenString string) (*CustomClaims, error) {
 	// Parse token
 	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
@@ -124,29 +132,38 @@ func (s *JWTService) ParseAccessToken(tokenString string) (string, error) {
 	})
 
 	if err != nil {
-		return "", fmt.Errorf("failed to parse token: %w", err)
+		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	// Validate claims
 	claims, ok := token.Claims.(*CustomClaims)
 	if !ok {
-		return "", fmt.Errorf("invalid token claims")
+		return nil, fmt.Errorf("invalid token claims")
 	}
 
 	if !token.Valid {
-		return "", fmt.Errorf("token is invalid")
+		return nil, fmt.Errorf("token is invalid")
 	}
 
 	// Check token type
 	if claims.TokenType != "access" {
-		return "", fmt.Errorf("invalid token type, expected access token, got: %s", claims.TokenType)
+		return nil, fmt.Errorf("invalid token type, expected access token, got: %s", claims.TokenType)
 	}
 
 	// Check expiration
 	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
-		return "", fmt.Errorf("token has expired")
+		return nil, fmt.Errorf("token has expired")
 	}
 
+	return claims, nil
+}
+
+// ParseAccessToken parses and validates access token, returning just the user ID.
+func (s *JWTService) ParseAccessToken(tokenString string) (string, error) {
+	claims, err := s.ParseAccessTokenClaims(tokenString)
+	if err != nil {
+		return "", err
+	}
 	return claims.UserId, nil
 }
 

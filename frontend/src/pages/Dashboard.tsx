@@ -70,11 +70,11 @@ export default function Dashboard() {
                 {running.slice(0, 8).map(inst => (
                   <Tr key={inst.id} onClick={() => nav(`/instances/${inst.id}`)}>
                     <Td>
-                      <span className="font-medium text-gray-900 text-xs">{inst.processDefinitionKey}</span>
+                      <span className="font-medium text-gray-900 text-xs">{inst.processKey}</span>
                       <br />
                       <span className="text-gray-400 text-xs">{inst.id.slice(0, 8)}…</span>
                     </Td>
-                    <Td><span className="text-xs">{formatDate(inst.startTime)}</span></Td>
+                    <Td><span className="text-xs">{formatDate(inst.startedAt)}</span></Td>
                     <Td><Badge value={inst.status} /></Td>
                   </Tr>
                 ))}
@@ -135,15 +135,16 @@ export default function Dashboard() {
           />
           <Table>
             <Thead>
-              <tr><Th>Task</Th><Th>Process Instance</Th><Th>Assignee</Th><Th>Created</Th></tr>
+              <tr><Th>Task</Th><Th>Process Instance</Th><Th>Assignee</Th><Th>Status</Th><Th>Created</Th></tr>
             </Thead>
             <tbody>
               {tasks.slice(0, 5).map(task => (
                 <Tr key={task.id} onClick={() => nav(`/tasks?instance=${task.processInstanceId}`)}>
-                  <Td><span className="font-medium text-xs">{task.name}</span></Td>
+                  <Td><span className="font-medium text-xs">{task.taskName}</span></Td>
                   <Td><span className="text-xs text-gray-500">{task.processInstanceId?.slice(0, 8)}…</span></Td>
                   <Td><span className="text-xs">{task.assignee ?? <span className="text-gray-400">Unassigned</span>}</span></Td>
-                  <Td><span className="text-xs">{formatDate(task.created)}</span></Td>
+                  <Td><Badge value={task.status} /></Td>
+                  <Td><span className="text-xs">{formatDate(task.createdAt)}</span></Td>
                 </Tr>
               ))}
             </tbody>

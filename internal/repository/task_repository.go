@@ -132,7 +132,10 @@ func (r *TaskRepository) FindTasksByAssignee(assignee string, status ...string) 
 }
 
 // FindAll returns tasks filtered by any column given in the params map.
-func (r *TaskRepository) FindAll(params map[string]interface{}) ([]models.Task, error) {
+// excludeStatuses, if given, are omitted from the result — but only when the
+// caller didn't already filter explicitly by "status", so an explicit
+// ?status=completed request still works.
+func (r *TaskRepository) FindAll(params map[string]interface{}, excludeStatuses ...string) ([]models.Task, error) {
 	allowedColumns := map[string]bool{
 		"id": true, "process_instance_id": true, "execution_id": true,
 		"task_definition_key": true, "task_name": true, "assignee": true,
@@ -166,6 +169,15 @@ func (r *TaskRepository) FindAll(params map[string]interface{}) ([]models.Task, 
 			args = append(args, value)
 			i++
 		}
+	}
+	if _, hasStatus := params["status"]; !hasStatus && len(excludeStatuses) > 0 {
+		placeholders := make([]string, len(excludeStatuses))
+		for j, s := range excludeStatuses {
+			placeholders[j] = fmt.Sprintf("$%d", i)
+			args = append(args, s)
+			i++
+		}
+		conditions = append(conditions, fmt.Sprintf("status NOT IN (%s)", strings.Join(placeholders, ", ")))
 	}
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")

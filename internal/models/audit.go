@@ -26,6 +26,7 @@ const (
 	// Task Actions
 	ActionTaskCreated   AuditAction = "TASK_CREATED"
 	ActionTaskClaimed   AuditAction = "TASK_CLAIMED"
+	ActionTaskUnclaimed AuditAction = "TASK_UNCLAIMED"
 	ActionTaskCompleted AuditAction = "TASK_COMPLETED"
 	ActionTaskCancelled AuditAction = "TASK_CANCELLED"
 
@@ -52,6 +53,9 @@ const (
 	ActionMessageSent       AuditAction = "MESSAGE_SENT"
 	ActionMessageReceived   AuditAction = "MESSAGE_RECEIVED"
 	ActionMessageCorrelated AuditAction = "MESSAGE_CORRELATED"
+
+	// Signal Actions
+	ActionSignalBroadcast AuditAction = "SIGNAL_BROADCAST"
 )
 
 type AuditLog struct {

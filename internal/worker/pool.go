@@ -13,6 +13,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -225,7 +226,7 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 	// Create process instance
 	instanceID := uuid.New()
 	now := time.Now()
-	err = engineRepo.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now)
+	err = engineRepo.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now, procDef.TenantID)
 	if err != nil {
 		log.Printf("❌ Failed to create process instance: %v", err)
 		return JobResult{Success: false, Error: fmt.Errorf("failed to create process instance: %w", err)}
@@ -252,6 +253,9 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 		log.Printf("❌ Failed to commit transaction: %v", err)
 		return JobResult{Success: false, Error: fmt.Errorf("failed to commit: %w", err)}
 	}
+	auditService := service.NewAuditService(p.db)
+	service.LogAuditErr("process started", auditService.LogProcessStarted(instanceID, job.Variables, nil))
+	service.LogAuditErr("execution created", auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	// Execute asynchronously
 	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)

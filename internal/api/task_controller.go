@@ -9,21 +9,24 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
 type TaskController struct {
-	db         *sqlx.DB
-	util       common.Util
-	dispatcher *events.TaskEventDispatcher
+	db           *sqlx.DB
+	util         common.Util
+	dispatcher   *events.TaskEventDispatcher
+	auditService *service.AuditService
 }
 
 func NewTaskController(db *sqlx.DB, rootDirPath *string, dispatcher *events.TaskEventDispatcher) *TaskController {
 	return &TaskController{
-		db:         db,
-		util:       *common.NewUtil(rootDirPath),
-		dispatcher: dispatcher,
+		db:           db,
+		util:         *common.NewUtil(rootDirPath),
+		dispatcher:   dispatcher,
+		auditService: service.NewAuditService(db),
 	}
 }
 
@@ -55,11 +58,33 @@ func (tc *TaskController) GetTasks(c *fiber.Ctx) error {
 		params["process_instance_id"] = processInstanceId
 	}
 
-	tasks, err = repo.FindAll(params)
+	// Matches Camunda 7's GET /task semantics: only currently-open tasks are
+	// returned by default. Completed/cancelled tasks belong to the History
+	// API, unless the caller explicitly asks for them via ?status=.
+	tasks, err = repo.FindAll(params, "completed", "cancelled")
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(tasks)
+
+	// Resolve each task's linked form (if any) from its process graph, so
+	// the frontend can render a real form instead of a generic JSON blob.
+	engineRepo := repository.NewEngineRepository(tc.db, tc.dispatcher)
+	type taskWithFormKey struct {
+		models.Task
+		FormKey string `json:"formKey,omitempty"`
+	}
+	result := make([]taskWithFormKey, 0, len(tasks))
+	for _, t := range tasks {
+		formKey := ""
+		if graph, err := engineRepo.GetProcessGraphByInstanceID(t.ProcessInstanceID); err == nil && graph != nil {
+			if n, ok := graph.Nodes[t.TaskDefinitionKey]; ok {
+				formKey = n.FormKey
+			}
+		}
+		result = append(result, taskWithFormKey{Task: t, FormKey: formKey})
+	}
+
+	return c.JSON(result)
 }
 
 func (tc *TaskController) Claim(c *fiber.Ctx) error {
@@ -105,6 +130,7 @@ func (tc *TaskController) Claim(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
+	service.LogAuditErr("task claimed", tc.auditService.LogTaskClaimed(taskId, task.ProcessInstanceID, assignee))
 
 	return c.Status(200).JSON(fiber.Map{
 		"success": true,
@@ -139,6 +165,7 @@ func (tc *TaskController) UnClaim(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
+	service.LogAuditErr("task unclaimed", tc.auditService.LogTaskUnclaimed(taskId, task.ProcessInstanceID))
 
 	return c.Status(200).JSON(fiber.Map{
 		"success": true,
@@ -189,7 +216,14 @@ func (tc *TaskController) CompleteTask(c *fiber.Ctx) error {
 			}
 			_ = processInstanceRepo.UpsertVariables(task.ProcessInstanceID, existingVars)
 		}
+		service.LogAuditErr("variables merged", tc.auditService.LogVariablesMerged(task.ProcessInstanceID, req.Variables, "taskComplete"))
 	}
+
+	var completedBy *uuid.UUID
+	if userID, err := getCurrentUserID(c); err == nil {
+		completedBy = &userID
+	}
+	service.LogAuditErr("task completed", tc.auditService.LogTaskCompleted(taskId, task.ProcessInstanceID, completedBy, req.Variables))
 
 	return c.Status(200).JSON(fiber.Map{
 		"success": true,

@@ -381,5 +381,15 @@ export async function runSuite(suite: Suite): Promise<TestResult[]> {
 
   const passed = results.filter(r => r.passed).length;
   console.log(`\n  ${passed} / ${results.length} passed\n`);
+
+  // Without this, a suite whose assertions fail (but don't throw an
+  // uncaught exception past this function) would still exit 0 — every
+  // suite file's `run().catch(console.error)` never rethrows a per-test
+  // failure, so run_all.ts's exit-code-based "X/Y suites passed" summary
+  // would silently miss real assertion failures.
+  if (passed < results.length) {
+    process.exitCode = 1;
+  }
+
   return results;
 }

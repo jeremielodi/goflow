@@ -204,6 +204,7 @@ func (r *ProcessRepository) FindLatestProcessDefinitionByKey(
             deployment_id,
             process_key,
             process_name,
+            tenant_id,
             version,
             is_active,
             bpmn_xml,
@@ -235,6 +236,7 @@ func (r *ProcessRepository) FindProcessDefinitionByID(
             deployment_id,
             process_key,
             process_name,
+            tenant_id,
             version,
             is_active,
             bpmn_xml,
@@ -268,6 +270,7 @@ func (r *ProcessRepository) FindProcessDefinitionByKeyAndVersion(
             deployment_id,
             process_key,
             process_name,
+            tenant_id,
             version,
             is_active,
             bpmn_xml,
@@ -285,75 +288,98 @@ func (r *ProcessRepository) FindProcessDefinitionByKeyAndVersion(
 }
 
 // ListProcessDefinitionsByKey returns all versions for a given process key.
-func (r *ProcessRepository) ListProcessDefinitionsByKey(processKey string) ([]models.ProcessDefinition, error) {
+// An empty tenantID means "no tenant filter" (superuser / untenanted deployment).
+func (r *ProcessRepository) ListProcessDefinitionsByKey(processKey, tenantID string) ([]models.ProcessDefinition, error) {
 	var defs []models.ProcessDefinition
-	err := r.db.Select(&defs, `
-		SELECT id, deployment_id, process_key, process_name, version, is_active, bpmn_xml, parsed_graph, created_at
+	query := `
+		SELECT id, deployment_id, process_key, process_name, tenant_id, version, is_active, bpmn_xml, parsed_graph, created_at
 		FROM public.process_definitions
 		WHERE process_key = $1
-		ORDER BY version DESC
-	`, processKey)
+	`
+	args := []interface{}{processKey}
+	if tenantID != "" {
+		query += " AND tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY version DESC"
+	err := r.db.Select(&defs, query, args...)
 	return defs, err
 }
 
 // ListProcessDefinitions returns all deployed versions.
-func (r *ProcessRepository) ListProcessDefinitions() (
+// An empty tenantID means "no tenant filter" (superuser / untenanted deployment).
+func (r *ProcessRepository) ListProcessDefinitions(tenantID string) (
 	[]models.ProcessDefinition,
 	error,
 ) {
 
 	var defs []models.ProcessDefinition
 
-	err := r.db.Select(
-		&defs,
-		`
+	query := `
         SELECT
             id,
             deployment_id,
             process_key,
             process_name,
+            tenant_id,
             version,
             is_active,
             bpmn_xml,
             parsed_graph,
             created_at
         FROM public.process_definitions
-        ORDER BY process_key ASC, version DESC
-        `,
-	)
+    `
+	args := []interface{}{}
+	if tenantID != "" {
+		query += " WHERE tenant_id = $1"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY process_key ASC, version DESC"
+
+	err := r.db.Select(&defs, query, args...)
 
 	return defs, err
 }
 
 // ListLatestProcessDefinitions returns only latest versions.
+// An empty tenantID means "no tenant filter" (superuser / untenanted deployment).
 //
 // Useful for UI like:
 //
 // invoice_process -> v5
 // order_process -> v3
-func (r *ProcessRepository) ListLatestProcessDefinitions() (
+func (r *ProcessRepository) ListLatestProcessDefinitions(tenantID string) (
 	[]models.ProcessDefinition,
 	error,
 ) {
 
 	var defs []models.ProcessDefinition
 
-	err := r.db.Select(
-		&defs,
-		`
+	query := `
         SELECT DISTINCT ON (process_key)
             id,
             deployment_id,
             process_key,
             process_name,
+            tenant_id,
             version,
             is_active,
             bpmn_xml,
             parsed_graph,
             created_at
         FROM public.process_definitions
-        ORDER BY process_key, version DESC
-        `,
+    `
+	args := []interface{}{}
+	if tenantID != "" {
+		query += " WHERE tenant_id = $1"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY process_key, version DESC"
+
+	err := r.db.Select(
+		&defs,
+		query,
+		args...,
 	)
 
 	return defs, err

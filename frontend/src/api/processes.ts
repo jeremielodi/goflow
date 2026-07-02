@@ -28,7 +28,7 @@ export const deployBpmn = async (file: File, name?: string): Promise<void> => {
 // ── Process Instances ──────────────────────────────────────────────────────
 
 export const listInstances = async (params?: {
-  processDefinitionKey?: string;
+  processKey?: string;
   status?: string;
   firstResult?: number;
   maxResults?: number;
@@ -65,5 +65,19 @@ export const suspendInstance = async (id: string, suspended: boolean): Promise<v
 
 export const getInstanceState = async (id: string) => {
   const res = await apiClient.get(`/engine-rest/process-instance/${id}/state`);
+  return res.data;
+};
+
+// Moves a running token from sourceElementId to targetElementId — see
+// internal/runtime/modification.go. Cancels the source execution (and any
+// open task/job attached to it) and creates a fresh one at the target.
+export const modifyInstance = async (
+  id: string,
+  sourceElementId: string,
+  targetElementId: string
+): Promise<{ newExecutionIds: string[] }> => {
+  const res = await apiClient.post(`/v2/process-instances/${id}/modification`, {
+    moveInstructions: [{ sourceElementId, targetElementId }],
+  });
   return res.data;
 };

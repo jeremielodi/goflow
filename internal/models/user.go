@@ -8,12 +8,14 @@ import (
 
 // User for safe JSON responses (no password_hash)
 type User struct {
-	ID        uuid.UUID `json:"id" db:"id"`
-	Email     string    `json:"email" db:"email"`
-	FullName  string    `json:"full_name,omitempty" db:"full_name"`
-	IsActive  bool      `json:"is_active" db:"is_active"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	ID          uuid.UUID `json:"id" db:"id"`
+	Email       string    `json:"email" db:"email"`
+	FullName    string    `json:"full_name,omitempty" db:"full_name"`
+	IsActive    bool      `json:"is_active" db:"is_active"`
+	TenantID    *string   `json:"tenantId,omitempty" db:"tenant_id"`
+	OIDCSubject *string   `json:"-" db:"oidc_subject"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // UserCreateModel for INSERT
@@ -23,6 +25,8 @@ type UserCreateModel struct {
 	FullName     string    `json:"full_name"`
 	PasswordHash string    `json:"-"` // set from plain password using bcrypt
 	IsActive     bool      `json:"is_active"`
+	TenantID     *string   `json:"tenant_id,omitempty"`
+	OIDCSubject  *string   `json:"-"`
 }
 
 // UserUpdateModel for UPDATE (only mutable fields)
@@ -59,6 +63,7 @@ type CreateUserRequest struct {
 	FullName string      `json:"full_name"`
 	Password string      `json:"password"`
 	RoleIDs  []uuid.UUID `json:"role_ids,omitempty"`
+	TenantID *string     `json:"tenant_id,omitempty"`
 }
 
 type UpdateUserRequest struct {

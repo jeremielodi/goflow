@@ -18,7 +18,7 @@ export default function ProcessInstances() {
   const { data: instances = [], isLoading, refetch } = useQuery({
     queryKey: ['instances', keyFilter, statusFilter],
     queryFn: () => listInstances({
-      processDefinitionKey: keyFilter || undefined,
+      processKey: keyFilter || undefined,
       status: statusFilter || undefined,
       maxResults: 200,
     }),
@@ -109,9 +109,9 @@ export default function ProcessInstances() {
                     <span className="font-mono text-xs text-gray-500">{inst.id.slice(0, 8)}…</span>
                   </Td>
                   <Td>
-                    <span className="font-medium text-sm">{inst.processDefinitionKey}</span>
+                    <span className="font-medium text-sm">{inst.processKey}</span>
                   </Td>
-                  <Td><span className="text-xs">{formatDate(inst.startTime)}</span></Td>
+                  <Td><span className="text-xs">{formatDate(inst.startedAt)}</span></Td>
                   <Td><Badge value={inst.status} /></Td>
                   <Td>
                     <div className="flex items-center gap-1 justify-end" onClick={e => e.stopPropagation()}>

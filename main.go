@@ -128,6 +128,19 @@ func main() {
 	jwcService := authentication.NewJWTService(db, util.DotEnvVariable("goflow_secret_key"))
 	userController := api.NewUserController(db, jwcService)
 
+	// OIDC is entirely optional: NewOIDCService returns nil unless both
+	// OIDC_ISSUER and OIDC_JWKS_URL are configured, in which case
+	// CombinedAuthMiddleware accepts bearer tokens from that provider
+	// alongside (not instead of) the internal JWT/password login.
+	oidcService := authentication.NewOIDCService(
+		util.DotEnvVariable("OIDC_ISSUER"),
+		util.DotEnvVariable("OIDC_AUDIENCE"),
+		util.DotEnvVariable("OIDC_JWKS_URL"),
+	)
+	if oidcService != nil {
+		log.Println("✅ OIDC authentication enabled")
+	}
+
 	timerController := api.NewTimerController(db)
 	incidentCtrl := api.NewIncidentController(db)
 
@@ -190,7 +203,7 @@ func main() {
 	// AUTHENTICATION MIDDLEWARE
 	// ============================================================
 
-	app.Use(middleware.CombinedAuthMiddleware(db, jwcService, util))
+	app.Use(middleware.CombinedAuthMiddleware(db, jwcService, oidcService, util))
 
 	// ============================================================
 	// ROLE & ACTION ROUTES
@@ -341,9 +354,10 @@ func main() {
 	// AUDIT ROUTES
 	// ============================================================
 
-	app.Get("/audit/process/:processId", auditController.GetProcessAuditLogs)
-	app.Get("/audit/task/:taskId", auditController.GetTaskAuditLogs)
-	app.Post("/audit/date-range", auditController.GetAuditLogsByDateRange)
+	app.Get("/engine-rest/audit/process/:processId", auditController.GetProcessAuditLogs)
+	app.Get("/engine-rest/audit/process/:processId/token-history", auditController.GetTokenHistory)
+	app.Get("/engine-rest/audit/task/:taskId", auditController.GetTaskAuditLogs)
+	app.Post("/engine-rest/audit/date-range", auditController.GetAuditLogsByDateRange)
 
 	// ============================================================
 	// TIMER & MULTI-INSTANCE ROUTES

@@ -633,3 +633,31 @@ CREATE TABLE IF NOT EXISTS forms (
 
 CREATE INDEX IF NOT EXISTS idx_forms_form_id
 ON forms(form_id);
+
+-- =========================================================
+-- MULTI-TENANCY
+-- Each user belongs to at most one tenant (NULL = superuser /
+-- untenanted, sees everything — matches existing superuser semantics).
+-- Process instances are stamped with their process definition's tenant
+-- at creation time, so list/search/get endpoints can filter by the
+-- caller's tenant without a join.
+-- =========================================================
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS tenant_id TEXT NULL;
+
+ALTER TABLE process_instances
+  ADD COLUMN IF NOT EXISTS tenant_id TEXT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_process_instances_tenant_id ON process_instances(tenant_id);
+
+-- =========================================================
+-- OIDC IDENTITY
+-- Lets a user authenticate via an external OIDC provider (Keycloak,
+-- Auth0, etc.) instead of (or in addition to) a local password. The
+-- local password_hash stays usable as a standalone fallback.
+-- =========================================================
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS oidc_subject TEXT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject IS NOT NULL;

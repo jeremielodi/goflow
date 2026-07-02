@@ -5,8 +5,7 @@ import { login as apiLogin, logout as apiLogout, getMe } from '../api/auth';
 interface AuthUser {
   id: string;
   email: string;
-  firstName?: string;
-  lastName?: string;
+  full_name?: string;
 }
 
 interface AuthContextValue {
@@ -29,7 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     getMe()
-      .then(setUser)
+      .then(res => setUser(res.user))
       .catch(() => {
         localStorage.removeItem('accessToken');
         localStorage.removeItem('refreshToken');

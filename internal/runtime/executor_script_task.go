@@ -7,6 +7,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // executeScriptTask runs the script, updates variables, advances to the next node.
@@ -55,6 +56,7 @@ func (r *Runtime) executeScriptTask(ctx context.Context, engineRepo *repository.
 	if err := tx.Commit(); err != nil {
 		return "", err
 	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, variables))
 
 	return next, nil
 }

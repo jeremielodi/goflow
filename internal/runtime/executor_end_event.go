@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution) error {
@@ -25,6 +26,9 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
+	service.LogAuditErr("execution completed", r.auditService.LogExecutionCompleted(exec.ID, exec.ProcessInstanceID, exec.CurrentElementID))
+	finalVars, _ := engineRepo.GetProcessVariables(exec.ProcessInstanceID)
+	service.LogAuditErr("process completed", r.auditService.LogProcessCompleted(exec.ProcessInstanceID, finalVars))
 
 	// Check if this is a call-activity child: if so, resume the parent execution.
 	var parentInstanceID, parentExecutionID *uuid.UUID
@@ -69,6 +73,7 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	if err != nil {
 		return fmt.Errorf("callActivity end: reactivate parent: %w", err)
 	}
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(*parentExecutionID, *parentInstanceID, parentExec.CurrentElementID, nextNodeID, nil))
 
 	// Resume parent
 	return ResumeExecution(r.DB, *parentExecutionID, r.dispatcher)

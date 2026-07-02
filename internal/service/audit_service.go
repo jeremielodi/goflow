@@ -3,6 +3,7 @@ package service
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -121,11 +122,15 @@ func (s *AuditService) LogTaskCreated(taskID, processInstanceID uuid.UUID, taskN
 	return s.auditRepo.CreateAuditLog(log)
 }
 
-// LogTaskClaimed logs when a user claims a task
-func (s *AuditService) LogTaskClaimed(taskID, processInstanceID uuid.UUID, userID uuid.UUID) error {
+// LogTaskClaimed logs when a task is claimed. The claimant is recorded as a
+// free-text assignee (not a users.id FK): task assignees in this engine are
+// often BPMN-expression-derived strings ("${customer}") rather than
+// registered platform users, so this can't require a uuid.UUID like most
+// other audit methods do.
+func (s *AuditService) LogTaskClaimed(taskID, processInstanceID uuid.UUID, assignee string) error {
 	newData, _ := json.Marshal(map[string]interface{}{
 		"taskId":    taskID,
-		"claimedBy": userID,
+		"claimedBy": assignee,
 		"claimedAt": time.Now(),
 	})
 
@@ -133,7 +138,6 @@ func (s *AuditService) LogTaskClaimed(taskID, processInstanceID uuid.UUID, userI
 		ID:                uuid.New(),
 		ProcessInstanceID: &processInstanceID,
 		TaskID:            &taskID,
-		UserID:            &userID,
 		Action:            models.ActionTaskClaimed,
 		NewData:           newData,
 		CreatedAt:         time.Now(),
@@ -276,4 +280,282 @@ func (s *AuditService) LogJobCreated(processInstanceID uuid.UUID, jobID uuid.UUI
 	}
 
 	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogExecutionCompleted logs when an execution (token) reaches an end event
+func (s *AuditService) LogExecutionCompleted(executionID, processInstanceID uuid.UUID, nodeID string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"executionId": executionID,
+		"nodeId":      nodeID,
+		"completedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionExecutionCompleted,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogExecutionWaited logs when an execution parks at a catch event (timer/message/signal)
+func (s *AuditService) LogExecutionWaited(executionID, processInstanceID uuid.UUID, nodeID, waitType string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"executionId": executionID,
+		"nodeId":      nodeID,
+		"waitType":    waitType,
+		"waitingAt":   time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionExecutionWaited,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogTaskUnclaimed logs when a user unclaims a task
+func (s *AuditService) LogTaskUnclaimed(taskID, processInstanceID uuid.UUID) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"taskId":      taskID,
+		"unclaimedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		TaskID:            &taskID,
+		Action:            models.ActionTaskUnclaimed,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogTaskCancelled logs when an open task is cancelled (e.g. a Move Token
+// modification cancels the execution it was attached to)
+func (s *AuditService) LogTaskCancelled(taskID, processInstanceID uuid.UUID, reason string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"taskId":      taskID,
+		"reason":      reason,
+		"cancelledAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		TaskID:            &taskID,
+		Action:            models.ActionTaskCancelled,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogJobLocked logs when a worker locks a job via fetch-and-lock
+func (s *AuditService) LogJobLocked(jobID, processInstanceID uuid.UUID, lockOwner string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"jobId":     jobID,
+		"lockOwner": lockOwner,
+		"lockedAt":  time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionJobLocked,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogJobCompleted logs when a worker completes a job
+func (s *AuditService) LogJobCompleted(jobID, processInstanceID uuid.UUID, result map[string]interface{}) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"jobId":       jobID,
+		"result":      result,
+		"completedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionJobCompleted,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogJobFailed logs when a job fails, whether it will be retried or has
+// permanently failed (retriesLeft distinguishes the two).
+func (s *AuditService) LogJobFailed(jobID, processInstanceID uuid.UUID, errorMessage string, retriesLeft int) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"jobId":        jobID,
+		"errorMessage": errorMessage,
+		"retriesLeft":  retriesLeft,
+		"failedAt":     time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionJobFailed,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogVariablesMerged logs when variables from a task/job/gateway/message/
+// signal are merged into the process instance's variable set.
+func (s *AuditService) LogVariablesMerged(processInstanceID uuid.UUID, merged map[string]interface{}, source string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"merged":    merged,
+		"source":    source,
+		"mergedAt":  time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionVariablesMerged,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogTimerCancelled logs when a scheduled timer is cancelled (e.g. a boundary
+// timer's main task completes first, so the race is cancelled)
+func (s *AuditService) LogTimerCancelled(processInstanceID uuid.UUID, executionID *uuid.UUID) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"executionId": executionID,
+		"cancelledAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionTimerCancelled,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogMessageCorrelated logs when a published message correlates to a waiting execution
+func (s *AuditService) LogMessageCorrelated(processInstanceID uuid.UUID, messageName string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"messageName":   messageName,
+		"correlatedAt":  time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionMessageCorrelated,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogSignalBroadcast logs when a signal is broadcast, resuming zero or more
+// waiting executions across possibly multiple process instances. Not tied to
+// a single process instance, so ProcessInstanceID is left nil.
+func (s *AuditService) LogSignalBroadcast(signalName string, resumedCount int) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"signalName":   signalName,
+		"resumedCount": resumedCount,
+		"broadcastAt":  time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:        uuid.New(),
+		Action:    models.ActionSignalBroadcast,
+		NewData:   newData,
+		CreatedAt: time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogProcessTerminated logs when a process instance is terminated (e.g. by an operator)
+func (s *AuditService) LogProcessTerminated(processInstanceID uuid.UUID, reason string) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"reason":       reason,
+		"terminatedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionProcessTerminated,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogProcessSuspended logs when a process instance is suspended
+func (s *AuditService) LogProcessSuspended(processInstanceID uuid.UUID) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"suspendedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionProcessSuspended,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogProcessResumed logs when a suspended process instance is resumed
+func (s *AuditService) LogProcessResumed(processInstanceID uuid.UUID) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"resumedAt": time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		Action:            models.ActionProcessResumed,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLog(log)
+}
+
+// LogAuditErr is a small helper for the "best-effort, non-blocking" audit
+// convention used throughout the engine: a failed audit write must never
+// fail the business operation it describes, but it also shouldn't disappear
+// silently — log it so a broken audit trail is at least visible in server
+// logs. Callers use it as: LogAuditErr("execution moved", s.LogExecutionMoved(...)).
+func LogAuditErr(action string, err error) {
+	if err != nil {
+		log.Printf("audit: failed to log %s: %v", action, err)
+	}
 }

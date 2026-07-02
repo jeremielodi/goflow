@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -14,6 +15,7 @@ type JobController struct {
 	db               *sqlx.DB
 	dispatcher       *events.TaskEventDispatcher
 	externalTaskRepo *repository.ExternalTaskRepository
+	auditService     *service.AuditService
 }
 
 func NewJobController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *JobController {
@@ -21,6 +23,7 @@ func NewJobController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *JobC
 		db:               db,
 		dispatcher:       dispatcher,
 		externalTaskRepo: repository.NewExternalTaskRepository(db),
+		auditService:     service.NewAuditService(db),
 	}
 }
 
@@ -78,6 +81,11 @@ func (jc *JobController) ActivateJobs(c *fiber.Ctx) error {
 
 	if err := tx.Commit(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
+	}
+	for _, topicJob := range topicJobs {
+		for _, job := range topicJob.Jobs {
+			service.LogAuditErr("job locked", jc.auditService.LogJobLocked(job.ID, job.ProcessInstanceID, req.Worker))
+		}
 	}
 
 	engineRepo := repository.NewEngineRepository(jc.db, jc.dispatcher)

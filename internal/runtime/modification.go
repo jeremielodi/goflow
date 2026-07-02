@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 )
 
 // MoveInstruction moves a running token from one BPMN element to another
@@ -62,9 +63,11 @@ func (r *Runtime) ModifyInstance(ctx context.Context, instanceID uuid.UUID, move
 			// Cancel any open task/job still attached to the cancelled
 			// execution so nothing dangling remains reachable once the
 			// token has moved elsewhere.
-			if _, err := tx.Exec(`
+			var cancelledTaskIDs []uuid.UUID
+			if err := tx.Select(&cancelledTaskIDs, `
 				UPDATE public.tasks SET status = 'cancelled', updated_at = NOW()
 				WHERE execution_id = $1 AND status IN ('created', 'claimed')
+				RETURNING id
 			`, exec.ID); err != nil {
 				tx.Rollback()
 				return newExecutionIDs, fmt.Errorf("failed to cancel open task: %w", err)
@@ -85,6 +88,11 @@ func (r *Runtime) ModifyInstance(ctx context.Context, instanceID uuid.UUID, move
 			if err := tx.Commit(); err != nil {
 				return newExecutionIDs, fmt.Errorf("failed to commit modification: %w", err)
 			}
+
+			for _, taskID := range cancelledTaskIDs {
+				service.LogAuditErr("task cancelled", r.auditService.LogTaskCancelled(taskID, instanceID, "process instance modification (move token)"))
+			}
+			service.LogAuditErr("execution created", r.auditService.LogExecutionCreated(newExecID, instanceID, nil, move.TargetElementID))
 
 			newExecutionIDs = append(newExecutionIDs, newExecID)
 		}

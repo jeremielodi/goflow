@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_TenantProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A minimal process deployed independently by two different
+              tenants under the SAME process key ("TenantProcess") — used
+              to verify that instance/definition list & search endpoints
+              never leak across tenants, even when both tenants happen to
+              share a process key (definition versions aren't tenant-
+              partitioned; only which version resolves as "latest" is
+              ambiguous — the running INSTANCE's tenant is always the
+              caller's own tenant, which is what isolation actually relies on).
+  -->
+
+  <bpmn:process id="TenantProcess" name="Tenant Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Started">
+      <bpmn:outgoing>Flow_Start_Task</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="reviewTask" name="Review">
+      <bpmn:incoming>Flow_Start_Task</bpmn:incoming>
+      <bpmn:outgoing>Flow_Task_End</bpmn:outgoing>
+    </bpmn:userTask>
+
+    <bpmn:endEvent id="end" name="Done">
+      <bpmn:incoming>Flow_Task_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Task" sourceRef="start" targetRef="reviewTask" />
+    <bpmn:sequenceFlow id="Flow_Task_End" sourceRef="reviewTask" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TenantProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_TenantProcess" bpmnElement="TenantProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="reviewTask_di" bpmnElement="reviewTask">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="400" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Task_di" bpmnElement="Flow_Start_Task">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Task_End_di" bpmnElement="Flow_Task_End">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

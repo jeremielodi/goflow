@@ -11,6 +11,7 @@ export default defineConfig({
       '/auth':        { target: 'http://localhost:8080', changeOrigin: true },
       '/users':       { target: 'http://localhost:8080', changeOrigin: true },
       '/events':      { target: 'http://localhost:8080', changeOrigin: true },
+      '/v2':          { target: 'http://localhost:8080', changeOrigin: true },
       '/ws':          { target: 'ws://localhost:8080',   changeOrigin: true, ws: true },
     },
   },
