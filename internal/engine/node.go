@@ -9,6 +9,7 @@ const (
 	TaskType                   NodeType = "task"
 	UserTaskType               NodeType = "userTask"
 	ScriptTaskType             NodeType = "scriptTask"
+	BusinessRuleTaskType       NodeType = "businessRuleTask"
 	ServiceTaskType            NodeType = "serviceTask"
 	ExclusiveGatewayType       NodeType = "exclusiveGateway"
 	ParallelGatewayType        NodeType = "parallelGateway"
@@ -77,6 +78,10 @@ type Node struct {
 	TaskHeaders    map[string]string `json:"taskHeaders,omitempty"`
 	InputMappings  []IOMapping       `json:"inputMappings,omitempty"`
 	OutputMappings []IOMapping       `json:"outputMappings,omitempty"`
+
+	// Business Rule Task support (zeebe:calledDecision)
+	DecisionKey    string `json:"decisionKey,omitempty"`
+	ResultVariable string `json:"resultVariable,omitempty"`
 }
 
 // IOMapping is a zeebe:ioMapping input or output entry. Source is a FEEL

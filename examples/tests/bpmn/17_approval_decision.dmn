@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Definitions_ApprovalDecision" name="Approval Decision Definitions">
+
+  <!--
+    SOURCE: https://camunda.com/bpmn/reference/ — DMN decision table example
+    SCENARIO: Approve an order based on its amount and customer tier, with a
+              discount that scales down as the amount grows.
+  -->
+
+  <decision id="approvalDecision" name="Approval Decision">
+    <decisionTable id="DecisionTable_1" hitPolicy="UNIQUE">
+      <input id="Input_1" label="Amount">
+        <inputExpression id="InputExpression_1" typeRef="number"><text>amount</text></inputExpression>
+      </input>
+      <input id="Input_2" label="Tier">
+        <inputExpression id="InputExpression_2" typeRef="string"><text>tier</text></inputExpression>
+      </input>
+      <output id="Output_1" label="Approved" name="approved" typeRef="boolean" />
+      <output id="Output_2" label="Discount" name="discount" typeRef="number" />
+      <rule id="Rule_1">
+        <inputEntry id="Entry_1"><text>&lt; 1000</text></inputEntry>
+        <inputEntry id="Entry_2"><text>"gold","platinum"</text></inputEntry>
+        <outputEntry id="Entry_3"><text>true</text></outputEntry>
+        <outputEntry id="Entry_4"><text>0.1</text></outputEntry>
+      </rule>
+      <rule id="Rule_2">
+        <inputEntry id="Entry_5"><text>[1000..5000]</text></inputEntry>
+        <inputEntry id="Entry_6"><text>-</text></inputEntry>
+        <outputEntry id="Entry_7"><text>true</text></outputEntry>
+        <outputEntry id="Entry_8"><text>0.05</text></outputEntry>
+      </rule>
+      <rule id="Rule_3">
+        <inputEntry id="Entry_9"><text>&gt; 5000</text></inputEntry>
+        <inputEntry id="Entry_10"><text>-</text></inputEntry>
+        <outputEntry id="Entry_11"><text>false</text></outputEntry>
+        <outputEntry id="Entry_12"><text>0</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+</definitions>

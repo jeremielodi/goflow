@@ -48,3 +48,25 @@ type ProcessDefinitionCreateModel struct {
 	ParsedGraph  json.RawMessage
 	EngineType   string
 }
+
+// DMNDecision model
+type DMNDecision struct {
+	ID           uuid.UUID       `db:"id"            json:"id"`
+	DeploymentID uuid.UUID       `db:"deployment_id" json:"deploymentId"`
+	DecisionKey  string          `db:"decision_key"  json:"key"`
+	DecisionName *string         `db:"decision_name" json:"name,omitempty"`
+	Version      int             `db:"version"       json:"version"`
+	IsActive     bool            `db:"is_active"      json:"isActive"`
+	DmnXML       string          `db:"dmn_xml"        json:"dmnXml,omitempty"`
+	ParsedTable  json.RawMessage `db:"parsed_table"   json:"-"`
+	CreatedAt    time.Time       `db:"created_at"     json:"createdAt"`
+}
+
+// DMNDecisionCreateModel for INSERT
+type DMNDecisionCreateModel struct {
+	DeploymentID uuid.UUID
+	DecisionKey  string
+	DecisionName *string
+	DmnXML       string
+	ParsedTable  json.RawMessage
+}

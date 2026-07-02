@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_DmnProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A Business Rule Task calls the "approvalDecision" DMN table
+              (deployed alongside this BPMN file) to approve an order and
+              compute a discount, storing the full result under
+              "approvalResult".
+  -->
+
+  <bpmn:process id="DMNProcess" name="DMN Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Order Submitted">
+      <bpmn:outgoing>Flow_Start_Evaluate</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:businessRuleTask id="evaluateApproval" name="Evaluate Approval">
+      <bpmn:extensionElements>
+        <zeebe:calledDecision decisionId="approvalDecision" resultVariable="approvalResult" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_Evaluate</bpmn:incoming>
+      <bpmn:outgoing>Flow_Evaluate_End</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+
+    <bpmn:endEvent id="end" name="Decision Recorded">
+      <bpmn:incoming>Flow_Evaluate_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Evaluate" sourceRef="start" targetRef="evaluateApproval" />
+    <bpmn:sequenceFlow id="Flow_Evaluate_End" sourceRef="evaluateApproval" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_DmnProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_DmnProcess" bpmnElement="DMNProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="evaluateApproval_di" bpmnElement="evaluateApproval">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="400" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Evaluate_di" bpmnElement="Flow_Start_Evaluate">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Evaluate_End_di" bpmnElement="Flow_Evaluate_End">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

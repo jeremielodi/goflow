@@ -487,6 +487,14 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			currentID = next
 			continue
 
+		case engine.BusinessRuleTaskType:
+			next, err := r.executeBusinessRuleTask(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
+			continue
+
 		case engine.BoundaryTimerEventType:
 			next, err := r.executeBoundaryTimerNode(ctx, engineRepo, exec, node)
 			if err != nil {

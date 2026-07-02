@@ -104,6 +104,7 @@ async function main() {
     '14_task_listener.test.ts',
     '15_v2_api.test.ts',
     '16_zeebe_extensions.test.ts',
+    '17_dmn.test.ts',
   ];
 
   const exitCodes: number[] = [];

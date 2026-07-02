@@ -166,6 +166,23 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
     }
     register(node)
 }
+
+	// ---- Business Rule Tasks (zeebe:calledDecision) ----
+	for _, t := range process.BusinessRuleTasks {
+		node := &Node{
+			ID:   t.ID,
+			Name: t.Name,
+			Type: BusinessRuleTaskType,
+		}
+		if t.Ext != nil {
+			if cd := t.Ext.ZeebeCalledDecision; cd != nil {
+				node.DecisionKey = cd.DecisionId
+				node.ResultVariable = cd.ResultVariable
+			}
+			applyIoMapping(node, t.Ext.ZeebeIoMapping)
+		}
+		register(node)
+	}
 	// ---- End Events ----
 	for _, e := range process.EndEvents {
 		register(&Node{

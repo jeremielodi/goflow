@@ -26,6 +26,7 @@ type Process struct {
 	IntermediateCatchEvents []IntermediateCatchEvent `xml:"intermediateCatchEvent"`
 	SequenceFlows           []SequenceFlow           `xml:"sequenceFlow"`
 	ScriptTasks             []ScriptTask             `xml:"scriptTask"`
+	BusinessRuleTasks       []BusinessRuleTask       `xml:"businessRuleTask"`
 	CallActivities          []CallActivity           `xml:"callActivity"`
 	EventBasedGateways      []EventBasedGateway      `xml:"eventBasedGateway"`
 	IntermediateTimerEvents  []IntermediateTimerEvent
@@ -222,12 +223,18 @@ type ZeebeIoMapping struct {
 	Outputs []ZeebeIOEntry `xml:"output"`
 }
 
+type ZeebeCalledDecision struct {
+	DecisionId     string `xml:"decisionId,attr"`
+	ResultVariable string `xml:"resultVariable,attr"`
+}
+
 type ExtensionElements struct {
 	ZeebeTaskDefinition       *ZeebeTaskDefinition       `xml:"taskDefinition"`
 	ZeebeAssignmentDefinition *ZeebeAssignmentDefinition `xml:"assignmentDefinition"`
 	ZeebeFormDefinition       *ZeebeFormDefinition       `xml:"formDefinition"`
 	ZeebeTaskHeaders          *ZeebeTaskHeaders          `xml:"taskHeaders"`
 	ZeebeIoMapping            *ZeebeIoMapping            `xml:"ioMapping"`
+	ZeebeCalledDecision       *ZeebeCalledDecision       `xml:"calledDecision"`
 }
 
 type UserTask struct {
@@ -254,6 +261,15 @@ type ServiceTask struct {
 	CamundaTopic string `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`
 
 	MultiInstance *MultiInstanceLoopCharacteristics `xml:"multiInstanceLoopCharacteristics"`
+}
+
+type BusinessRuleTask struct {
+	ID       string   `xml:"id,attr"`
+	Name     string   `xml:"name,attr"`
+	Incoming []string `xml:"incoming"`
+	Outgoing []string `xml:"outgoing"`
+
+	Ext *ExtensionElements `xml:"extensionElements"`
 }
 
 type ScriptTask struct {

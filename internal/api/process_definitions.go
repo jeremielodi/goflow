@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/dmn"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
@@ -102,34 +104,17 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		})
 	}
 
-	fh := fileHeaders[0]
-	file, err := fh.Open()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to open file"})
-	}
-	defer file.Close()
-
-	bpmnBytes, err := io.ReadAll(file)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to read file"})
-	}
-
 	// ------------------------------------------------------------
 	// 3. Extract deployment metadata
 	// ------------------------------------------------------------
 	deploymentName := c.FormValue("deployment-name")
 	if deploymentName == "" {
-		deploymentName = fh.Filename
+		deploymentName = fileHeaders[0].Filename
 	}
 	tenantID := c.FormValue("tenant-id") // optional
 
 	// ------------------------------------------------------------
-	// 4. Detect engine type (Camunda 7 / Camunda 8)
-	// ------------------------------------------------------------
-	engineType := parser.DetectEngine(bpmnBytes)
-
-	// ------------------------------------------------------------
-	// 5. Create deployment record in DB
+	// 4. Create deployment record in DB
 	// ------------------------------------------------------------
 	deploymentRepo := repository.NewProcessRepository(processDef.db)
 	_, err = deploymentRepo.CreateDeployment(models.DeploymentCreateModel{
@@ -152,15 +137,9 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 	}
 
 	// ------------------------------------------------------------
-	// 6. Extract all process keys from the BPMN file
-	// ------------------------------------------------------------
-	processKeys, err := extractProcessKeys(bpmnBytes)
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// ------------------------------------------------------------
-	// 7. Store each process definition
+	// 5. Process every uploaded resource — .bpmn files become process
+	//    definitions, .dmn files become decisions (both can be deployed
+	//    together in one request, as Camunda 8 allows).
 	// ------------------------------------------------------------
 	type ProcessDefInfo struct {
 		ID           string `json:"id"`
@@ -168,60 +147,120 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		Version      int    `json:"version"`
 		ResourceName string `json:"resourceName"`
 	}
+	type DecisionInfo struct {
+		ID           string `json:"id"`
+		Key          string `json:"key"`
+		Version      int    `json:"version"`
+		ResourceName string `json:"resourceName"`
+	}
 	deployedProcesses := make(map[string]ProcessDefInfo)
+	deployedDecisions := make(map[string]DecisionInfo)
+	dmnRepo := repository.NewDMNRepository(processDef.db)
 
-	for _, procKey := range processKeys {
-		// Build graph for this specific process
-		graph, err := engine.BuildGraphForProcess(bpmnBytes, procKey)
+	for _, fh := range fileHeaders {
+		file, err := fh.Open()
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"error": fmt.Sprintf("failed to build graph for process %s: %v", procKey, err),
-			})
+			return c.Status(500).JSON(fiber.Map{"error": "failed to open file " + fh.Filename})
+		}
+		fileBytes, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to read file " + fh.Filename})
 		}
 
-		graphJSON, err := json.Marshal(graph)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"error": fmt.Sprintf("failed to marshal graph for %s", procKey),
-			})
+		if strings.HasSuffix(strings.ToLower(fh.Filename), ".dmn") {
+			defs, err := dmn.ParseDMN(fileBytes)
+			if err != nil {
+				return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("failed to parse DMN %s: %v", fh.Filename, err)})
+			}
+			for _, decision := range defs.Decisions {
+				if decision.DecisionTable == nil {
+					continue
+				}
+				decisionJSON, err := json.Marshal(decision)
+				if err != nil {
+					return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("failed to marshal decision %s", decision.ID)})
+				}
+				decisionID, version, err := dmnRepo.CreateDecision(models.DMNDecisionCreateModel{
+					DeploymentID: deploy.ID,
+					DecisionKey:  decision.ID,
+					DecisionName: &decision.Name,
+					DmnXML:       string(fileBytes),
+					ParsedTable:  decisionJSON,
+				})
+				if err != nil {
+					return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("failed to store decision %s: %v", decision.ID, err)})
+				}
+				deployedDecisions[decision.ID] = DecisionInfo{
+					ID:           decisionID.String(),
+					Key:          decision.ID,
+					Version:      version,
+					ResourceName: fh.Filename,
+				}
+			}
+			continue
 		}
 
-		resourceName := fmt.Sprintf("%s.bpmn", procKey)
+		// ---- BPMN resource ----
+		bpmnBytes := fileBytes
+		engineType := parser.DetectEngine(bpmnBytes)
 
-		defID, version, err := deploymentRepo.CreateProcessDefinition(
-			models.ProcessDefinitionCreateModel{
-				DeploymentID: deploy.ID,
-				ProcessKey:   procKey,
-				ProcessName:  &procKey,
-				IsActive:     true,
-				BpmnXML:      string(bpmnBytes),
-				ParsedGraph:  graphJSON,
-				TenantID:     &tenantID,
-				EngineType:   string(engineType),
-			},
-		)
+		processKeys, err := extractProcessKeys(bpmnBytes)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{
-				"error": fmt.Sprintf("failed to store definition %s: %v", procKey, err),
-			})
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		deployedProcesses[procKey] = ProcessDefInfo{
-			ID:           defID,
-			Key:          procKey,
-			Version:      version,
-			ResourceName: resourceName,
+		for _, procKey := range processKeys {
+			graph, err := engine.BuildGraphForProcess(bpmnBytes, procKey)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"error": fmt.Sprintf("failed to build graph for process %s: %v", procKey, err),
+				})
+			}
+
+			graphJSON, err := json.Marshal(graph)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"error": fmt.Sprintf("failed to marshal graph for %s", procKey),
+				})
+			}
+
+			defID, version, err := deploymentRepo.CreateProcessDefinition(
+				models.ProcessDefinitionCreateModel{
+					DeploymentID: deploy.ID,
+					ProcessKey:   procKey,
+					ProcessName:  &procKey,
+					IsActive:     true,
+					BpmnXML:      string(bpmnBytes),
+					ParsedGraph:  graphJSON,
+					TenantID:     &tenantID,
+					EngineType:   string(engineType),
+				},
+			)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"error": fmt.Sprintf("failed to store definition %s: %v", procKey, err),
+				})
+			}
+
+			deployedProcesses[procKey] = ProcessDefInfo{
+				ID:           defID,
+				Key:          procKey,
+				Version:      version,
+				ResourceName: fmt.Sprintf("%s.bpmn", procKey),
+			}
 		}
 	}
 
 	// ------------------------------------------------------------
-	// 8. Return Camunda‑style response
+	// 6. Return Camunda‑style response
 	// ------------------------------------------------------------
 	return c.Status(200).JSON(fiber.Map{
 		"id":                         deploy.ID,
 		"name":                       deploymentName,
 		"deployedAt":                 time.Now().Format(time.RFC3339),
 		"deployedProcessDefinitions": deployedProcesses,
+		"deployedDecisions":          deployedDecisions,
 	})
 }
 

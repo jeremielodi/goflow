@@ -143,6 +143,7 @@ func main() {
 	v2UserTaskCtrl := apiv2.NewUserTaskController(db, taskEventDispatcher)
 	v2MessageCtrl := apiv2.NewMessageController(messageCtrl)
 	v2SignalCtrl := apiv2.NewSignalController(signalCtrl)
+	v2DecisionCtrl := apiv2.NewDecisionController(db)
 
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
 	go timerScheduler.Start(context.Background())
@@ -324,6 +325,7 @@ func main() {
 
 	app.Post("/v2/messages/publication", v2MessageCtrl.PublishMessage)
 	app.Post("/v2/signals/broadcast", v2SignalCtrl.BroadcastSignal)
+	app.Post("/v2/decisions/:key/evaluation", v2DecisionCtrl.EvaluateDecision)
 
 	// ============================================================
 	// AUDIT ROUTES

@@ -577,3 +577,30 @@ ALTER TABLE process_instances
 ALTER TABLE event_subscriptions
   ADD COLUMN IF NOT EXISTS target_element_id TEXT NULL;
 -- Stores the BPMN node to advance to when this subscription fires (EBG routing)
+
+-- =========================================================
+-- DMN DECISIONS
+-- Stores parsed DMN decision tables, deployed alongside BPMN
+-- resources and evaluated by Business Rule Tasks (zeebe:calledDecision)
+-- or directly via POST /v2/decisions/:key/evaluation.
+-- =========================================================
+CREATE TABLE IF NOT EXISTS dmn_decisions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    deployment_id UUID NOT NULL
+        REFERENCES deployments(id)
+        ON DELETE CASCADE,
+    decision_key TEXT NOT NULL, -- DMN <decision id="...">
+    decision_name TEXT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    dmn_xml TEXT NOT NULL,
+    parsed_table JSONB NULL, -- Parsed decision table cache (inputs/outputs/rules)
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(decision_key, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dmn_decisions_decision_key
+ON dmn_decisions(decision_key);
+
+CREATE INDEX IF NOT EXISTS idx_dmn_decisions_deployment_id
+ON dmn_decisions(deployment_id);
