@@ -155,7 +155,8 @@ func (r *ProcessInstanceRepository) UpsertVariables(instanceID uuid.UUID, variab
 func (r *ProcessInstanceRepository) FindAll(status, processKey string) ([]models.ProcessInstance, error) {
 	var instances []models.ProcessInstance
 	query := `
-		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at
+		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at,
+		       pd.process_key, pd.process_name, pd.version
 		FROM public.process_instances pi
 		LEFT JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
 		WHERE 1=1

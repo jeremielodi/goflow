@@ -1,15 +1,21 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jmoiron/sqlx"
 )
+
+// ErrNoMatchingSubscription is returned by Correlate when no execution is
+// currently waiting for the given message name (+ correlation key, if any).
+var ErrNoMatchingSubscription = errors.New("no process instance found waiting for this message")
 
 type MessageController struct {
 	db         *sqlx.DB
@@ -39,11 +45,30 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "messageName is required"})
 	}
 
+	processInstanceID, executionID, err := mc.Correlate(req.MessageName, req.CorrelationKeys, req.Variables)
+	if err != nil {
+		status := fiber.StatusInternalServerError
+		if errors.Is(err, ErrNoMatchingSubscription) {
+			status = fiber.StatusNotFound
+		}
+		return c.Status(status).JSON(fiber.Map{"message": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"processInstanceId": processInstanceID,
+		"executionId":       executionID,
+	})
+}
+
+// Correlate resumes the first execution waiting for messageName (optionally
+// scoped by a single correlation key) and merges variables into that process
+// instance. Shared by the Camunda 7 style handler above and the v2 API.
+func (mc *MessageController) Correlate(messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
 	subRepo := repository.NewEventSubscriptionRepository(mc.db)
 
 	// Determine correlation filtering
 	var corrVarName, corrVarValue string
-	for k, v := range req.CorrelationKeys {
+	for k, v := range correlationKeys {
 		corrVarName = k
 		if v != nil {
 			corrVarValue = asString(v)
@@ -51,15 +76,13 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 		break // use the first (and usually only) key
 	}
 
-	subs, err := subRepo.FindByMessageName(req.MessageName, corrVarName, corrVarValue)
+	subs, err := subRepo.FindByMessageName(messageName, corrVarName, corrVarValue)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+		return uuid.Nil, uuid.Nil, err
 	}
 
 	if len(subs) == 0 {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"message": "no process instance found waiting for message: " + req.MessageName,
-		})
+		return uuid.Nil, uuid.Nil, fmt.Errorf("%w: %s", ErrNoMatchingSubscription, messageName)
 	}
 
 	// Correlate to the first matching subscription (1:1 message correlation)
@@ -90,14 +113,14 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 	}
 
 	// Merge variables into the process instance
-	if len(req.Variables) > 0 {
+	if len(variables) > 0 {
 		engineRepo := repository.NewEngineRepository(mc.db, mc.dispatcher)
 		existing, _ := engineRepo.GetProcessVariables(sub.ProcessInstanceID)
 		merged := existing
 		if merged == nil {
 			merged = make(map[string]interface{})
 		}
-		for k, v := range req.Variables {
+		for k, v := range variables {
 			merged[k] = v
 		}
 		tx, err := mc.db.Beginx()
@@ -112,18 +135,15 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 
 	// Reactivate the execution and advance to target node
 	if err := repository.ResumeWaitingExecution(mc.db, sub.ExecutionID, targetElementID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+		return uuid.Nil, uuid.Nil, err
 	}
 
 	// Resume execution
 	if err := runtime.ResumeExecution(mc.db, sub.ExecutionID, mc.dispatcher); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
+		return uuid.Nil, uuid.Nil, err
 	}
 
-	return c.JSON(fiber.Map{
-		"processInstanceId": sub.ProcessInstanceID,
-		"executionId":       sub.ExecutionID,
-	})
+	return sub.ProcessInstanceID, sub.ExecutionID, nil
 }
 
 func asString(v interface{}) string {

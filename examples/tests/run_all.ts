@@ -102,6 +102,7 @@ async function main() {
     '12_event_based_gateway.test.ts',
     '13_call_activity.test.ts',
     '14_task_listener.test.ts',
+    '15_v2_api.test.ts',
   ];
 
   const exitCodes: number[] = [];

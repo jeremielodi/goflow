@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/api"
+	apiv2 "github.com/jeremielodi/goflow/internal/api/v2"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
@@ -135,6 +136,13 @@ func main() {
 	messageCtrl := api.NewMessageController(db, taskEventDispatcher)
 	signalCtrl := api.NewSignalController(db, taskEventDispatcher)
 	historyCtrl := api.NewHistoryController(db)
+
+	// Camunda 8 REST API ("/v2/...") — same engine, translated request/response shapes.
+	v2ProcessInstanceCtrl := apiv2.NewProcessInstanceController(db, taskEventDispatcher)
+	v2JobCtrl := apiv2.NewJobController(db, taskEventDispatcher)
+	v2UserTaskCtrl := apiv2.NewUserTaskController(db, taskEventDispatcher)
+	v2MessageCtrl := apiv2.NewMessageController(messageCtrl)
+	v2SignalCtrl := apiv2.NewSignalController(signalCtrl)
 
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
 	go timerScheduler.Start(context.Background())
@@ -293,6 +301,29 @@ func main() {
 
 	app.Post("/engine-rest/message", messageCtrl.CorrelateMessage)
 	app.Post("/engine-rest/signal", signalCtrl.BroadcastSignal)
+
+	// ============================================================
+	// CAMUNDA 8 REST API ("/v2/...")
+	// ============================================================
+
+	app.Post("/v2/resources/deployments", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+
+	app.Post("/v2/process-instances", v2ProcessInstanceCtrl.CreateProcessInstance)
+	app.Get("/v2/process-instances/:id", v2ProcessInstanceCtrl.GetProcessInstance)
+	app.Post("/v2/process-instances/search", v2ProcessInstanceCtrl.SearchProcessInstances)
+
+	app.Post("/v2/jobs/activation", permissions(db, "CAN_READ_JOBS"), v2JobCtrl.ActivateJobs)
+	app.Post("/v2/jobs/:id/completion", externalTaskCtrl.CompleteTask)
+	app.Post("/v2/jobs/:id/failure", externalTaskCtrl.HandleFailure)
+	app.Post("/v2/jobs/:id/error", externalTaskCtrl.HandleFailure)
+
+	app.Post("/v2/user-tasks/:id/completion", processInstanceCtrl.CompleteTask)
+	app.Post("/v2/user-tasks/:id/assignment", taskCtrl.Claim)
+	app.Delete("/v2/user-tasks/:id/assignee", taskCtrl.UnClaim)
+	app.Post("/v2/user-tasks/search", permissions(db, "CAN_READ_TASKS"), v2UserTaskCtrl.SearchUserTasks)
+
+	app.Post("/v2/messages/publication", v2MessageCtrl.PublishMessage)
+	app.Post("/v2/signals/broadcast", v2SignalCtrl.BroadcastSignal)
 
 	// ============================================================
 	// AUDIT ROUTES

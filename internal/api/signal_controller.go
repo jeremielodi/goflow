@@ -35,19 +35,35 @@ func (sc *SignalController) BroadcastSignal(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "name is required"})
 	}
 
-	subRepo := repository.NewEventSubscriptionRepository(sc.db)
-	subs, err := subRepo.FindBySignalName(req.Name)
+	resumed, errs, err := sc.Broadcast(req.Name, req.Variables)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
+	return c.JSON(fiber.Map{
+		"signalName": req.Name,
+		"count":      resumed,
+		"errors":     errs,
+	})
+}
+
+// Broadcast resumes every execution waiting for the given signal name,
+// merging variables into each resumed process instance. Shared by the
+// Camunda 7 style handler above and the v2 API.
+func (sc *SignalController) Broadcast(name string, variables map[string]interface{}) (int, []string, error) {
+	subRepo := repository.NewEventSubscriptionRepository(sc.db)
+	subs, err := subRepo.FindBySignalName(name)
+	if err != nil {
+		return 0, nil, err
+	}
+
 	if len(subs) == 0 {
-		return c.JSON(fiber.Map{"count": 0, "message": "no subscribers found for signal: " + req.Name})
+		return 0, nil, nil
 	}
 
 	engineRepo := repository.NewEngineRepository(sc.db, sc.dispatcher)
 
-	var errors []string
+	var errs []string
 	resumed := 0
 
 	for _, sub := range subs {
@@ -70,13 +86,13 @@ func (sc *SignalController) BroadcastSignal(c *fiber.Ctx) error {
 		}
 
 		// Merge variables
-		if len(req.Variables) > 0 {
+		if len(variables) > 0 {
 			existing, _ := engineRepo.GetProcessVariables(sub.ProcessInstanceID)
 			merged := existing
 			if merged == nil {
 				merged = make(map[string]interface{})
 			}
-			for k, v := range req.Variables {
+			for k, v := range variables {
 				merged[k] = v
 			}
 			tx, err := sc.db.Beginx()
@@ -89,19 +105,15 @@ func (sc *SignalController) BroadcastSignal(c *fiber.Ctx) error {
 		subRepo.Consume(sub.ID)
 
 		if err := repository.ResumeWaitingExecution(sc.db, sub.ExecutionID, targetElementID); err != nil {
-			errors = append(errors, fmt.Sprintf("exec %s: %v", sub.ExecutionID, err))
+			errs = append(errs, fmt.Sprintf("exec %s: %v", sub.ExecutionID, err))
 			continue
 		}
 		if err := runtime.ResumeExecution(sc.db, sub.ExecutionID, sc.dispatcher); err != nil {
-			errors = append(errors, fmt.Sprintf("resume %s: %v", sub.ExecutionID, err))
+			errs = append(errs, fmt.Sprintf("resume %s: %v", sub.ExecutionID, err))
 			continue
 		}
 		resumed++
 	}
 
-	return c.JSON(fiber.Map{
-		"signalName": req.Name,
-		"count":      resumed,
-		"errors":     errors,
-	})
+	return resumed, errs, nil
 }
