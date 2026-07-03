@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
@@ -59,7 +60,12 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	repository.NotifyJobAvailable(*node.JobType)
+	if err := repository.NotifyJobAvailable(r.DB, *node.JobType); err != nil {
+		// Best-effort: the job row is already committed and fetchable via
+		// the normal poll, so a failed wake-up notify only costs latency,
+		// not correctness.
+		log.Printf("failed to notify job available for type %s: %v", *node.JobType, err)
+	}
 	r.auditService.LogJobCreated(exec.ProcessInstanceID, jobID, *node.JobType)
 	return nil
 }

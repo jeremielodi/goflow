@@ -15,6 +15,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
+	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/internal/worker"
@@ -48,6 +49,15 @@ func main() {
 	db, err := database.NewPostgres(util)
 	if err != nil {
 		log.Fatalln("Postgres: ", err)
+	}
+
+	// Cross-instance job wake-ups: a dedicated LISTEN connection means a job
+	// created on one GoFlow instance wakes gRPC ActivateJobs long-polls on
+	// every instance sharing this database, not just the one that created
+	// it — required for the app tier to scale horizontally without
+	// degrading gRPC job dispatch latency down to the fallback poll.
+	if _, err := repository.StartJobWakeListener(database.ConnStringForListener(util)); err != nil {
+		log.Fatalln("job wake listener: ", err)
 	}
 
 	// Create task event dispatcher

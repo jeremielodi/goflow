@@ -213,6 +213,21 @@ func NewPostgres2(util common.Util) (*sqlx.DB, error) {
 	return db, nil
 }
 
+// ConnStringForListener builds a connection string for a dedicated
+// LISTEN/NOTIFY connection. This is intentionally separate from the pooled
+// *sqlx.DB used everywhere else: LISTEN state (which channels a session is
+// subscribed to) lives on one specific backend connection, so it can't be
+// shared with a connection pool that hands out and recycles connections
+// across callers — lib/pq's pq.Listener manages its own dedicated,
+// auto-reconnecting connection for exactly this reason.
+func ConnStringForListener(util common.Util) string {
+	env := util.DotEnvVariable
+	return fmt.Sprintf(
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable",
+		env("DB_HOST"), env("DB_PORT"), env("DB_USER"), env("DB_PASS"), env("DB_NAME"),
+	)
+}
+
 // GetPoolStats returns current connection pool statistics for monitoring
 func GetPoolStats(db *sqlx.DB) map[string]interface{} {
 	stats := db.Stats()
