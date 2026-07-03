@@ -30,13 +30,25 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	finalVars, _ := engineRepo.GetProcessVariables(exec.ProcessInstanceID)
 	service.LogAuditErr("process completed", r.auditService.LogProcessCompleted(exec.ProcessInstanceID, finalVars))
 
-	// Check if this is a call-activity child: if so, resume the parent execution.
+	// Check if this is a call-activity child: if so, resume the parent
+	// execution. Must happen BEFORE archiving below — once archived, this
+	// instance's process_instances row (and thus its parent_instance_id/
+	// parent_execution_id columns) no longer exists.
 	var parentInstanceID, parentExecutionID *uuid.UUID
 	row := r.DB.QueryRow(`
 		SELECT parent_instance_id, parent_execution_id
 		FROM process_instances WHERE id = $1
 	`, exec.ProcessInstanceID)
 	row.Scan(&parentInstanceID, &parentExecutionID)
+
+	// Archive this instance into historic_* tables and remove its live
+	// rows — see internal/service/archive_service.go. Best-effort: a
+	// failed archive leaves the instance live (already safely marked
+	// completed above), never risking data loss, so it's logged but not
+	// treated as fatal to process completion.
+	if err := service.ArchiveAndDeleteProcessInstance(r.DB, exec.ProcessInstanceID, nil); err != nil {
+		fmt.Printf("Warning: failed to archive process instance %s: %v\n", exec.ProcessInstanceID, err)
+	}
 
 	if parentExecutionID == nil {
 		return nil

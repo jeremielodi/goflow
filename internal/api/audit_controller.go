@@ -12,14 +12,16 @@ import (
 )
 
 type AuditController struct {
-	auditRepo *repository.AuditRepository
-	taskRepo  *repository.TaskRepository
+	auditRepo   *repository.AuditRepository
+	taskRepo    *repository.TaskRepository
+	archiveRepo *repository.HistoricArchiveRepository
 }
 
 func NewAuditController(db *sqlx.DB) *AuditController {
 	return &AuditController{
-		auditRepo: repository.NewAuditRepository(db),
-		taskRepo:  repository.NewTaskRepository(db, nil),
+		auditRepo:   repository.NewAuditRepository(db),
+		taskRepo:    repository.NewTaskRepository(db, nil),
+		archiveRepo: repository.NewHistoricArchiveRepository(db),
 	}
 }
 
@@ -55,6 +57,12 @@ func (c *AuditController) GetProcessAuditLogs(ctx *fiber.Ctx) error {
 // /engine-rest/history/activity-instance endpoint (which can only show a
 // token's current position, since executions are mutated in place), this
 // reconstructs the full path a token took by walking every audit_logs entry.
+//
+// Once an instance is archived (see internal/service/archive_service.go),
+// its audit_logs/tasks rows are gone — this falls back to
+// historic_activity_instances, which was populated from this exact
+// derivation at archive time, so the response shape here never changes
+// regardless of whether the instance is still live.
 func (c *AuditController) GetTokenHistory(ctx *fiber.Ctx) error {
 	processID, err := uuid.Parse(ctx.Params("processId"))
 	if err != nil {
@@ -73,22 +81,52 @@ func (c *AuditController) GetTokenHistory(ctx *fiber.Ctx) error {
 		})
 	}
 
-	tasks, err := c.taskRepo.FindTasksByProcessInstance(processID)
-	if err != nil {
-		return ctx.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "Failed to fetch tasks",
-			"error":   err.Error(),
-		})
+	var steps []service.TokenHistoryStep
+	if len(logs) > 0 {
+		tasks, err := c.taskRepo.FindTasksByProcessInstance(processID)
+		if err != nil {
+			return ctx.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "Failed to fetch tasks",
+				"error":   err.Error(),
+			})
+		}
+		steps = service.BuildTokenHistory(logs, tasks)
+	} else {
+		rows, err := c.archiveRepo.FindActivityInstancesByProcessInstance(processID)
+		if err != nil {
+			return ctx.Status(500).JSON(fiber.Map{
+				"title":   "Database Error",
+				"message": "Failed to fetch historic activity instances",
+				"error":   err.Error(),
+			})
+		}
+		steps = make([]service.TokenHistoryStep, len(rows))
+		for i, row := range rows {
+			steps[i] = service.TokenHistoryStep{
+				Timestamp:   row.OccurredAt,
+				Action:      row.Action,
+				ElementId:   stringOrEmpty(row.ElementID),
+				ElementName: stringOrEmpty(row.ElementName),
+				ExecutionId: row.ExecutionID,
+				TaskId:      row.TaskID,
+				Detail:      stringOrEmpty(row.Detail),
+			}
+		}
 	}
-
-	steps := service.BuildTokenHistory(logs, tasks)
 
 	return ctx.JSON(fiber.Map{
 		"processInstanceId": processID,
 		"steps":             steps,
 		"count":             len(steps),
 	})
+}
+
+func stringOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // GetTaskAuditLogs retrieves audit logs for a task

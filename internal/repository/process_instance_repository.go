@@ -374,35 +374,30 @@ func (r *ProcessInstanceRepository) UpdateExecutionNode(execID uuid.UUID, nodeID
 // ============================================================
 
 // FindHistoricByID retrieves a completed/terminated process instance
+// FindHistoricByID looks up a finished process instance. Finished instances
+// no longer live in process_instances — they're archived into
+// historic_process_instances and deleted from the live tables (see
+// internal/service/archive_service.go) — so this reads the historic table,
+// not a status-filtered live query.
 func (r *ProcessInstanceRepository) FindHistoricByID(instanceID uuid.UUID) (*models.ProcessInstance, error) {
-	var instance models.ProcessInstance
-
-	query := `
-		SELECT 
-			pi.id,
-			pi.process_definition_id,
-			pi.status,
-			pi.started_by,
-			pi.started_at,
-			pi.ended_at,
-			pi.tenant_id,
-			pd.process_key,
-			pd.process_name,
-			pd.version
-		FROM public.process_instances pi
-		LEFT JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
-		WHERE pi.id = $1 AND (pi.status = 'completed' OR pi.status = 'terminated')
-	`
-
-	err := r.db.Get(&instance, query, instanceID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
+	h, err := NewHistoricArchiveRepository(r.db).FindProcessInstanceByID(instanceID)
+	if err != nil || h == nil {
 		return nil, err
 	}
-
-	return &instance, nil
+	instance := &models.ProcessInstance{
+		ID:                  h.ID,
+		ProcessDefinitionID: h.ProcessDefinitionID,
+		Status:              h.State,
+		StartedBy:           h.StartedBy,
+		StartedAt:           h.StartedAt,
+		EndedAt:             &h.EndedAt,
+		ProcessKey:          h.ProcessDefinitionKey,
+		TenantID:            h.TenantID,
+	}
+	if h.ProcessDefinitionVersion != nil {
+		instance.Version = *h.ProcessDefinitionVersion
+	}
+	return instance, nil
 }
 
 // FindAllHistoric retrieves all completed/terminated process instances with filters

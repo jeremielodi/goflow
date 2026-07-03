@@ -661,3 +661,86 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS oidc_subject TEXT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject ON users(oidc_subject) WHERE oidc_subject IS NOT NULL;
+
+-- =========================================================
+-- HISTORIC ARCHIVE
+-- Once a process instance completes or terminates, its data is copied
+-- here and removed from the live tables (process_instances/tasks/
+-- executions/variables), so the live tables only ever hold currently
+-- running instances — closer to Camunda 7's ACT_RU_* (runtime) vs
+-- ACT_HI_* (history) split. See internal/service/archive_service.go.
+-- =========================================================
+CREATE TABLE IF NOT EXISTS historic_process_instances (
+    id UUID PRIMARY KEY, -- same id as the original process_instances row
+    process_definition_id UUID NOT NULL,
+    process_definition_key TEXT NOT NULL, -- denormalized, survives even if the definition is later removed
+    process_definition_version INTEGER NULL,
+    tenant_id TEXT NULL,
+    started_by TEXT NULL,
+    started_at TIMESTAMP NOT NULL,
+    ended_at TIMESTAMP NOT NULL,
+    duration_millis BIGINT NULL,
+    state TEXT NOT NULL, -- 'completed' | 'terminated'
+    delete_reason TEXT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_definition_key
+ON historic_process_instances(process_definition_key);
+
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_tenant_id
+ON historic_process_instances(tenant_id);
+
+-- The archived form of a token-history step (see TokenHistoryStep in
+-- internal/service/token_history_service.go, which this mirrors exactly
+-- so BuildTokenHistory's output can be inserted here unchanged).
+CREATE TABLE IF NOT EXISTS historic_activity_instances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL
+        REFERENCES historic_process_instances(id)
+        ON DELETE CASCADE,
+    execution_id UUID NULL,
+    action TEXT NOT NULL,
+    element_id TEXT NULL,
+    element_name TEXT NULL,
+    task_id UUID NULL,
+    detail TEXT NULL,
+    occurred_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_historic_activity_instances_process_instance_id
+ON historic_activity_instances(process_instance_id);
+
+CREATE TABLE IF NOT EXISTS historic_tasks (
+    id UUID PRIMARY KEY, -- same id as the original tasks row
+    process_instance_id UUID NOT NULL
+        REFERENCES historic_process_instances(id)
+        ON DELETE CASCADE,
+    task_definition_key TEXT NOT NULL,
+    task_name TEXT NULL,
+    assignee TEXT NULL,
+    status TEXT NOT NULL,
+    priority INTEGER NULL,
+    created_at TIMESTAMP NOT NULL,
+    claimed_at TIMESTAMP NULL,
+    completed_at TIMESTAMP NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_historic_tasks_process_instance_id
+ON historic_tasks(process_instance_id);
+
+-- Final variable snapshot (Camunda 7's HistoricVariableInstance
+-- semantics: current value at process end, not a full change log — the
+-- change log, when needed, comes from historic_activity_instances'
+-- VARIABLES_UPDATED/MERGED-derived detail text).
+CREATE TABLE IF NOT EXISTS historic_variables (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    process_instance_id UUID NOT NULL
+        REFERENCES historic_process_instances(id)
+        ON DELETE CASCADE,
+    data JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_historic_variables_process_instance_id
+ON historic_variables(process_instance_id);

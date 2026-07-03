@@ -306,7 +306,9 @@ func main() {
 	// HISTORY ROUTES
 	// ============================================================
 
-	app.Get("/history/tasks", historicTaskCtrl.GetHistoricTasks)
+	app.Get("/engine-rest/history/task/count", historicTaskCtrl.GetHistoricTaskCount)
+	app.Get("/engine-rest/history/task/:id", historicTaskCtrl.GetHistoricTask)
+	app.Get("/engine-rest/history/task", historicTaskCtrl.GetHistoricTasks)
 
 	// Full historic process/activity instance endpoints (Camunda 7 compatible)
 	app.Get("/engine-rest/history/process-instance", historyCtrl.ListHistoricProcessInstances)

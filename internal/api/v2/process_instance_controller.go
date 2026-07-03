@@ -199,6 +199,34 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 		items = append(items, toV2ProcessInstance(&instances[i]))
 	}
 
+	// The live table only ever holds still-running instances now — once
+	// completed/terminated, an instance is archived (see archive_service.go).
+	// Merge in matching historic rows so a search for completed/terminated
+	// instances (or an unfiltered search) still finds them.
+	if status == "" || status == "completed" || status == "terminated" {
+		archiveRepo := repository.NewHistoricArchiveRepository(pc.db)
+		historicRows, histErr := archiveRepo.FindAllProcessInstances(repository.HistoricProcessInstanceFilter{
+			ProcessKey: req.Filter.ProcessDefinitionId,
+			State:      status,
+		})
+		if histErr == nil {
+			for _, h := range historicRows {
+				ended := h.EndedAt
+				hi := models.ProcessInstance{
+					ID:                  h.ID,
+					ProcessDefinitionID: h.ProcessDefinitionID,
+					Status:              h.State,
+					StartedBy:           h.StartedBy,
+					StartedAt:           h.StartedAt,
+					EndedAt:             &ended,
+					ProcessKey:          h.ProcessDefinitionKey,
+					TenantID:            h.TenantID,
+				}
+				items = append(items, toV2ProcessInstance(&hi))
+			}
+		}
+	}
+
 	return c.JSON(fiber.Map{"items": items})
 }
 

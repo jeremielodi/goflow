@@ -122,7 +122,7 @@ func (pc *ProcessInstanceController) GetProcessVariables(c *fiber.Ctx) error {
 		})
 	}
 
-	variables, err := pc.processInstanceRepo.GetVariables(instanceID)
+	variables, err := pc.getVariablesLiveOrHistoric(instanceID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -134,6 +134,23 @@ func (pc *ProcessInstanceController) GetProcessVariables(c *fiber.Ctx) error {
 	response := formatVariablesToCamunda(variables)
 
 	return c.JSON(response)
+}
+
+// getVariablesLiveOrHistoric reads a process instance's variables from the
+// live table, falling back to the historic archive (historic_variables) if
+// the instance no longer exists live — see archive_service.go. Distinguishes
+// "no variables were ever set" from "this instance is archived" by checking
+// whether the instance is still live at all, rather than guessing from an
+// empty variables map (which is ambiguous either way).
+func (pc *ProcessInstanceController) getVariablesLiveOrHistoric(instanceID uuid.UUID) (map[string]interface{}, error) {
+	instance, err := pc.processInstanceRepo.FindByID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if instance != nil {
+		return pc.processInstanceRepo.GetVariables(instanceID)
+	}
+	return repository.NewHistoricArchiveRepository(pc.db).FindVariablesByProcessInstance(instanceID)
 }
 
 // GetProcessVariable handles GET /process-instance/:id/variables/:varName
@@ -155,7 +172,7 @@ func (pc *ProcessInstanceController) GetProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
-	variables, err := pc.processInstanceRepo.GetVariables(instanceID)
+	variables, err := pc.getVariablesLiveOrHistoric(instanceID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -526,7 +543,19 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 	}
 
 	instance, err := pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil || instance == nil || !common.TenantMatches(instance.TenantID, common.GetTenantId(c)) {
+	if err != nil || instance == nil {
+		// Not live — fall back to the historic archive for a
+		// completed/terminated instance (see archive_service.go).
+		hist, histErr := pc.processInstanceRepo.FindHistoricByID(instanceID)
+		if histErr != nil || hist == nil || !common.TenantMatches(hist.TenantID, common.GetTenantId(c)) {
+			return c.Status(404).JSON(fiber.Map{
+				"type":    "NotFound",
+				"message": "Process instance not found",
+			})
+		}
+		return c.JSON(hist)
+	}
+	if !common.TenantMatches(instance.TenantID, common.GetTenantId(c)) {
 		return c.Status(404).JSON(fiber.Map{
 			"type":    "NotFound",
 			"message": "Process instance not found",
@@ -700,6 +729,14 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 	}
 	service.LogAuditErr("timers cancelled", pc.auditService.LogTimerCancelled(instanceID, nil))
 
+	// Archive into historic_* tables and remove the live rows — see
+	// internal/service/archive_service.go. Best-effort: a failed archive
+	// leaves the instance live (already safely marked terminated above),
+	// never risking data loss.
+	if err := service.ArchiveAndDeleteProcessInstance(pc.db, instanceID, &reason); err != nil {
+		fmt.Printf("Warning: failed to archive terminated process instance %s: %v\n", instanceID, err)
+	}
+
 	return c.Status(204).Send(nil)
 }
 
@@ -760,6 +797,10 @@ func (pc *ProcessInstanceController) EndProcess(c *fiber.Ctx) error {
 		})
 	}
 
+	if err := service.ArchiveAndDeleteProcessInstance(pc.db, instanceID, nil); err != nil {
+		fmt.Printf("Warning: failed to archive ended process instance %s: %v\n", instanceID, err)
+	}
+
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Process instance ended successfully",
@@ -779,8 +820,8 @@ func (pc *ProcessInstanceController) GetProcessState(c *fiber.Ctx) error {
 
 	// Try to get active process instance
 	instance, err := pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil {
-		// Check if it's in history (completed/terminated)
+	if err != nil || instance == nil {
+		// Not live (or already archived) — check history.
 		history, err := pc.processInstanceRepo.FindHistoricByID(instanceID)
 		if err != nil || history == nil {
 			return c.Status(404).JSON(fiber.Map{

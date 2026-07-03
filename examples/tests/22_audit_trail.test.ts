@@ -27,13 +27,28 @@
  *   C) The token-history endpoint's non-empty elementIds, collapsed to
  *      consecutive-distinct values, match the diagram's real path:
  *      start -> taskA -> taskB -> end.
- *   D) Terminating a running instance (with an open task) soft-deletes it:
- *      the instance persists with status=terminated, its audit trail and
- *      token-history remain fully queryable, and the previously-open task
- *      is cancelled — instead of the old hard-delete that wiped everything.
+ *   D) Terminating a running instance (with an open task) archives it: the
+ *      raw audit log is gone (proving the live row was actually archived
+ *      and deleted, not just soft-deleted) but GET /process-instance/:id
+ *      and the token-history replay endpoint both keep working via the
+ *      historic-archive fallback — see internal/service/archive_service.go.
  *   E) A parallel-gateway instance (03_meal_preparation.bpmn) produces
  *      token-history steps with at least two distinct, concurrently-active
  *      executionIds — the data multi-token replay groups by.
+ *   F) GET /engine-rest/history/task merges live + archived tasks correctly
+ *      (also the fix for the old bare /history/tasks routing bug — see
+ *      historic_task_controller.go).
+ *
+ * Item 4 (historic archive) note: completing or terminating an instance now
+ * triggers ArchiveAndDeleteProcessInstance, which copies the instance into
+ * historic_process_instances/historic_activity_instances/historic_tasks/
+ * historic_variables and then hard-deletes the live process_instances row
+ * (cascading audit_logs/tasks/executions/variables away). So after
+ * completion/termination: GET /audit/process/:id (raw) goes empty — that's
+ * expected and is the proof archival really happened, not a bug — while
+ * GET /process-instance/:id and GET /audit/process/:id/token-history keep
+ * working unchanged via the live→historic fallback built into those
+ * endpoints specifically.
  */
 import * as path from 'path';
 import { GoFlowClient, runSuite, assert } from './client';
@@ -55,6 +70,7 @@ interface TokenHistoryStep {
   elementId?: string;
   elementName?: string;
   executionId?: string;
+  taskId?: string;
   detail?: string;
 }
 
@@ -82,7 +98,9 @@ function collapseConsecutive(elementIds: string[]): string[] {
 
 // Asserts that every action in `expectedInOrder` appears in `logs`, in that
 // relative order — other actions may appear in between (not an exact-match).
-function assertOrderedSubsequence(logs: AuditLogEntry[], expectedInOrder: string[]) {
+// Accepts anything with an `action` field, so it works for both raw
+// AuditLogEntry rows and TokenHistoryStep rows.
+function assertOrderedSubsequence(logs: { action: string }[], expectedInOrder: string[]) {
   let cursor = 0;
   for (const action of expectedInOrder) {
     const idx = logs.findIndex((l, i) => i >= cursor && l.action === action);
@@ -112,38 +130,56 @@ async function run() {
           await client.claimTask(taskA.id, 'alice');
           await client.completeTask(taskA.id, {});
 
-          const taskB = await client.waitForTask('taskB', instanceId, 10000);
-          await client.claimTask(taskB.id, 'bob');
-          await client.completeTask(taskB.id, {});
-
-          await client.waitForProcessEnd(instanceId, 10000);
-
-          const logs = await getAuditLogs(instanceId);
-          assert(logs.length > 0, 'expected a non-empty audit trail');
-
-          assertOrderedSubsequence(logs, [
-            'PROCESS_STARTED',
-            'EXECUTION_CREATED',
-            'TASK_CREATED',
-            'TASK_CLAIMED',
-            'TASK_COMPLETED',
-            'EXECUTION_MOVED',
-            'TASK_CREATED',
-            'TASK_CLAIMED',
-            'TASK_COMPLETED',
-            'EXECUTION_COMPLETED',
-            'PROCESS_COMPLETED',
-          ]);
-
-          for (const log of logs) {
+          // Snapshot the raw audit log while the instance is still live, to
+          // check per-row processInstanceId scoping — this snapshot is only
+          // valid before completion triggers archival (see suite header).
+          const midLogs = await getAuditLogs(instanceId);
+          assert(midLogs.length > 0, 'expected a non-empty audit trail while still live');
+          for (const log of midLogs) {
             assert(
               log.processInstanceId === instanceId,
               `audit log entry belongs to wrong instance: ${JSON.stringify(log)}`
             );
           }
 
+          const taskB = await client.waitForTask('taskB', instanceId, 10000);
+          await client.claimTask(taskB.id, 'bob');
+          await client.completeTask(taskB.id, {});
+
+          await client.waitForProcessEnd(instanceId, 10000);
+
+          // Completion triggers ArchiveAndDeleteProcessInstance: the raw
+          // audit log is now gone (no historic fallback for this endpoint,
+          // by design) — an empty result here is the expected proof that
+          // archival actually deleted the live rows, not a bug.
+          const logsAfterArchive = await getAuditLogs(instanceId);
+          assert(
+            logsAfterArchive.length === 0,
+            `expected the raw audit log to be empty after archival, got: [${logsAfterArchive.map(l => l.action).join(', ')}]`
+          );
+
+          // The derived token-history endpoint must keep working, sourced
+          // from historic_activity_instances instead — same ordering, same
+          // action vocabulary, same JSON response shape as before archival.
           const steps = await getTokenHistory(instanceId);
-          assert(steps.length > 0, 'expected a non-empty token history');
+          assert(steps.length > 0, 'expected token-history to remain queryable after archival');
+
+          assertOrderedSubsequence(
+            steps,
+            [
+              'PROCESS_STARTED',
+              'EXECUTION_CREATED',
+              'TASK_CREATED',
+              'TASK_CLAIMED',
+              'TASK_COMPLETED',
+              'EXECUTION_MOVED',
+              'TASK_CREATED',
+              'TASK_CLAIMED',
+              'TASK_COMPLETED',
+              'EXECUTION_COMPLETED',
+              'PROCESS_COMPLETED',
+            ]
+          );
 
           const path = collapseConsecutive(
             steps.map(s => s.elementId ?? '').filter(id => id.length > 0)
@@ -151,6 +187,15 @@ async function run() {
           assert(
             JSON.stringify(path) === JSON.stringify(['start', 'taskA', 'taskB', 'end']),
             `expected token path [start, taskA, taskB, end], got: [${path.join(', ')}]`
+          );
+
+          // GET /process-instance/:id must also keep working post-archival,
+          // via the live→historic fallback added to v1 GetProcessInstance.
+          const archivedInstance = await client.getProcessInstance(instanceId);
+          assert(archivedInstance !== null, 'expected GET /process-instance/:id to still work after archival');
+          assert(
+            archivedInstance!.status === 'completed',
+            `expected status "completed" from the historic fallback, got "${archivedInstance?.status}"`
           );
         },
       },
@@ -180,7 +225,7 @@ async function run() {
       },
 
       {
-        name: '[D] Terminating a running instance soft-deletes it (persists, cancels open task)',
+        name: '[D] Terminating a running instance archives it (still queryable, open task cancelled, raw log gone)',
         async fn() {
           const inst = await client.startProcess('OperateProcess', { requester: 'audit-test-3' });
           const instanceId = inst.processInstanceId ?? inst.id;
@@ -192,34 +237,40 @@ async function run() {
           );
           assert(res.status === 204, `expected 204 from terminate, got ${res.status}`);
 
-          // Old behavior (hard delete): this would now 404. New behavior: the
-          // row persists with status=terminated.
+          // Termination triggers cancel-then-archive-then-delete. The live
+          // row is gone, but GET /process-instance/:id keeps working via the
+          // historic fallback (old hard-delete behavior would 404 here).
           const terminated = await client.getProcessInstance(instanceId);
-          assert(terminated !== null, 'expected the terminated instance to still be queryable, not hard-deleted');
+          assert(terminated !== null, 'expected the terminated instance to still be queryable via the historic archive');
           assert(
             terminated!.status === 'terminated',
             `expected status "terminated", got "${terminated?.status}"`
           );
 
-          // The audit trail (and by extension the token-history replay data)
-          // must survive termination — this is the whole point of the fix.
+          // Raw audit log is gone — proof the live row was actually
+          // archived and deleted, not merely soft-deleted (expected, by
+          // design: this endpoint has no historic fallback).
           const logs = await getAuditLogs(instanceId);
-          const actions = logs.map(l => l.action);
-          assert(actions.includes('PROCESS_STARTED'), `expected prior history to survive, got: [${actions.join(', ')}]`);
-          assert(actions.includes('PROCESS_TERMINATED'), `expected PROCESS_TERMINATED, got: [${actions.join(', ')}]`);
-          assert(actions.includes('TASK_CANCELLED'), `expected the open task to be cancelled, got: [${actions.join(', ')}]`);
-
-          const steps = await getTokenHistory(instanceId);
-          assert(steps.length > 0, 'expected token-history to remain queryable after termination');
-
-          // The previously-open task must be cancelled, not vanish — checked
-          // via the audit trail rather than GET /engine-rest/tasks, since
-          // that endpoint deliberately excludes cancelled/completed tasks
-          // from its default "open tasks" list.
-          const cancelLog = logs.find(l => l.action === 'TASK_CANCELLED');
           assert(
-            cancelLog?.taskId === taskA.id,
-            `expected TASK_CANCELLED audit entry for taskA (${taskA.id}), got: ${JSON.stringify(cancelLog)}`
+            logs.length === 0,
+            `expected the raw audit log to be empty after archival, got: [${logs.map(l => l.action).join(', ')}]`
+          );
+
+          // The token-history replay endpoint must keep working, sourced
+          // from historic_activity_instances, and still show the full story:
+          // the instance started, its open task was cancelled, then it was
+          // terminated.
+          const steps = await getTokenHistory(instanceId);
+          assert(steps.length > 0, 'expected token-history to remain queryable after archival');
+          const actions = steps.map(s => s.action);
+          assert(actions.includes('PROCESS_STARTED'), `expected prior history to survive, got: [${actions.join(', ')}]`);
+          assert(actions.includes('TASK_CANCELLED'), `expected the open task to be cancelled, got: [${actions.join(', ')}]`);
+          assert(actions.includes('PROCESS_TERMINATED'), `expected PROCESS_TERMINATED, got: [${actions.join(', ')}]`);
+
+          const cancelStep = steps.find(s => s.action === 'TASK_CANCELLED');
+          assert(
+            cancelStep?.taskId === taskA.id,
+            `expected TASK_CANCELLED step for taskA (${taskA.id}), got: ${JSON.stringify(cancelStep)}`
           );
         },
       },
@@ -250,6 +301,60 @@ async function run() {
           const eatTask = await client.waitForTask('eat_meal', instanceId, 15000);
           await client.completeTask(eatTask.id);
           await client.waitForProcessEnd(instanceId, 10000);
+        },
+      },
+
+      {
+        name: '[F] GET /engine-rest/history/task merges live and archived tasks correctly (also fixes the old /history/tasks routing bug)',
+        async fn() {
+          const inst = await client.startProcess('OperateProcess', { requester: 'audit-test-4' });
+          const instanceId = inst.processInstanceId ?? inst.id;
+
+          const taskA = await client.waitForTask('taskA', instanceId, 10000);
+
+          // While the instance is still live, historic tasks come from the
+          // live `tasks` table.
+          const liveResp = await client.api.get('/engine-rest/history/task', {
+            params: { processInstanceId: instanceId },
+          });
+          assert(
+            liveResp.data.some((t: any) => t.id === taskA.id && t.status === 'created'),
+            `expected taskA (live, created) in /history/task, got: ${JSON.stringify(liveResp.data)}`
+          );
+
+          await client.claimTask(taskA.id, 'alice');
+          await client.completeTask(taskA.id, {});
+          const taskB = await client.waitForTask('taskB', instanceId, 10000);
+          await client.claimTask(taskB.id, 'bob');
+          await client.completeTask(taskB.id, {});
+          await client.waitForProcessEnd(instanceId, 10000);
+
+          // After archival, the same query now serves both tasks from
+          // historic_tasks instead — same response shape, same endpoint.
+          const archivedResp = await client.api.get('/engine-rest/history/task', {
+            params: { processInstanceId: instanceId },
+          });
+          const archivedIds = archivedResp.data.map((t: any) => t.id);
+          assert(
+            archivedIds.includes(taskA.id) && archivedIds.includes(taskB.id),
+            `expected both taskA and taskB in /history/task after archival, got: ${JSON.stringify(archivedResp.data)}`
+          );
+          assert(
+            archivedResp.data.every((t: any) => t.status === 'completed'),
+            `expected both archived tasks to show status "completed", got: ${JSON.stringify(archivedResp.data)}`
+          );
+
+          // GET /engine-rest/history/task/:id (new — the old code had no
+          // single-task lookup at all).
+          const singleResp = await client.api.get(`/engine-rest/history/task/${taskA.id}`);
+          assert(singleResp.data.id === taskA.id, `expected taskA by id, got: ${JSON.stringify(singleResp.data)}`);
+
+          // GET /engine-rest/history/task/count (new route — existed in
+          // code before but was never actually registered).
+          const countResp = await client.api.get('/engine-rest/history/task/count', {
+            params: { processInstanceId: instanceId },
+          });
+          assert(countResp.data.count === 2, `expected count 2, got: ${JSON.stringify(countResp.data)}`);
         },
       },
     ],

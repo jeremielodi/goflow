@@ -2,6 +2,7 @@
 package api
 
 import (
+	"sort"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,11 +11,12 @@ import (
 )
 
 type HistoricTaskController struct {
-	db *sqlx.DB
+	db          *sqlx.DB
+	archiveRepo *repository.HistoricArchiveRepository
 }
 
 func NewHistoricTaskController(db *sqlx.DB) *HistoricTaskController {
-	return &HistoricTaskController{db: db}
+	return &HistoricTaskController{db: db, archiveRepo: repository.NewHistoricArchiveRepository(db)}
 }
 
 // HistoricTaskQuery represents Camunda historic task query parameters
@@ -61,8 +63,89 @@ type HistoricTaskResponse struct {
 	TenantId             string     `json:"tenantId"`
 }
 
-// GetHistoricTasks handles GET /history/task
-// Camunda compatible: /engine-rest/history/task
+func (q HistoricTaskQuery) toParams(firstResult, maxResults int) repository.HistoricTaskQueryParams {
+	params := repository.HistoricTaskQueryParams{
+		TaskId:               q.TaskId,
+		TaskName:             q.TaskName,
+		TaskNameLike:         q.TaskNameLike,
+		Assignee:             q.Assignee,
+		AssigneeLike:         q.AssigneeLike,
+		ProcessInstanceId:    q.ProcessInstanceId,
+		ProcessDefinitionId:  q.ProcessDefinitionId,
+		ProcessDefinitionKey: q.ProcessDefinitionKey,
+		Status:               q.Status,
+		Finished:             q.Finished,
+		Unfinished:           q.Unfinished,
+		SortBy:               q.SortBy,
+		SortOrder:            q.SortOrder,
+		FirstResult:          firstResult,
+		MaxResults:           maxResults,
+	}
+	if t, err := time.Parse(time.RFC3339, q.StartedBefore); err == nil {
+		params.StartedBefore = &t
+	}
+	if t, err := time.Parse(time.RFC3339, q.StartedAfter); err == nil {
+		params.StartedAfter = &t
+	}
+	if t, err := time.Parse(time.RFC3339, q.FinishedBefore); err == nil {
+		params.FinishedBefore = &t
+	}
+	if t, err := time.Parse(time.RFC3339, q.FinishedAfter); err == nil {
+		params.FinishedAfter = &t
+	}
+	return params
+}
+
+func toHistoricTaskResponse(task repository.HistoricTask) HistoricTaskResponse {
+	var duration *int64
+	if task.StartTime != nil && task.EndTime != nil {
+		d := task.EndTime.Sub(*task.StartTime).Milliseconds()
+		duration = &d
+	}
+	return HistoricTaskResponse{
+		Id:                   task.ID.String(),
+		ProcessInstanceId:    task.ProcessInstanceID.String(),
+		ProcessDefinitionId:  task.ProcessDefinitionID.String(),
+		ProcessDefinitionKey: task.ProcessDefinitionKey,
+		TaskDefinitionKey:    task.TaskDefinitionKey,
+		TaskName:             task.TaskName,
+		Assignee:             task.Assignee,
+		Status:               task.Status,
+		StartTime:            task.StartTime,
+		EndTime:              task.EndTime,
+		DurationInMillis:     duration,
+		ClaimTime:            task.ClaimTime,
+		DeleteReason:         task.DeleteReason,
+	}
+}
+
+// findMergedHistoricTasks merges tasks belonging to still-live instances
+// (repository.HistoricTaskRepository, backed by the live `tasks` table)
+// with tasks belonging to already-archived instances
+// (HistoricArchiveRepository, backed by `historic_tasks` — see
+// archive_service.go). Pagination is applied in Go after merging, since a
+// SQL UNION with correct LIMIT/OFFSET across two tables is meaningfully
+// more complex than this is worth for a first pass.
+func (hc *HistoricTaskController) findMergedHistoricTasks(query HistoricTaskQuery) ([]repository.HistoricTask, error) {
+	liveRepo := repository.NewHistoricTaskRepository(hc.db)
+
+	liveTasks, err := liveRepo.FindHistoricTasks(query.toParams(0, 0)) // unpaginated
+	if err != nil {
+		return nil, err
+	}
+	historicTasks, err := hc.archiveRepo.FindTasksForHistoricQuery(query.toParams(0, 0))
+	if err != nil {
+		return nil, err
+	}
+
+	merged := append(liveTasks, historicTasks...)
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].CreatedAt.After(merged[j].CreatedAt)
+	})
+	return merged, nil
+}
+
+// GetHistoricTasks handles GET /engine-rest/history/task
 func (hc *HistoricTaskController) GetHistoricTasks(c *fiber.Ctx) error {
 	var query HistoricTaskQuery
 	if err := c.QueryParser(&query); err != nil {
@@ -72,49 +155,7 @@ func (hc *HistoricTaskController) GetHistoricTasks(c *fiber.Ctx) error {
 		})
 	}
 
-	repo := repository.NewHistoricTaskRepository(hc.db)
-
-	params := repository.HistoricTaskQueryParams{
-		TaskId:               query.TaskId,
-		TaskName:             query.TaskName,
-		TaskNameLike:         query.TaskNameLike,
-		Assignee:             query.Assignee,
-		AssigneeLike:         query.AssigneeLike,
-		ProcessInstanceId:    query.ProcessInstanceId,
-		ProcessDefinitionId:  query.ProcessDefinitionId,
-		ProcessDefinitionKey: query.ProcessDefinitionKey,
-		Status:               query.Status,
-		Finished:             query.Finished,
-		Unfinished:           query.Unfinished,
-		SortBy:               query.SortBy,
-		SortOrder:            query.SortOrder,
-		FirstResult:          query.FirstResult,
-		MaxResults:           query.MaxResults,
-	}
-
-	// Parse time filters
-	if query.StartedBefore != "" {
-		if t, err := time.Parse(time.RFC3339, query.StartedBefore); err == nil {
-			params.StartedBefore = &t
-		}
-	}
-	if query.StartedAfter != "" {
-		if t, err := time.Parse(time.RFC3339, query.StartedAfter); err == nil {
-			params.StartedAfter = &t
-		}
-	}
-	if query.FinishedBefore != "" {
-		if t, err := time.Parse(time.RFC3339, query.FinishedBefore); err == nil {
-			params.FinishedBefore = &t
-		}
-	}
-	if query.FinishedAfter != "" {
-		if t, err := time.Parse(time.RFC3339, query.FinishedAfter); err == nil {
-			params.FinishedAfter = &t
-		}
-	}
-
-	tasks, err := repo.FindHistoricTasks(params)
+	merged, err := hc.findMergedHistoricTasks(query)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -122,36 +163,46 @@ func (hc *HistoricTaskController) GetHistoricTasks(c *fiber.Ctx) error {
 		})
 	}
 
-	// Convert to Camunda response format
-	response := make([]HistoricTaskResponse, len(tasks))
-	for i, task := range tasks {
-		var duration *int64
-		if task.StartTime != nil && task.EndTime != nil {
-			d := task.EndTime.Sub(*task.StartTime).Milliseconds()
-			duration = &d
-		}
-
-		response[i] = HistoricTaskResponse{
-			Id:                   task.ID.String(),
-			ProcessInstanceId:    task.ProcessInstanceID.String(),
-			ProcessDefinitionId:  task.ProcessDefinitionID.String(),
-			ProcessDefinitionKey: task.ProcessDefinitionKey,
-			TaskDefinitionKey:    task.TaskDefinitionKey,
-			TaskName:             task.TaskName,
-			Assignee:             task.Assignee,
-			Status:               task.Status,
-			StartTime:            task.StartTime,
-			EndTime:              task.EndTime,
-			DurationInMillis:     duration,
-			ClaimTime:            task.ClaimTime,
-			DeleteReason:         task.DeleteReason,
-		}
+	firstResult := query.FirstResult
+	maxResults := query.MaxResults
+	if maxResults <= 0 {
+		maxResults = 100
+	}
+	if firstResult >= len(merged) {
+		return c.JSON([]HistoricTaskResponse{})
+	}
+	end := firstResult + maxResults
+	if end > len(merged) {
+		end = len(merged)
 	}
 
+	response := make([]HistoricTaskResponse, 0, end-firstResult)
+	for _, task := range merged[firstResult:end] {
+		response = append(response, toHistoricTaskResponse(task))
+	}
 	return c.JSON(response)
 }
 
-// GetHistoricTaskCount handles GET /history/task/count
+// GetHistoricTask handles GET /engine-rest/history/task/:id
+func (hc *HistoricTaskController) GetHistoricTask(c *fiber.Ctx) error {
+	taskID := c.Params("id")
+	merged, err := hc.findMergedHistoricTasks(HistoricTaskQuery{TaskId: taskID})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"type":    "InternalError",
+			"message": err.Error(),
+		})
+	}
+	if len(merged) == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "historic task not found",
+		})
+	}
+	return c.JSON(toHistoricTaskResponse(merged[0]))
+}
+
+// GetHistoricTaskCount handles GET /engine-rest/history/task/count
 func (hc *HistoricTaskController) GetHistoricTaskCount(c *fiber.Ctx) error {
 	var query HistoricTaskQuery
 	if err := c.QueryParser(&query); err != nil {
@@ -161,23 +212,7 @@ func (hc *HistoricTaskController) GetHistoricTaskCount(c *fiber.Ctx) error {
 		})
 	}
 
-	repo := repository.NewHistoricTaskRepository(hc.db)
-
-	params := repository.HistoricTaskQueryParams{
-		TaskId:               query.TaskId,
-		TaskName:             query.TaskName,
-		TaskNameLike:         query.TaskNameLike,
-		Assignee:             query.Assignee,
-		AssigneeLike:         query.AssigneeLike,
-		ProcessInstanceId:    query.ProcessInstanceId,
-		ProcessDefinitionId:  query.ProcessDefinitionId,
-		ProcessDefinitionKey: query.ProcessDefinitionKey,
-		Status:               query.Status,
-		Finished:             query.Finished,
-		Unfinished:           query.Unfinished,
-	}
-
-	count, err := repo.CountHistoricTasks(params)
+	merged, err := hc.findMergedHistoricTasks(query)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -185,7 +220,5 @@ func (hc *HistoricTaskController) GetHistoricTaskCount(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(fiber.Map{
-		"count": count,
-	})
+	return c.JSON(fiber.Map{"count": len(merged)})
 }
