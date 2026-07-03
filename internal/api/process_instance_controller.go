@@ -398,72 +398,13 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	// Find start node
-	var startNodeID string
-	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
-			startNodeID = node.ID
-			break
-		}
-	}
-	if startNodeID == "" {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Configuration Error",
-			"message": "no start event found in process definition",
-		})
-	}
-
-	// Begin transaction
-	tx, err := pc.db.Beginx()
+	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), normalizedVars)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",
-			"message": "failed to begin database transaction",
-			"error":   err.Error(),
+			"message": err.Error(),
 		})
 	}
-	defer tx.Rollback()
-
-	instanceID := uuid.New()
-	now := time.Now()
-
-	// Create process instance using repository
-	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to create process instance",
-			"error":   err.Error(),
-		})
-	}
-
-	// Save normalized variables using repository
-	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, normalizedVars, now); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to save process variables",
-			"error":   err.Error(),
-		})
-	}
-
-	// Create initial execution using repository
-	execID := uuid.New()
-	if err := pc.processInstanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to create execution record",
-			"error":   err.Error(),
-		})
-	}
-
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to commit transaction",
-			"error":   err.Error(),
-		})
-	}
-	service.LogAuditErr("process started", pc.auditService.LogProcessStarted(instanceID, normalizedVars, nil))
-	service.LogAuditErr("execution created", pc.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	// Run the runtime
 	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
@@ -611,26 +552,6 @@ func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error 
 	return c.JSON(instances)
 }
 
-// DeleteProcessInstance handles DELETE /process-instance/:id
-func (pc *ProcessInstanceController) DeleteProcessInstance(c *fiber.Ctx) error {
-	instanceID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"type":    "InvalidRequest",
-			"message": "Invalid process instance id",
-		})
-	}
-
-	if err := pc.processInstanceRepo.Delete(instanceID); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	return c.Status(204).Send(nil)
-}
-
 // internal/api/process_instance_controller.go
 // Add these methods to the ProcessInstanceController
 
@@ -722,24 +643,62 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 	}
 
 	if err := pc.processInstanceRepo.UpsertVariables(instanceID, variables); err != nil {
-		// Log error but continue with deletion
+		// Log error but continue with termination
 		fmt.Printf("Warning: Failed to add termination variables: %v\n", err)
 	}
 
-	// NOTE: Delete() hard-deletes the process_instances row, and audit_logs.
-	// process_instance_id is ON DELETE CASCADE — so this log entry (and every
-	// prior one for this instance) is wiped a moment after being written.
-	// Known limitation, not fixed here: TerminateProcess would need to become
-	// a soft-delete (status='terminated') to make termination replayable.
-	service.LogAuditErr("process terminated", pc.auditService.LogProcessTerminated(instanceID, reason))
+	// Soft-delete: mark the instance (and everything still open under it)
+	// terminated instead of hard-deleting the row. A hard DELETE would
+	// cascade onto audit_logs (ON DELETE CASCADE), wiping the instance's
+	// own replay history moments after it's written. Every other consumer
+	// (FindHistoricByID/FindAllHistoric, GetStatistics, history_controller.go,
+	// the frontend's ProcessInstance type/Badge) already expects a
+	// status='terminated' row to persist — this was the only path that
+	// didn't.
+	taskRepo := repository.NewTaskRepository(pc.db, pc.dispatcher)
+	engineRepo := repository.NewEngineRepository(pc.db, pc.dispatcher)
 
-	// Delete the process instance
-	if err := pc.processInstanceRepo.Delete(instanceID); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
+	tx, err := pc.db.Beginx()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
 	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if err := pc.processInstanceRepo.UpdateProcessInstanceStatusTx(tx, instanceID, "terminated", &now); err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+
+	// Explicitly clean up everything a hard-delete's FK cascade used to
+	// clean up implicitly, so nothing is left looking open/active/pending
+	// for a process that no longer runs.
+	cancelledTaskIDs, err := taskRepo.CancelOpenTasksByProcessInstanceTx(tx, instanceID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+	if err := pc.processInstanceRepo.TerminateActiveExecutionsByProcessInstanceTx(tx, instanceID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+	cancelledJobIDs, err := engineRepo.CancelPendingJobsByProcessInstanceTx(tx, instanceID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+	if err := engineRepo.DeleteTimersByProcessInstanceTx(tx, instanceID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+
+	if err := tx.Commit(); err != nil {
+		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+	}
+
+	service.LogAuditErr("process terminated", pc.auditService.LogProcessTerminated(instanceID, reason))
+	for _, taskID := range cancelledTaskIDs {
+		service.LogAuditErr("task cancelled", pc.auditService.LogTaskCancelled(taskID, instanceID, "process terminated"))
+	}
+	for _, jobID := range cancelledJobIDs {
+		service.LogAuditErr("job cancelled", pc.auditService.LogJobFailed(jobID, instanceID, "cancelled: process terminated", 0))
+	}
+	service.LogAuditErr("timers cancelled", pc.auditService.LogTimerCancelled(instanceID, nil))
 
 	return c.Status(204).Send(nil)
 }

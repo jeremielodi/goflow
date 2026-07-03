@@ -167,6 +167,12 @@ func applyTaskElement(step *TokenHistoryStep, taskByID map[uuid.UUID]models.Task
 	if task, ok := taskByID[*step.TaskId]; ok {
 		step.ElementId = task.TaskDefinitionKey
 		step.ElementName = task.TaskName
+		// Task-related audit entries never carried an executionId in their
+		// newData payload, but the task row itself knows which execution it
+		// belongs to — needed so the frontend can group replay steps by
+		// token (executionId) rather than flattening every concurrent
+		// branch into one ambiguous timeline.
+		step.ExecutionId = task.ExecutionID
 	}
 }
 

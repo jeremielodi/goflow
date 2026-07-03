@@ -10,7 +10,21 @@ import { apiClient } from '../api/client';
 import { BpmnViewer } from '../components/bpmn/BpmnViewer';
 import { Card, CardHeader, Badge, Button, Spinner, Table, Thead, Th, Tr, Td, Modal } from '../components/ui';
 import { formatDate, formatDuration } from '../utils/format';
-import type { ProcessDefinition } from '../types';
+import type { ProcessDefinition, TokenHistoryStep } from '../types';
+
+// A parallel gateway or multi-instance task can have several tokens active
+// at once. Scanning up to `index`, keep only the *latest* step per distinct
+// executionId — that's each token's current position at this point in the
+// replay. Steps with no executionId (e.g. PROCESS_STARTED, GATEWAY_FORKED)
+// aren't a specific token's location, so they're skipped here.
+function currentTokenPositions(steps: TokenHistoryStep[], index: number): TokenHistoryStep[] {
+  const latestByExecution = new Map<string, TokenHistoryStep>();
+  for (let i = 0; i <= index && i < steps.length; i++) {
+    const step = steps[i];
+    if (step.executionId) latestByExecution.set(step.executionId, step);
+  }
+  return [...latestByExecution.values()];
+}
 
 export default function InstanceDetail() {
   const { id } = useParams<{ id: string }>();
@@ -145,6 +159,9 @@ export default function InstanceDetail() {
     setReplayIndex(Math.max(0, Math.min(replaySteps.length - 1, i)));
   };
 
+  const activeTokenPositions = replayEngaged ? currentTokenPositions(replaySteps, replayIndex) : [];
+  const replayElementIds = activeTokenPositions.map(s => s.elementId!);
+
   if (instLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -244,7 +261,7 @@ export default function InstanceDetail() {
           <BpmnViewer
             xml={bpmnXml}
             activities={activities}
-            replayElementId={replayEngaged ? replaySteps[replayIndex]?.elementId : undefined}
+            replayElementIds={replayElementIds}
             className="h-96"
           />
 
@@ -291,6 +308,11 @@ export default function InstanceDetail() {
                 {' · '}
                 {formatDate(replaySteps[replayIndex]?.timestamp)}
               </p>
+              {activeTokenPositions.length > 1 && (
+                <p className="text-xs text-violet-600">
+                  {activeTokenPositions.length} tokens active: {activeTokenPositions.map(s => s.elementName ?? s.elementId).join(', ')}
+                </p>
+              )}
             </div>
           )}
 

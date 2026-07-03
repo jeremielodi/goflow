@@ -27,11 +27,19 @@
  *   C) The token-history endpoint's non-empty elementIds, collapsed to
  *      consecutive-distinct values, match the diagram's real path:
  *      start -> taskA -> taskB -> end.
+ *   D) Terminating a running instance (with an open task) soft-deletes it:
+ *      the instance persists with status=terminated, its audit trail and
+ *      token-history remain fully queryable, and the previously-open task
+ *      is cancelled — instead of the old hard-delete that wiped everything.
+ *   E) A parallel-gateway instance (03_meal_preparation.bpmn) produces
+ *      token-history steps with at least two distinct, concurrently-active
+ *      executionIds — the data multi-token replay groups by.
  */
 import * as path from 'path';
 import { GoFlowClient, runSuite, assert } from './client';
 
 const OPERATE_BPMN = path.join(__dirname, 'bpmn', '19_operate_process.bpmn');
+const PARALLEL_BPMN = path.join(__dirname, 'bpmn', '03_meal_preparation.bpmn');
 const client = new GoFlowClient();
 
 interface AuditLogEntry {
@@ -46,6 +54,7 @@ interface TokenHistoryStep {
   action: string;
   elementId?: string;
   elementName?: string;
+  executionId?: string;
   detail?: string;
 }
 
@@ -88,6 +97,7 @@ function assertOrderedSubsequence(logs: AuditLogEntry[], expectedInOrder: string
 async function run() {
   await client.loginAsSuperUser();
   await client.deployBpmn(OPERATE_BPMN, 'Audit Trail Test');
+  await client.deployBpmn(PARALLEL_BPMN, 'Audit Trail Parallel Test');
 
   await runSuite({
     name: '22 — Audit Trail Completeness (replay data source)',
@@ -166,6 +176,80 @@ async function run() {
           // Clean up: complete taskB so the process doesn't linger for later suites.
           const taskB = await client.waitForTask('taskB', instanceId, 10000);
           await client.completeTask(taskB.id, {});
+        },
+      },
+
+      {
+        name: '[D] Terminating a running instance soft-deletes it (persists, cancels open task)',
+        async fn() {
+          const inst = await client.startProcess('OperateProcess', { requester: 'audit-test-3' });
+          const instanceId = inst.processInstanceId ?? inst.id;
+
+          const taskA = await client.waitForTask('taskA', instanceId, 10000);
+
+          const res = await client.api.delete(
+            `/engine-rest/process-instance/${instanceId}?deleteReason=integration-test`
+          );
+          assert(res.status === 204, `expected 204 from terminate, got ${res.status}`);
+
+          // Old behavior (hard delete): this would now 404. New behavior: the
+          // row persists with status=terminated.
+          const terminated = await client.getProcessInstance(instanceId);
+          assert(terminated !== null, 'expected the terminated instance to still be queryable, not hard-deleted');
+          assert(
+            terminated!.status === 'terminated',
+            `expected status "terminated", got "${terminated?.status}"`
+          );
+
+          // The audit trail (and by extension the token-history replay data)
+          // must survive termination — this is the whole point of the fix.
+          const logs = await getAuditLogs(instanceId);
+          const actions = logs.map(l => l.action);
+          assert(actions.includes('PROCESS_STARTED'), `expected prior history to survive, got: [${actions.join(', ')}]`);
+          assert(actions.includes('PROCESS_TERMINATED'), `expected PROCESS_TERMINATED, got: [${actions.join(', ')}]`);
+          assert(actions.includes('TASK_CANCELLED'), `expected the open task to be cancelled, got: [${actions.join(', ')}]`);
+
+          const steps = await getTokenHistory(instanceId);
+          assert(steps.length > 0, 'expected token-history to remain queryable after termination');
+
+          // The previously-open task must be cancelled, not vanish — checked
+          // via the audit trail rather than GET /engine-rest/tasks, since
+          // that endpoint deliberately excludes cancelled/completed tasks
+          // from its default "open tasks" list.
+          const cancelLog = logs.find(l => l.action === 'TASK_CANCELLED');
+          assert(
+            cancelLog?.taskId === taskA.id,
+            `expected TASK_CANCELLED audit entry for taskA (${taskA.id}), got: ${JSON.stringify(cancelLog)}`
+          );
+        },
+      },
+
+      {
+        name: '[E] Parallel gateway produces two concurrently-active executionIds in token-history',
+        async fn() {
+          const inst = await client.startProcess('MealPrepProcess');
+          const instanceId = inst.processInstanceId ?? inst.id;
+
+          // Wait for the user-task branch to appear — by this point the fork
+          // has happened and both branches (cook_pasta job + prepare_salad
+          // task) are concurrently active, each its own execution/token.
+          const saladTask = await client.waitForTask('prepare_salad', instanceId, 10000);
+
+          const steps = await getTokenHistory(instanceId);
+          const executionIds = new Set(steps.map(s => s.executionId).filter((id): id is string => !!id));
+          assert(
+            executionIds.size >= 2,
+            `expected at least 2 distinct executionIds for the two parallel branches, got: [${[...executionIds].join(', ')}]`
+          );
+
+          // Clean up both branches so the process doesn't linger.
+          const cookDone = client.pollExternalTask('cook_pasta', async () => ({ pastaReady: true }), 20000);
+          await client.completeTask(saladTask.id, { saladReady: true });
+          await cookDone;
+
+          const eatTask = await client.waitForTask('eat_meal', instanceId, 15000);
+          await client.completeTask(eatTask.id);
+          await client.waitForProcessEnd(instanceId, 10000);
         },
       },
     ],

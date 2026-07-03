@@ -71,6 +71,35 @@ func TestBuildTokenHistory_TaskClaimedResolvesElementFromTask(t *testing.T) {
 	}
 }
 
+// Task-related audit entries never carried an executionId in their own
+// newData payload; BuildTokenHistory must resolve it from the task's own
+// ExecutionID field so the frontend can group replay steps by token
+// (multi-token / parallel-branch replay).
+func TestBuildTokenHistory_TaskStepResolvesExecutionIdFromTask(t *testing.T) {
+	taskID := uuid.New()
+	execID := uuid.New()
+	logs := []models.AuditLog{
+		{
+			Action:    models.ActionTaskCreated,
+			CreatedAt: time.Now(),
+			TaskID:    &taskID,
+			NewData:   marshalOrPanic(t, map[string]interface{}{"taskName": "Approve"}),
+		},
+	}
+	tasks := []models.Task{
+		{ID: taskID, ExecutionID: &execID, TaskDefinitionKey: "approveTask", TaskName: "Approve"},
+	}
+
+	steps := BuildTokenHistory(logs, tasks)
+
+	if len(steps) != 1 {
+		t.Fatalf("expected 1 step, got %d", len(steps))
+	}
+	if steps[0].ExecutionId == nil || *steps[0].ExecutionId != execID {
+		t.Errorf("expected executionId %s, got %v", execID, steps[0].ExecutionId)
+	}
+}
+
 func TestBuildTokenHistory_ProcessStartedHasNoElementId(t *testing.T) {
 	logs := []models.AuditLog{
 		{

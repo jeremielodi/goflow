@@ -202,60 +202,11 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 		return JobResult{Success: false, Error: fmt.Errorf("failed to build graph: %w", err)}
 	}
 
-	// Find start node
-	var startNodeID string
-	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
-			startNodeID = node.ID
-			break
-		}
-	}
-	if startNodeID == "" {
-		log.Printf("❌ No start event found for process %s", job.ProcessKey)
-		return JobResult{Success: false, Error: fmt.Errorf("no start event found")}
-	}
-
-	// Start transaction
-	tx, err := p.db.Beginx()
+	instanceID, execID, err := service.StartProcessInstance(p.db, graph, procDef.ID, procDef.TenantID, job.Variables)
 	if err != nil {
-		log.Printf("❌ Failed to begin transaction: %v", err)
+		log.Printf("❌ Failed to start process instance: %v", err)
 		return JobResult{Success: false, Error: err}
 	}
-	defer tx.Rollback()
-
-	// Create process instance
-	instanceID := uuid.New()
-	now := time.Now()
-	err = engineRepo.CreateProcessInstanceTx(tx, instanceID, procDef.ID, now, procDef.TenantID)
-	if err != nil {
-		log.Printf("❌ Failed to create process instance: %v", err)
-		return JobResult{Success: false, Error: fmt.Errorf("failed to create process instance: %w", err)}
-	}
-
-	// Save variables
-	if len(job.Variables) > 0 {
-		err = engineRepo.CreateVariablesTx(tx, instanceID, job.Variables, now)
-		if err != nil {
-			log.Printf("❌ Failed to save variables: %v", err)
-			return JobResult{Success: false, Error: fmt.Errorf("failed to save variables: %w", err)}
-		}
-	}
-
-	// Create initial execution
-	execID := uuid.New()
-	err = engineRepo.CreateExecutionTx2(tx, execID, instanceID, startNodeID, now)
-	if err != nil {
-		log.Printf("❌ Failed to create execution: %v", err)
-		return JobResult{Success: false, Error: fmt.Errorf("failed to create execution: %w", err)}
-	}
-
-	if err := tx.Commit(); err != nil {
-		log.Printf("❌ Failed to commit transaction: %v", err)
-		return JobResult{Success: false, Error: fmt.Errorf("failed to commit: %w", err)}
-	}
-	auditService := service.NewAuditService(p.db)
-	service.LogAuditErr("process started", auditService.LogProcessStarted(instanceID, job.Variables, nil))
-	service.LogAuditErr("execution created", auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	// Execute asynchronously
 	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)

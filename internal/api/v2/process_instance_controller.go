@@ -9,7 +9,6 @@ package v2
 import (
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -108,45 +107,10 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
-	var startNodeID string
-	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
-			startNodeID = node.ID
-			break
-		}
-	}
-	if startNodeID == "" {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"title":  "INTERNAL_ERROR",
-			"detail": "no start event found in process definition",
-		})
-	}
-
-	tx, err := pc.db.Beginx()
+	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), req.Variables)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
-	defer tx.Rollback()
-
-	instanceID := uuid.New()
-	now := time.Now()
-
-	if err := pc.processInstanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-	if err := pc.processInstanceRepo.CreateVariablesTx(tx, instanceID, req.Variables, now); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-
-	execID := uuid.New()
-	if err := pc.processInstanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-	if err := tx.Commit(); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-	service.LogAuditErr("process started", pc.auditService.LogProcessStarted(instanceID, req.Variables, nil))
-	service.LogAuditErr("execution created", pc.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
 	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {

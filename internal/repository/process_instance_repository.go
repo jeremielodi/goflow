@@ -335,10 +335,24 @@ func (r *ProcessInstanceRepository) UpdateExecutionStatus(execID uuid.UUID, stat
 	return err
 }
 
+// TerminateActiveExecutionsByProcessInstanceTx marks every still-active or
+// waiting execution (token) of a process instance as terminated — used when
+// the whole instance is terminated, so no token is left looking "active" in
+// live queries (e.g. v2 flownode-instance search, which keys off is_active)
+// for a process that no longer runs.
+func (r *ProcessInstanceRepository) TerminateActiveExecutionsByProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.executions
+		SET status = 'terminated', is_active = false, updated_at = NOW()
+		WHERE process_instance_id = $1 AND status IN ('active', 'waiting')
+	`, instanceID)
+	return err
+}
+
 // UpdateExecutionStatusTx updates the status of an execution within a transaction
 func (r *ProcessInstanceRepository) UpdateExecutionStatusTx(tx *sqlx.Tx, execID uuid.UUID, status string) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions 
+		UPDATE public.executions
 		SET status = $1, updated_at = NOW()
 		WHERE id = $2
 	`, status, execID)

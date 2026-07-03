@@ -6,10 +6,12 @@ import type { HistoricActivityInstance } from '../../types';
 interface BpmnViewerProps {
   xml: string;
   activities?: HistoricActivityInstance[];
-  /** BPMN element ID to highlight as the current replay position (see the
-   * "Replay" control in InstanceDetail.tsx). Independent of `activities` —
-   * this reflects a point in the token's *history*, not live state. */
-  replayElementId?: string;
+  /** BPMN element IDs to highlight as current replay positions — one per
+   * active token (see the "Replay" control in InstanceDetail.tsx).
+   * Independent of `activities` — this reflects point(s) in the token(s)'
+   * *history*, not live state. A parallel gateway or multi-instance task
+   * can have more than one entry here at once. */
+  replayElementIds?: string[];
   className?: string;
 }
 
@@ -19,10 +21,10 @@ const TOKEN_COMPLETED = '#22c55e';   // green-500
 const TOKEN_CANCELED  = '#f59e0b';   // amber-500
 const TOKEN_REPLAY     = '#8b5cf6';  // violet-500
 
-export function BpmnViewer({ xml, activities = [], replayElementId, className = '' }: BpmnViewerProps) {
+export function BpmnViewer({ xml, activities = [], replayElementIds = [], className = '' }: BpmnViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef    = useRef<InstanceType<typeof BpmnJS> | null>(null);
-  const prevReplayElementRef = useRef<string | null>(null);
+  const prevReplayElementsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -104,10 +106,13 @@ export function BpmnViewer({ xml, activities = [], replayElementId, className = 
     }
   }, [activities]);
 
-  // Highlight the current replay position (see the "Replay" control in
+  // Highlight the current replay position(s) (see the "Replay" control in
   // InstanceDetail.tsx) with a marker distinct from the live-state overlay
   // above, so "where the token is now" and "where it was during replay
-  // step N" never get visually confused.
+  // step N" never get visually confused. More than one element can be
+  // marked at once — a parallel gateway or multi-instance task has several
+  // tokens active simultaneously, each rendered as its own marker.
+  const replayKey = replayElementIds.join(',');
   useEffect(() => {
     if (!viewerRef.current) return;
 
@@ -124,24 +129,31 @@ export function BpmnViewer({ xml, activities = [], replayElementId, className = 
     };
 
     overlays.remove({ type: 'replay-token' });
-    if (prevReplayElementRef.current) {
-      try { canvas.removeMarker(prevReplayElementRef.current, 'replay-active'); } catch { /* ignore */ }
-      prevReplayElementRef.current = null;
+    for (const elementId of prevReplayElementsRef.current) {
+      try { canvas.removeMarker(elementId, 'replay-active'); } catch { /* ignore */ }
     }
+    prevReplayElementsRef.current = new Set();
 
-    if (!replayElementId || !elementRegistry.get(replayElementId)) return;
+    for (const elementId of new Set(replayElementIds)) {
+      if (!elementId || !elementRegistry.get(elementId)) continue;
 
-    try {
-      canvas.addMarker(replayElementId, 'replay-active');
-      prevReplayElementRef.current = replayElementId;
-    } catch { /* ignore */ }
+      try {
+        canvas.addMarker(elementId, 'replay-active');
+        prevReplayElementsRef.current.add(elementId);
+      } catch { /* ignore */ }
 
-    overlays.add(replayElementId, {
-      type: 'replay-token',
-      position: { top: -18, left: -18 },
-      html: '<div class="replay-token-dot"></div>',
-    });
-  }, [replayElementId]);
+      overlays.add(elementId, {
+        type: 'replay-token',
+        position: { top: -18, left: -18 },
+        html: '<div class="replay-token-dot"></div>',
+      });
+    }
+    // replayKey is the serialized/stable form of replayElementIds, used
+    // deliberately instead of the array itself to avoid re-running this
+    // effect on every render when the caller passes a new array reference
+    // with the same contents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayKey]);
 
   return (
     <div className={`relative ${className}`}>

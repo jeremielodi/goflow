@@ -371,45 +371,10 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 		return c.Status(500).JSON(fiber.Map{"message": "failed to parse process graph"})
 	}
 
-	var startNodeID string
-	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
-			startNodeID = node.ID
-			break
-		}
-	}
-	if startNodeID == "" {
-		return c.Status(500).JSON(fiber.Map{"message": "no start event in process definition"})
-	}
-
-	instanceRepo := repository.NewProcessInstanceRepository(ctrl.db)
-	tx, err := ctrl.db.Beginx()
+	instanceID, execID, err := service.StartProcessInstance(ctrl.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), body.Variables)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to begin transaction"})
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
-	defer tx.Rollback()
-
-	instanceID := uuid.New()
-	now := time.Now()
-
-	if err := instanceRepo.CreateProcessInstanceTx(tx, instanceID, def.ID, now, common.InstanceTenant(def.TenantID, common.GetTenantId(c))); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to create process instance", "error": err.Error()})
-	}
-	if len(body.Variables) > 0 {
-		if err := instanceRepo.CreateVariablesTx(tx, instanceID, body.Variables, now); err != nil {
-			return c.Status(500).JSON(fiber.Map{"message": "failed to save variables", "error": err.Error()})
-		}
-	}
-
-	execID := uuid.New()
-	if err := instanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to create execution", "error": err.Error()})
-	}
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to commit"})
-	}
-	service.LogAuditErr("process started", ctrl.auditService.LogProcessStarted(instanceID, body.Variables, nil))
-	service.LogAuditErr("execution created", ctrl.auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
 
 	rt := runtime.NewRuntime(&graph, ctrl.db, ctrl.dispatcher)
 	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {

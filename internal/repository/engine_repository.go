@@ -339,6 +339,33 @@ func (r *EngineRepository) DeleteTimersByExecutionTx(tx *sqlx.Tx, executionID uu
 	return err
 }
 
+// DeleteTimersByProcessInstanceTx removes every not-yet-triggered timer for
+// a process instance — used when the whole instance is terminated, so the
+// timer scheduler never fires a timer belonging to a process that no longer
+// runs. Already-triggered timers are left alone (their history is moot but
+// harmless to keep).
+func (r *EngineRepository) DeleteTimersByProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
+	_, err := tx.Exec(`
+		DELETE FROM public.timer_jobs
+		WHERE process_instance_id = $1 AND is_triggered = false
+	`, instanceID)
+	return err
+}
+
+// CancelPendingJobsByProcessInstanceTx cancels every still-pending job of a
+// process instance — used when the whole instance is terminated, so no
+// worker can fetch-and-lock a job belonging to a process that no longer
+// runs. Returns the cancelled job IDs so the caller can audit-log each one.
+func (r *EngineRepository) CancelPendingJobsByProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) ([]uuid.UUID, error) {
+	var cancelledJobIDs []uuid.UUID
+	err := tx.Select(&cancelledJobIDs, `
+		UPDATE public.jobs SET status = 'cancelled', updated_at = NOW()
+		WHERE process_instance_id = $1 AND status = 'pending'
+		RETURNING id
+	`, instanceID)
+	return cancelledJobIDs, err
+}
+
 // CancelUserTaskByExecution cancels any active user task for an execution
 func (r *EngineRepository) CancelUserTaskByExecutionTx(tx *sqlx.Tx, executionID uuid.UUID) error {
 	_, err := tx.Exec(`

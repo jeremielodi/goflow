@@ -400,7 +400,6 @@ func main() {
 	// Process instance queries
 	app.Get("/engine-rest/process-instance/:id", processInstanceCtrl.GetProcessInstance)
 	app.Get("/engine-rest/process-instance", processInstanceCtrl.GetProcessInstanceList)
-	app.Delete("/engine-rest/process-instance/:id", processInstanceCtrl.DeleteProcessInstance)
 
 	// ============================================================
 	// METRICS ENDPOINTS

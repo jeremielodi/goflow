@@ -485,6 +485,21 @@ func (r *TaskRepository) UpdateTaskStatusTx(tx *sqlx.Tx, taskID uuid.UUID, statu
 	return tx.Exec(query, args...)
 }
 
+// CancelOpenTasksByProcessInstanceTx cancels every open (created/claimed)
+// task belonging to a process instance — used when the whole instance is
+// terminated, so no task is left dangling in an "open" state for a process
+// that no longer runs. Returns the cancelled task IDs so the caller can
+// audit-log each one.
+func (r *TaskRepository) CancelOpenTasksByProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) ([]uuid.UUID, error) {
+	var cancelledTaskIDs []uuid.UUID
+	err := tx.Select(&cancelledTaskIDs, `
+		UPDATE public.tasks SET status = 'cancelled', updated_at = NOW()
+		WHERE process_instance_id = $1 AND status IN ('created', 'claimed')
+		RETURNING id
+	`, instanceID)
+	return cancelledTaskIDs, err
+}
+
 // CompleteTaskTx completes a task within a transaction.
 func (r *TaskRepository) CompleteTaskTx(tx *sqlx.Tx, taskID uuid.UUID) error {
 	_, err := tx.Exec(`

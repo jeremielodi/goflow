@@ -402,3 +402,27 @@ GoFlow deliberately targets both REST API shapes with one engine. It is **not** 
 - Single Postgres-backed monolith, not Zeebe's partitioned/distributed broker model — fine for small-to-medium workloads, not a horizontal-scaling story like Zeebe's.
 
 **Frontend:** the React app covers a real slice of Operate (instance inspection, plus a token-replay feature Operate doesn't offer by default) and Tasklist (task inbox), but there's no Modeler (BPMN authored externally) and no Optimize-equivalent analytics.
+
+---
+
+## Roadmap
+
+Prioritized by value vs. effort, based on gaps identified above and during the audit-trail/replay work.
+
+### Done
+
+- **Soft-delete on process termination** — `TerminateProcess` used to hard-delete the instance, which cascaded and erased its own `audit_logs` the moment it was terminated. Fixed: it now marks `status='terminated'` and explicitly cancels open tasks, marks active executions terminal, cancels pending jobs, and removes not-yet-fired timers in one transaction — everything a hard-delete's FK cascade used to clean up implicitly, done explicitly instead. (Also found and removed a duplicate, unused `DeleteProcessInstance` handler that was registered on the exact same route and still hard-deleted — a latent route-shadowing bug.)
+- **Multi-token-aware replay** — the token-history endpoint and the frontend replay UI now group steps by `executionId`, so a parallel gateway or multi-instance task shows one marker per concurrently active token instead of one ambiguous marker jumping between branches.
+- **Consolidated the duplicate "start process" code paths** — `StartProcess`, `v2 CreateProcessInstance`, `StartByDefinitionID`, and the async worker's `processStartProcess` now all share one `service.StartProcessInstance` function instead of four independent (and previously divergent) implementations.
+
+### Medium-term (real features)
+
+- **A genuine historic archive** — dedicated historic tables populated on complete/terminate, decoupled from the live `process_instances`/`executions`/`tasks` tables, with real historic queries (by variable value, task metrics, duration percentiles). This is the biggest named gap vs. Camunda 7's History service.
+- **Admin UI** — Users/Roles/permissions already have a full REST API; there's no frontend page for managing them yet.
+- **Basic analytics (Optimize-lite)** — process duration distributions, throughput over time, incident rate by process key. `Dashboard.tsx` already has basic counts to build on.
+- **In-browser BPMN Modeler** — `bpmn-js` is already a frontend dependency in view-only (`NavigatedViewer`) mode; swapping to the editable `Modeler` build for authoring + deploying from the browser is a moderate lift, not a new dependency.
+
+### Long-term / architectural (flagged, not committed)
+
+- **gRPC / native Zeebe protocol** — would let real Zeebe client SDKs (zbc-*) talk to GoFlow directly, at the cost of maintaining a second protocol surface alongside REST.
+- **Partitioned/distributed execution** — genuinely replicating Zeebe's horizontal-scaling model (partitioning, Raft-replicated logs, no shared central database) is a different engine, not an incremental change to this one — see [Comparison](#comparison-to-camunda-7--camunda-8) above. Noted here for completeness, not planned.
