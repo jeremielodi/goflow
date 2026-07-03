@@ -393,6 +393,15 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		if allowed, permErr := service.CanAccessProcess(pc.db, userID, processKey, "START"); permErr == nil && !allowed {
+			return c.Status(403).JSON(fiber.Map{
+				"title":   "Forbidden",
+				"message": "you do not have START access to this process",
+			})
+		}
+	}
+
 	// Normalize variables (supports both simple and typed formats)
 	normalizedVars := normalizeVariables(body.Variables)
 
@@ -503,6 +512,15 @@ func (pc *ProcessInstanceController) StartProcessAsync(c *fiber.Ctx) error {
 		})
 	}
 
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		if allowed, permErr := service.CanAccessProcess(pc.db, userID, processKey, "START"); permErr == nil && !allowed {
+			return c.Status(403).JSON(fiber.Map{
+				"title":   "Forbidden",
+				"message": "you do not have START access to this process",
+			})
+		}
+	}
+
 	normalizedVars := normalizeVariables(body.Variables)
 
 	job := worker.Job{
@@ -576,6 +594,16 @@ func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error 
 			"type":    "InternalError",
 			"message": err.Error(),
 		})
+	}
+
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		visible := instances[:0]
+		for _, inst := range instances {
+			if allowed, _ := service.CanAccessProcess(pc.db, userID, inst.ProcessKey, "VIEW"); allowed {
+				visible = append(visible, inst)
+			}
+		}
+		instances = visible
 	}
 
 	return c.JSON(instances)

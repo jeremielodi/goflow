@@ -38,9 +38,12 @@ describe('Tasks page - complete task modal', () => {
     vi.resetAllMocks();
     vi.mocked(useAuth).mockReturnValue({
       user: { id: 'u1', email: 'admin@goflow.com' },
+      roles: [],
+      actions: [],
       isLoading: false,
       login: vi.fn(),
       logout: vi.fn(),
+      hasAction: vi.fn().mockReturnValue(false),
     });
     vi.mocked(tasksApi.completeTask).mockResolvedValue(undefined);
     vi.mocked(tasksApi.claimTask).mockResolvedValue(undefined);
@@ -90,9 +93,12 @@ describe('Tasks page - status badge', () => {
     vi.resetAllMocks();
     vi.mocked(useAuth).mockReturnValue({
       user: { id: 'u1', email: 'admin@goflow.com' },
+      roles: [],
+      actions: [],
       isLoading: false,
       login: vi.fn(),
       logout: vi.fn(),
+      hasAction: vi.fn().mockReturnValue(false),
     });
   });
 

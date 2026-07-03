@@ -145,6 +145,7 @@ func main() {
 	incidentCtrl := api.NewIncidentController(db)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
+	processPermissionCtrl := api.NewProcessPermissionController(db)
 
 	messageCtrl := api.NewMessageController(db, taskEventDispatcher)
 	signalCtrl := api.NewSignalController(db, taskEventDispatcher)
@@ -255,19 +256,31 @@ func main() {
 	// ============================================================
 
 	// Camunda 8 compatible
-	app.Post("/engine-rest/v2/deployments", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+	// DeployBPMN is authorized in-handler, per process key, not at the route
+	// level: deploying a brand-new key still requires the global
+	// CAN_MANAGE_DEPLOY_PROCESS action, but redeploying a new version of an
+	// EXISTING, restricted key only requires MANAGE on that specific key
+	// (see process_authorization_service.go) — a per-resource grant can
+	// satisfy that without the global action.
+	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 	app.Get("/engine-rest/process-definition", processDefinitionCtrl.ListDefinitions)
 	app.Get("/engine-rest/process-definition/:id", processDefinitionCtrl.GetDefinition)
 	app.Post("/engine-rest/process-definition/:id/start", processDefinitionCtrl.StartByDefinitionID)
+
+	// Per-resource process permissions (see process_authorization_service.go) —
+	// each handler itself requires MANAGE on :key, so no route-level gate here.
+	app.Get("/engine-rest/process-definition/key/:key/permissions", processPermissionCtrl.ListPermissions)
+	app.Post("/engine-rest/process-definition/key/:key/permissions", processPermissionCtrl.GrantPermission)
+	app.Delete("/engine-rest/process-definition/key/:key/permissions/:id", processPermissionCtrl.RevokePermission)
 
 	// Camunda 7 compatible
 	app.Get("/engine-rest/engine", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
 	})
 
-	app.Post("/engine-rest/v2/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
-	app.Post("/engine-rest/deployment/create", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/v2/deployment/create", processDefinitionCtrl.DeployBPMN)
+	app.Post("/engine-rest/deployment/create", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/external-task/fetchAndLock", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.FetchAndLock)
 	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
 	app.Post("/engine-rest/external-task/:id/failure", externalTaskCtrl.HandleFailure)
@@ -326,7 +339,7 @@ func main() {
 	// CAMUNDA 8 REST API ("/v2/...")
 	// ============================================================
 
-	app.Post("/v2/resources/deployments", permissions(db, "CAN_MANAGE_DEPLOY_PROCESS"), processDefinitionCtrl.DeployBPMN)
+	app.Post("/v2/resources/deployments", processDefinitionCtrl.DeployBPMN)
 
 	app.Post("/v2/process-instances", v2ProcessInstanceCtrl.CreateProcessInstance)
 	app.Get("/v2/process-instances/:id", v2ProcessInstanceCtrl.GetProcessInstance)

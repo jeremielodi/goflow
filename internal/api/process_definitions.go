@@ -248,6 +248,29 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
+		// Deploying a brand-new process key still requires the global
+		// CAN_MANAGE_DEPLOY_PROCESS action (same as always — this is not
+		// resource-scoped since the resource doesn't exist yet). Deploying
+		// a new version of an EXISTING key requires MANAGE on that key,
+		// which a per-resource grant can satisfy without the global
+		// action — see CanAccessProcess's bypass-or-grant logic.
+		if deployerID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+			actionRepo := repository.NewActionRepository(processDef.db)
+			for _, procKey := range processKeys {
+				if _, findErr := deploymentRepo.FindLatestProcessDefinitionByKey(procKey); findErr != nil {
+					hasGlobal, _ := actionRepo.UserHasPermission(deployerID, "CAN_MANAGE_DEPLOY_PROCESS")
+					if !hasGlobal {
+						return c.Status(403).JSON(fiber.Map{"error": fmt.Sprintf("you do not have permission to deploy new process %s", procKey)})
+					}
+					continue
+				}
+				allowed, permErr := service.CanAccessProcess(processDef.db, deployerID, procKey, "MANAGE")
+				if permErr == nil && !allowed {
+					return c.Status(403).JSON(fiber.Map{"error": fmt.Sprintf("you do not have MANAGE access to process %s", procKey)})
+				}
+			}
+		}
+
 		for _, procKey := range processKeys {
 			graph, err := engine.BuildGraphForProcess(bpmnBytes, procKey)
 			if err != nil {
@@ -330,6 +353,17 @@ func (ctrl *ProcessDefinitionController) ListDefinitions(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
+
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		visible := defs[:0]
+		for _, def := range defs {
+			if allowed, _ := service.CanAccessProcess(ctrl.db, userID, def.ProcessKey, "VIEW"); allowed {
+				visible = append(visible, def)
+			}
+		}
+		defs = visible
+	}
+
 	return c.JSON(defs)
 }
 
@@ -343,6 +377,13 @@ func (ctrl *ProcessDefinitionController) GetDefinition(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"message": "not found"})
 	}
+
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		if allowed, permErr := service.CanAccessProcess(ctrl.db, userID, def.ProcessKey, "VIEW"); permErr == nil && !allowed {
+			return c.Status(404).JSON(fiber.Map{"message": "not found"})
+		}
+	}
+
 	return c.JSON(def)
 }
 
@@ -364,6 +405,12 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 	def, err := ctrl.processRepo.FindProcessDefinitionByID(id)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"message": "process definition not found"})
+	}
+
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		if allowed, permErr := service.CanAccessProcess(ctrl.db, userID, def.ProcessKey, "START"); permErr == nil && !allowed {
+			return c.Status(403).JSON(fiber.Map{"message": "you do not have START access to this process"})
+		}
 	}
 
 	var graph engine.ProcessGraph

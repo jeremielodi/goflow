@@ -4,23 +4,18 @@
   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
   xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
   xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
-  id="Definitions_TenantProcess"
+  id="Definitions_PermissionProcess"
   targetNamespace="http://bpmn.io/schema/bpmn"
   exporter="Camunda Modeler"
   exporterVersion="5.46.1" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.9.0">
 
   <!--
-    SCENARIO: A minimal process deployed independently by two different
-              tenants under the SAME process key ("TenantProcess") — used
-              to verify that instance/definition list & search endpoints
-              never leak across tenants, even when both tenants happen to
-              share a process key (definition versions aren't tenant-
-              partitioned; only which version resolves as "latest" is
-              ambiguous — the running INSTANCE's tenant is always the
-              caller's own tenant, which is what isolation actually relies on).
+    SCENARIO: A minimal process with a single user task, used to verify
+              per-resource process permissions (VIEW/START/MANAGE on
+              process_key) — see internal/service/process_authorization_service.go.
   -->
 
-  <bpmn:process id="TenantProcess" name="Tenant Process" isExecutable="true">
+  <bpmn:process id="PermissionProcess" name="Permission Process" isExecutable="true">
 
     <bpmn:startEvent id="start" name="Started">
       <bpmn:outgoing>Flow_Start_Task</bpmn:outgoing>
@@ -40,8 +35,8 @@
 
   </bpmn:process>
 
-  <bpmndi:BPMNDiagram id="BPMNDiagram_TenantProcess">
-    <bpmndi:BPMNPlane id="BPMNPlane_TenantProcess" bpmnElement="TenantProcess">
+  <bpmndi:BPMNDiagram id="BPMNDiagram_PermissionProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_PermissionProcess" bpmnElement="PermissionProcess">
       <bpmndi:BPMNShape id="start_di" bpmnElement="start">
         <dc:Bounds x="152" y="252" width="36" height="36" />
       </bpmndi:BPMNShape>

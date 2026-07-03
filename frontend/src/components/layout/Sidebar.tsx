@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, GitBranch, Play, CheckSquare,
-  AlertTriangle, History, LogOut, Workflow
+  AlertTriangle, History, LogOut, Workflow, Users, Shield
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -14,8 +14,38 @@ const navItems = [
   { to: '/history',    icon: History,          label: 'History' },
 ];
 
+const adminNavItems = [
+  { to: '/admin/users', icon: Users,  label: 'Users' },
+  { to: '/admin/roles', icon: Shield, label: 'Roles' },
+];
+
+function NavItems({ items }: { items: typeof navItems }) {
+  return (
+    <>
+      {items.map(({ to, icon: Icon, label }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={to === '/'}
+          className={({ isActive }) =>
+            `flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-600 text-white font-medium'
+                : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+            }`
+          }
+        >
+          <Icon className="w-4 h-4 flex-shrink-0" />
+          {label}
+        </NavLink>
+      ))}
+    </>
+  );
+}
+
 export function Sidebar() {
-  const { user, logout } = useAuth();
+  const { user, logout, hasAction } = useAuth();
+  const showAdmin = hasAction('CAN_MANGE_USER') || hasAction('CAN_EDIT_ROLE');
 
   return (
     <aside className="w-56 flex-shrink-0 bg-gray-900 flex flex-col h-screen sticky top-0">
@@ -27,23 +57,13 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 py-4 overflow-y-auto">
-        {navItems.map(({ to, icon: Icon, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === '/'}
-            className={({ isActive }) =>
-              `flex items-center gap-3 mx-2 px-3 py-2.5 rounded-lg text-sm transition-colors ${
-                isActive
-                  ? 'bg-blue-600 text-white font-medium'
-                  : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-              }`
-            }
-          >
-            <Icon className="w-4 h-4 flex-shrink-0" />
-            {label}
-          </NavLink>
-        ))}
+        <NavItems items={navItems} />
+        {showAdmin && (
+          <>
+            <p className="mt-4 mb-1 px-5 text-xs font-semibold text-gray-600 uppercase tracking-wider">Admin</p>
+            <NavItems items={adminNavItems} />
+          </>
+        )}
       </nav>
 
       {/* User */}

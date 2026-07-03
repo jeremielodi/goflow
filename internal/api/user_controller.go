@@ -377,6 +377,25 @@ func (uc *UserController) GetUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// Check if current user is fetching their own profile or has permission
+	currentUserID, err := getCurrentUserID(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error":   "Unauthorized",
+			"message": err.Error(),
+		})
+	}
+
+	actionRepo := repository.NewActionRepository(uc.db)
+	hasPermission, _ := actionRepo.UserHasPermission(currentUserID, "CAN_MANGE_USER")
+
+	if currentUserID != id && !hasPermission {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error":   "Forbidden",
+			"message": "You can only view your own profile",
+		})
+	}
+
 	user, err := uc.userRepo.FindByID(id)
 	if err != nil {
 		if err == sql.ErrNoRows {

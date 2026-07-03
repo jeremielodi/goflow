@@ -10,15 +10,28 @@ interface AuthUser {
 
 interface AuthContextValue {
   user: AuthUser | null;
+  roles: string[];
+  actions: string[];
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  hasAction: (code: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+// GetCurrentUser (/users/me) returns roles/actions as full objects
+// ({label}/{code}), while Login returns them already flattened to
+// string[] — normalize both shapes here.
+function toCodes(items: unknown[] | undefined, key: 'label' | 'code'): string[] {
+  if (!items) return [];
+  return items.map(item => (typeof item === 'string' ? item : (item as Record<string, string>)[key]));
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [actions, setActions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -28,7 +41,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     getMe()
-      .then(res => setUser(res.user))
+      .then(res => {
+        setUser(res.user);
+        setRoles(toCodes(res.roles, 'label'));
+        setActions(toCodes(res.actions, 'code'));
+      })
       .catch(() => {
         localStorage.removeItem('accessToken');
         localStorage.removeItem('refreshToken');
@@ -40,8 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const res = await apiLogin(email, password);
     localStorage.setItem('accessToken', res.access_token);
     localStorage.setItem('refreshToken', res.refresh_token);
-    console.log(localStorage);
     setUser(res.user);
+    setRoles(toCodes(res.roles, 'label'));
+    setActions(toCodes(res.actions, 'code'));
   };
 
   const logout = async () => {
@@ -49,10 +67,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
     setUser(null);
+    setRoles([]);
+    setActions([]);
   };
 
+  const hasAction = (code: string) => actions.includes(code);
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ user, roles, actions, isLoading, login, logout, hasAction }}>
       {children}
     </AuthContext.Provider>
   );

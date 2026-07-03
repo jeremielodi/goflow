@@ -110,6 +110,7 @@ async function main() {
     '20_multitenancy.test.ts',
     '21_oidc.test.ts',
     '22_audit_trail.test.ts',
+    '23_admin_and_permissions.test.ts',
   ];
 
   const exitCodes: number[] = [];

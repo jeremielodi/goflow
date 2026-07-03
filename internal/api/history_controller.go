@@ -8,6 +8,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -181,6 +183,16 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 		}
 	}
 
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		visible := resp[:0]
+		for _, r := range resp {
+			if allowed, _ := service.CanAccessProcess(hc.db, userID, r.ProcessDefinitionKey, "VIEW"); allowed {
+				visible = append(visible, r)
+			}
+		}
+		resp = visible
+	}
+
 	sort.Slice(resp, func(i, j int) bool {
 		if resp[i].StartTime == nil || resp[j].StartTime == nil {
 			return false
@@ -219,11 +231,18 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 		JOIN process_definitions pd ON pd.id = pi.process_definition_id
 		WHERE pi.id = $1
 	`, id)
+	userID, userErr := uuid.Parse(common.GetUserUuid(c))
+
 	if err != nil {
 		// Not live — fall back to the historic archive.
 		instanceID, parseErr := uuid.Parse(id)
 		if parseErr == nil {
 			if h, histErr := hc.archiveRepo.FindProcessInstanceByID(instanceID); histErr == nil && h != nil {
+				if userErr == nil {
+					if allowed, permErr := service.CanAccessProcess(hc.db, userID, h.ProcessDefinitionKey, "VIEW"); permErr == nil && !allowed {
+						return c.Status(404).JSON(fiber.Map{"message": "process instance not found"})
+					}
+				}
 				ended := h.EndedAt
 				d := ended.Sub(h.StartedAt).Milliseconds()
 				return c.JSON(HistoricProcessInstanceResponse{
@@ -238,6 +257,12 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 			}
 		}
 		return c.Status(404).JSON(fiber.Map{"message": "process instance not found"})
+	}
+
+	if userErr == nil {
+		if allowed, permErr := service.CanAccessProcess(hc.db, userID, r.ProcessKey, "VIEW"); permErr == nil && !allowed {
+			return c.Status(404).JSON(fiber.Map{"message": "process instance not found"})
+		}
 	}
 
 	var dur *int64

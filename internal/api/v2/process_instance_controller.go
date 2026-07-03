@@ -99,6 +99,14 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		if allowed, permErr := service.CanAccessProcess(pc.db, userID, req.ProcessDefinitionId, "START"); permErr == nil && !allowed {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"title": "FORBIDDEN", "detail": "you do not have START access to this process",
+			})
+		}
+	}
+
 	var graph engine.ProcessGraph
 	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -140,6 +148,8 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 
 	callerTenant := common.GetTenantId(c)
 
+	userID, userErr := uuid.Parse(common.GetUserUuid(c))
+
 	inst, err := pc.processInstanceRepo.FindByID(instanceID)
 	if err != nil || inst == nil {
 		// Fall back to history for completed/terminated instances.
@@ -150,6 +160,11 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 				"detail": "process instance not found",
 			})
 		}
+		if userErr == nil {
+			if allowed, permErr := service.CanAccessProcess(pc.db, userID, hist.ProcessKey, "VIEW"); permErr == nil && !allowed {
+				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"title": "NOT_FOUND", "detail": "process instance not found"})
+			}
+		}
 		return c.JSON(toV2ProcessInstance(hist))
 	}
 
@@ -158,6 +173,12 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 			"title":  "NOT_FOUND",
 			"detail": "process instance not found",
 		})
+	}
+
+	if userErr == nil {
+		if allowed, permErr := service.CanAccessProcess(pc.db, userID, inst.ProcessKey, "VIEW"); permErr == nil && !allowed {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"title": "NOT_FOUND", "detail": "process instance not found"})
+		}
 	}
 
 	return c.JSON(toV2ProcessInstance(inst))
@@ -194,8 +215,20 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 
+	userID, userErr := uuid.Parse(common.GetUserUuid(c))
+	canView := func(processKey string) bool {
+		if userErr != nil {
+			return true
+		}
+		allowed, permErr := service.CanAccessProcess(pc.db, userID, processKey, "VIEW")
+		return permErr != nil || allowed
+	}
+
 	items := make([]fiber.Map, 0, len(instances))
 	for i := range instances {
+		if !canView(instances[i].ProcessKey) {
+			continue
+		}
 		items = append(items, toV2ProcessInstance(&instances[i]))
 	}
 
@@ -211,6 +244,9 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 		})
 		if histErr == nil {
 			for _, h := range historicRows {
+				if !canView(h.ProcessDefinitionKey) {
+					continue
+				}
 				ended := h.EndedAt
 				hi := models.ProcessInstance{
 					ID:                  h.ID,
