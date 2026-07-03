@@ -112,6 +112,7 @@ async function main() {
     '22_audit_trail.test.ts',
     '23_admin_and_permissions.test.ts',
     '24_grpc_gateway.test.ts',
+    '25_analytics.test.ts',
   ];
 
   const exitCodes: number[] = [];

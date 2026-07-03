@@ -6,15 +6,28 @@ option go_package = "github.com/jeremielodi/goflow/internal/zeebegrpc/pb";
 
 // gateway.proto — GoFlow's implementation of a subset of Zeebe's Gateway
 // Protocol (see https://github.com/camunda/camunda, module
-// zeebe/gateway-protocol). Only the 6 RPCs that make up Zeebe's actual
-// core client loop are implemented here: Topology, DeployResource,
-// CreateProcessInstance, ActivateJobs, CompleteJob, FailJob. Any other
-// method a real Zeebe client SDK calls (PublishMessage,
-// CancelProcessInstance, EvaluateDecision, ResolveIncident, ...) is not
-// registered on this server at all, so grpc-go returns a standard
-// UNIMPLEMENTED status automatically for that method path — the same
-// experience a real client gets calling an unsupported RPC against an
+// zeebe/gateway-protocol). Implements the 6 RPCs that make up Zeebe's
+// core client loop (Topology, DeployResource, CreateProcessInstance,
+// ActivateJobs, CompleteJob, FailJob) plus 5 more that each reuse an
+// existing GoFlow service/engine function with no new business logic
+// (PublishMessage, CancelProcessInstance, EvaluateDecision,
+// ResolveIncident, ModifyProcessInstance). Any other method a real Zeebe
+// client SDK calls (MigrateProcessInstance, ...) is not registered on
+// this server at all, so grpc-go returns a standard UNIMPLEMENTED
+// status automatically for that method path — the same experience a
+// real client gets calling an unsupported RPC against an
 // older/limited broker, no special-casing needed on our side.
+//
+// ModifyProcessInstance note: real Zeebe's actual request also has a
+// dedicated `moveInstructions` field and richer activate/variable
+// instructions, but the zeebe-node SDK version this project tests
+// against predates that addition — its ModifyProcessInstanceRequest only
+// has activateInstructions/terminateInstructions, and its
+// TerminateInstruction has no elementId, only an opaque
+// elementInstanceKey GoFlow has no mapping for. So this implementation
+// only supports one implied move per call, deriving the source element
+// from the instance's single active execution — see the ModifyProcessInstance
+// handler in internal/zeebegrpc/server.go for the full rationale.
 //
 // Message field NAMES, NUMBERS, and TYPES below are matched to the real
 // Zeebe protocol where implemented — this is required for wire
@@ -40,6 +53,11 @@ service Gateway {
   rpc ActivateJobs(ActivateJobsRequest) returns (stream ActivateJobsResponse);
   rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse);
   rpc FailJob(FailJobRequest) returns (FailJobResponse);
+  rpc PublishMessage(PublishMessageRequest) returns (PublishMessageResponse);
+  rpc CancelProcessInstance(CancelProcessInstanceRequest) returns (CancelProcessInstanceResponse);
+  rpc EvaluateDecision(EvaluateDecisionRequest) returns (EvaluateDecisionResponse);
+  rpc ResolveIncident(ResolveIncidentRequest) returns (ResolveIncidentResponse);
+  rpc ModifyProcessInstance(ModifyProcessInstanceRequest) returns (ModifyProcessInstanceResponse);
 }
 
 // ── Topology ────────────────────────────────────────────────────────────
@@ -201,3 +219,109 @@ message FailJobRequest {
 }
 
 message FailJobResponse {}
+
+// ── PublishMessage ──────────────────────────────────────────────────────
+// Maps 1:1 onto internal/api.MessageController.Correlate, the same
+// function the existing /engine-rest/message and /v2/messages/publication
+// REST endpoints already share. Zeebe correlates by a single opaque
+// correlationKey string rather than a named process variable; GoFlow's
+// subscriptions are keyed by variable name, so (matching what the v2 REST
+// handler already does) this is correlated against a synthetic
+// "correlationKey" variable when set.
+
+message PublishMessageRequest {
+  string name = 1;
+  string correlationKey = 2;
+  int64 timeToLive = 3;
+  string messageId = 4;
+  string variables = 5;
+  string tenantId = 6;
+  // field 7 (businessId) intentionally omitted — out of scope.
+}
+
+message PublishMessageResponse {
+  int64 key = 1;
+  string tenantId = 2;
+}
+
+// ── CancelProcessInstance ───────────────────────────────────────────────
+// Maps onto internal/service.TerminateProcessInstance, the same soft-
+// delete termination logic the existing DELETE /process-instance/:id REST
+// endpoint uses.
+
+message CancelProcessInstanceRequest {
+  int64 processInstanceKey = 1;
+  // field 2 (operationReference) intentionally omitted — out of scope.
+}
+
+message CancelProcessInstanceResponse {}
+
+// ── EvaluateDecision ────────────────────────────────────────────────────
+// Maps onto internal/dmn.EvaluateDecisionTable, the same pure evaluator
+// the existing POST /v2/decisions/:key/evaluation REST endpoint uses.
+// GoFlow has no int64 key assigned to decisions yet (DeployResource's
+// response only assigns keys to process definitions) — only decisionId
+// (the DMN decision's string id) is supported; decisionKey is accepted on
+// the wire for shape-completeness but not resolvable, matching how a real
+// gateway would reject a key from a decision it doesn't know either.
+
+message EvaluateDecisionRequest {
+  int64 decisionKey = 1;
+  string decisionId = 2;
+  string variables = 3;
+  string tenantId = 4;
+}
+
+message EvaluateDecisionResponse {
+  int64 decisionKey = 1;
+  string decisionId = 2;
+  string decisionName = 3;
+  int32 decisionVersion = 4;
+  string decisionRequirementsId = 5;
+  int64 decisionRequirementsKey = 6;
+  string decisionOutput = 7;
+  // field 8 (evaluatedDecisions) intentionally omitted — GoFlow's
+  // evaluator doesn't produce a full decision-requirements-graph trace.
+  string failedDecisionId = 9;
+  string failureMessage = 10;
+  string tenantId = 11;
+}
+
+// ── ResolveIncident ─────────────────────────────────────────────────────
+// Maps onto internal/repository.IncidentRepository.Resolve — previously
+// dead code (never called from any REST path; SetJobRetries uses the
+// separate ResolveByJobID instead). Since incidents have never had a
+// zeebe_keys entry minted anywhere (no gRPC-side incident listing exists
+// to do it lazily, and real Zeebe's own Gateway protocol has none either
+// — real clients learn incident keys from Operate/exporters), the REST
+// GetIncident/ListIncidents responses now also return a zeebeKey field as
+// the bridge (see internal/api/incident_controller.go).
+
+message ResolveIncidentRequest {
+  int64 incidentKey = 1;
+}
+
+message ResolveIncidentResponse {}
+
+// ── ModifyProcessInstance ───────────────────────────────────────────────
+// See the file-level comment above for why this only supports one
+// implied move per call via activateInstructions[0], deriving the source
+// element from the instance's single active execution rather than from
+// terminateInstructions (whose only field, elementInstanceKey, GoFlow has
+// no mapping for).
+
+message ModifyProcessInstanceRequest {
+  int64 processInstanceKey = 1;
+  repeated ActivateInstruction activateInstructions = 2;
+  repeated TerminateInstruction terminateInstructions = 3;
+}
+
+message ActivateInstruction {
+  string elementId = 1;
+}
+
+message TerminateInstruction {
+  int64 elementInstanceKey = 1;
+}
+
+message ModifyProcessInstanceResponse {}

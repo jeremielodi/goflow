@@ -75,7 +75,7 @@ func EvaluateValue(expr string, variables map[string]interface{}) (interface{}, 
 		return nil, err
 	}
 
-	out, _, err := prg.Eval(variables)
+	out, _, err := prg.Eval(convertNumericVars(variables))
 	if err != nil {
 		return nil, fmt.Errorf("expression evaluation error for '%s': %w", normalized, err)
 	}
@@ -120,6 +120,33 @@ func compileExpression(expr string, variables map[string]interface{}) (string, c
 	return normalized, prg, nil
 }
 
+// convertNumericVars coerces Go int-family/float32 values to float64.
+// CEL infers each DynType variable's concrete type from the Go value
+// handed to it at Eval time, so a Go int mixed with a float64 in the same
+// arithmetic expression (e.g. two variables that came from different
+// sources — one decoded from JSON as float64, another set as a plain int
+// elsewhere) throws a CEL runtime "no matching overload" error even though
+// the expression is otherwise valid. Normalizing every numeric variable to
+// float64 before Eval avoids that entirely.
+func convertNumericVars(vars map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(vars))
+	for k, v := range vars {
+		switch val := v.(type) {
+		case int:
+			out[k] = float64(val)
+		case int32:
+			out[k] = float64(val)
+		case int64:
+			out[k] = float64(val)
+		case float32:
+			out[k] = float64(val)
+		default:
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // normalizeExpression normalizes BPMN/FEEL expression to CEL syntax
 func normalizeExpression(expr string) (string, error) {
 	expr = strings.TrimSpace(expr)
@@ -145,11 +172,52 @@ func normalizeExpression(expr string) (string, error) {
 	return convertFEELToCEL(expr), nil
 }
 
-// convertFEELToCEL converts BPMN FEEL syntax to CEL syntax
+// convertFEELToCEL converts BPMN FEEL syntax to CEL syntax. Keyword and
+// operator substitutions only apply outside quoted string literals —
+// applying them across the whole expression (as a single global
+// ReplaceAll used to) would corrupt a literal like "cash and carry" into
+// "cash && carry", since the substitution can't tell a logical keyword
+// from the same text inside a string.
 func convertFEELToCEL(expr string) string {
-	// Convert single quotes to double quotes for strings
-	expr = regexp.MustCompile(`'([^']*)'`).ReplaceAllString(expr, `"$1"`)
+	var out strings.Builder
+	var unquoted strings.Builder
+	inQuotes := false
+	var quoteChar byte
 
+	flushUnquoted := func() {
+		out.WriteString(applyFEELOperatorSubstitutions(unquoted.String()))
+		unquoted.Reset()
+	}
+
+	for i := 0; i < len(expr); i++ {
+		c := expr[i]
+		if inQuotes {
+			if c == quoteChar {
+				inQuotes = false
+				out.WriteByte('"') // normalize both ' and " delimiters to "
+				continue
+			}
+			out.WriteByte(c)
+			continue
+		}
+		if c == '"' || c == '\'' {
+			flushUnquoted()
+			inQuotes = true
+			quoteChar = c
+			out.WriteByte('"')
+			continue
+		}
+		unquoted.WriteByte(c)
+	}
+	flushUnquoted()
+
+	return strings.TrimSpace(out.String())
+}
+
+// applyFEELOperatorSubstitutions runs the FEEL->CEL keyword/operator
+// rewrites and whitespace cleanup on a single unquoted segment of an
+// expression (see convertFEELToCEL).
+func applyFEELOperatorSubstitutions(expr string) string {
 	// Logical operators
 	expr = strings.ReplaceAll(expr, " and ", " && ")
 	expr = strings.ReplaceAll(expr, " AND ", " && ")
@@ -176,12 +244,12 @@ func convertFEELToCEL(expr string) string {
 	// Clean up multiple spaces
 	expr = regexp.MustCompile(`\s+`).ReplaceAllString(expr, " ")
 
-	return strings.TrimSpace(expr)
+	return expr
 }
 
 // executeProgram executes a CEL program with given variables
 func executeProgram(prg cel.Program, variables map[string]interface{}, originalExpr string) (bool, error) {
-	out, _, err := prg.Eval(variables)
+	out, _, err := prg.Eval(convertNumericVars(variables))
 	if err != nil {
 		return false, fmt.Errorf("condition evaluation error for '%s': %w", originalExpr, err)
 	}

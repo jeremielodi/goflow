@@ -102,6 +102,30 @@ export interface Incident {
   resolvedAt?: string;
 }
 
+export interface ProcessKeyStats {
+  processKey: string;
+  runningCount: number;
+  completedCount: number;
+  terminatedCount: number;
+  avgDurationMillis?: number | null;
+  p50DurationMillis?: number | null;
+  p95DurationMillis?: number | null;
+  incidentCount: number;
+  incidentRate: number;
+}
+
+export interface ThroughputPoint {
+  date: string;
+  started: number;
+  completed: number;
+  terminated: number;
+}
+
+export interface ProcessStats {
+  byProcessKey: ProcessKeyStats[];
+  throughput: ThroughputPoint[];
+}
+
 export interface Variable {
   value: unknown;
   type: string;

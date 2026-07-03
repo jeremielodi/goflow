@@ -27,18 +27,18 @@ func NewHistoricArchiveRepository(db *sqlx.DB) *HistoricArchiveRepository {
 // a repository-local type (not shared with internal/service) to avoid an
 // import cycle: internal/service already imports internal/repository.
 type HistoricProcessInstance struct {
-	ID                       uuid.UUID  `db:"id" json:"id"`
-	ProcessDefinitionID      uuid.UUID  `db:"process_definition_id" json:"processDefinitionId"`
-	ProcessDefinitionKey     string     `db:"process_definition_key" json:"processDefinitionKey"`
-	ProcessDefinitionVersion *int       `db:"process_definition_version" json:"processDefinitionVersion,omitempty"`
-	TenantID                 *string    `db:"tenant_id" json:"tenantId,omitempty"`
-	StartedBy                *string    `db:"started_by" json:"startedBy,omitempty"`
-	StartedAt                time.Time  `db:"started_at" json:"startedAt"`
-	EndedAt                  time.Time  `db:"ended_at" json:"endedAt"`
-	DurationMillis           *int64     `db:"duration_millis" json:"durationInMillis,omitempty"`
-	State                    string     `db:"state" json:"state"`
-	DeleteReason             *string    `db:"delete_reason" json:"deleteReason,omitempty"`
-	ArchivedAt               time.Time  `db:"archived_at" json:"archivedAt"`
+	ID                       uuid.UUID `db:"id" json:"id"`
+	ProcessDefinitionID      uuid.UUID `db:"process_definition_id" json:"processDefinitionId"`
+	ProcessDefinitionKey     string    `db:"process_definition_key" json:"processDefinitionKey"`
+	ProcessDefinitionVersion *int      `db:"process_definition_version" json:"processDefinitionVersion,omitempty"`
+	TenantID                 *string   `db:"tenant_id" json:"tenantId,omitempty"`
+	StartedBy                *string   `db:"started_by" json:"startedBy,omitempty"`
+	StartedAt                time.Time `db:"started_at" json:"startedAt"`
+	EndedAt                  time.Time `db:"ended_at" json:"endedAt"`
+	DurationMillis           *int64    `db:"duration_millis" json:"durationInMillis,omitempty"`
+	State                    string    `db:"state" json:"state"`
+	DeleteReason             *string   `db:"delete_reason" json:"deleteReason,omitempty"`
+	ArchivedAt               time.Time `db:"archived_at" json:"archivedAt"`
 }
 
 // HistoricActivityInstanceRow mirrors historic_activity_instances — shaped
@@ -66,6 +66,21 @@ type HistoricTaskRow struct {
 	CreatedAt         time.Time  `db:"created_at"`
 	ClaimedAt         *time.Time `db:"claimed_at"`
 	CompletedAt       *time.Time `db:"completed_at"`
+}
+
+// HistoricIncidentRow mirrors historic_incidents.
+type HistoricIncidentRow struct {
+	ID                   uuid.UUID  `db:"id"`
+	ProcessInstanceID    uuid.UUID  `db:"process_instance_id"`
+	ProcessDefinitionKey string     `db:"process_definition_key"`
+	JobID                *uuid.UUID `db:"job_id"`
+	IncidentType         string     `db:"incident_type"`
+	ActivityID           string     `db:"activity_id"`
+	ErrorMessage         *string    `db:"error_message"`
+	ErrorCode            *string    `db:"error_code"`
+	State                string     `db:"state"`
+	CreatedAt            time.Time  `db:"created_at"`
+	ResolvedAt           *time.Time `db:"resolved_at"`
 }
 
 // ---- Writes (archival) ------------------------------------------------
@@ -102,6 +117,22 @@ func (r *HistoricArchiveRepository) InsertTasksTx(tx *sqlx.Tx, instanceID uuid.U
 				(id, process_instance_id, task_definition_key, task_name, assignee, status, priority, created_at, claimed_at, completed_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		`, row.ID, instanceID, row.TaskDefinitionKey, row.TaskName, row.Assignee, row.Status, row.Priority, row.CreatedAt, row.ClaimedAt, row.CompletedAt)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *HistoricArchiveRepository) InsertIncidentsTx(tx *sqlx.Tx, rows []HistoricIncidentRow) error {
+	for _, row := range rows {
+		_, err := tx.Exec(`
+			INSERT INTO public.historic_incidents
+				(id, process_instance_id, process_definition_key, job_id, incident_type,
+				 activity_id, error_message, error_code, state, created_at, resolved_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, row.ID, row.ProcessInstanceID, row.ProcessDefinitionKey, row.JobID, row.IncidentType,
+			row.ActivityID, row.ErrorMessage, row.ErrorCode, row.State, row.CreatedAt, row.ResolvedAt)
 		if err != nil {
 			return err
 		}
@@ -354,4 +385,3 @@ func (r *HistoricArchiveRepository) FindVariablesByProcessInstance(id uuid.UUID)
 	}
 	return vars, nil
 }
-

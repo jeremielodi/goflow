@@ -14,6 +14,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/api"
+	"github.com/jeremielodi/goflow/internal/dmn"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
@@ -35,6 +38,7 @@ type Server struct {
 	processInstanceRepo *repository.ProcessInstanceRepository
 	externalTaskRepo    *repository.ExternalTaskRepository
 	engineRepo          *repository.EngineRepository
+	incidentRepo        *repository.IncidentRepository
 	zeebeKeys           *repository.ZeebeKeyRepository
 }
 
@@ -46,6 +50,7 @@ func NewServer(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *Server {
 		processInstanceRepo: repository.NewProcessInstanceRepository(db),
 		externalTaskRepo:    repository.NewExternalTaskRepository(db),
 		engineRepo:          repository.NewEngineRepository(db, dispatcher),
+		incidentRepo:        repository.NewIncidentRepository(db),
 		zeebeKeys:           repository.NewZeebeKeyRepository(db),
 	}
 }
@@ -202,7 +207,13 @@ func (s *Server) CreateProcessInstance(ctx context.Context, req *pb.CreateProces
 
 const (
 	defaultActivateJobsTimeout = 10 * time.Second
-	activateJobsPollInterval   = 750 * time.Millisecond
+	// activateJobsFallbackPoll is a safety-net interval, not the primary
+	// wake-up mechanism: repository.NotifyJobAvailable wakes this loop
+	// near-instantly when a new job of this type is created, but a job
+	// whose lock simply expired (locked_until < NOW()) becomes fetchable
+	// again without any notify firing, so a fallback poll is still needed
+	// to pick those up.
+	activateJobsFallbackPoll = 2 * time.Second
 )
 
 func (s *Server) ActivateJobs(req *pb.ActivateJobsRequest, stream pb.Gateway_ActivateJobsServer) error {
@@ -227,6 +238,13 @@ func (s *Server) ActivateJobs(req *pb.ActivateJobsRequest, stream pb.Gateway_Act
 			return nil
 		}
 
+		// Snapshot the wake channel *before* fetching, so a job created
+		// in the gap between this fetch and the select below still wakes
+		// us — NotifyJobAvailable installs a fresh channel every time it
+		// fires, so this snapshot can only be closed by a notify that
+		// happens after this point.
+		wake := repository.JobWakeChannel(req.Type)
+
 		jobs, err := s.fetchAndLockOneBatch(req.Type, req.Worker, lockDuration, maxJobs)
 		if err != nil {
 			return status.Error(codes.Internal, err.Error())
@@ -239,7 +257,8 @@ func (s *Server) ActivateJobs(req *pb.ActivateJobsRequest, stream pb.Gateway_Act
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(activateJobsPollInterval):
+		case <-wake:
+		case <-time.After(activateJobsFallbackPoll):
 		}
 	}
 
@@ -396,4 +415,182 @@ func mapJobError(err error) error {
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
+}
+
+// ── PublishMessage ──────────────────────────────────────────────────────
+
+func (s *Server) PublishMessage(ctx context.Context, req *pb.PublishMessageRequest) (*pb.PublishMessageResponse, error) {
+	var vars map[string]interface{}
+	if req.Variables != "" {
+		if err := json.Unmarshal([]byte(req.Variables), &vars); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid variables JSON: %v", err)
+		}
+	}
+
+	// Zeebe correlates by a single opaque key; GoFlow's subscriptions are
+	// keyed by variable name, so — matching what the v2 REST handler
+	// already does — correlate against a synthetic "correlationKey"
+	// variable when the client sets one.
+	var correlationKeys map[string]interface{}
+	if req.CorrelationKey != "" {
+		correlationKeys = map[string]interface{}{"correlationKey": req.CorrelationKey}
+	}
+
+	msgCtrl := api.NewMessageController(s.db, s.dispatcher)
+	_, _, err := msgCtrl.Correlate(req.Name, correlationKeys, vars)
+	if err != nil {
+		if errors.Is(err, api.ErrNoMatchingSubscription) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	// Zeebe assigns every published message a key; GoFlow has no message
+	// entity to key off, so mint a fresh one via the same zeebe_keys table
+	// used for every other resource type — nothing ever needs to resolve
+	// it back.
+	key, err := s.zeebeKeys.GetOrAssignKey("message", uuid.New())
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.PublishMessageResponse{Key: key, TenantId: req.TenantId}, nil
+}
+
+// ── CancelProcessInstance ───────────────────────────────────────────────
+
+func (s *Server) CancelProcessInstance(ctx context.Context, req *pb.CancelProcessInstanceRequest) (*pb.CancelProcessInstanceResponse, error) {
+	instanceID, err := s.zeebeKeys.ResolveKey("process_instance", req.ProcessInstanceKey)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
+	}
+
+	if err := service.TerminateProcessInstance(s.db, s.dispatcher, instanceID, "cancelled via gRPC CancelProcessInstance"); err != nil {
+		if errors.Is(err, service.ErrProcessInstanceNotFound) {
+			return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
+		}
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.CancelProcessInstanceResponse{}, nil
+}
+
+// ── EvaluateDecision ────────────────────────────────────────────────────
+
+func (s *Server) EvaluateDecision(ctx context.Context, req *pb.EvaluateDecisionRequest) (*pb.EvaluateDecisionResponse, error) {
+	if req.DecisionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "decisionId is required (decisionKey lookup is not supported: GoFlow has not assigned int64 keys to decisions)")
+	}
+
+	dmnRepo := repository.NewDMNRepository(s.db)
+	decision, err := dmnRepo.FindLatestDecisionByKey(req.DecisionId)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "no decision found for id %s", req.DecisionId)
+	}
+
+	var parsed dmn.Decision
+	if err := json.Unmarshal(decision.ParsedTable, &parsed); err != nil || parsed.DecisionTable == nil {
+		return nil, status.Error(codes.Internal, "decision has no evaluable decision table")
+	}
+
+	var vars map[string]interface{}
+	if req.Variables != "" {
+		if err := json.Unmarshal([]byte(req.Variables), &vars); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid variables JSON: %v", err)
+		}
+	}
+
+	result, err := dmn.EvaluateDecisionTable(parsed.DecisionTable, vars)
+	if err != nil {
+		return &pb.EvaluateDecisionResponse{
+			FailedDecisionId: req.DecisionId,
+			FailureMessage:   err.Error(),
+		}, nil
+	}
+
+	outputJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.EvaluateDecisionResponse{
+		DecisionId:      decision.DecisionKey,
+		DecisionVersion: int32(decision.Version),
+		DecisionOutput:  string(outputJSON),
+		TenantId:        req.TenantId,
+	}, nil
+}
+
+// ── ResolveIncident ─────────────────────────────────────────────────────
+
+func (s *Server) ResolveIncident(ctx context.Context, req *pb.ResolveIncidentRequest) (*pb.ResolveIncidentResponse, error) {
+	incidentID, err := s.zeebeKeys.ResolveKey("incident", req.IncidentKey)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "incident key %d not found", req.IncidentKey)
+	}
+
+	if err := s.incidentRepo.Resolve(incidentID); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.ResolveIncidentResponse{}, nil
+}
+
+// ── ModifyProcessInstance ───────────────────────────────────────────────
+// Only one implied move per call is supported: the target comes from
+// activateInstructions[0].ElementId, and the source is derived
+// automatically as the instance's single active execution rather than
+// from terminateInstructions — see the file-level comment in gateway.proto
+// for why (the real SDK's TerminateInstruction carries only an opaque
+// elementInstanceKey GoFlow has no mapping for). Multi-token instances
+// (parallel gateways, multi-instance) aren't resolvable this way and stay
+// out of scope for gRPC modification; POST /v2/process-instances/:id/modification
+// (explicit sourceElementId/targetElementId pairs) remains the way to
+// handle those.
+func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProcessInstanceRequest) (*pb.ModifyProcessInstanceResponse, error) {
+	if len(req.ActivateInstructions) != 1 {
+		return nil, status.Error(codes.InvalidArgument, "exactly one activateInstruction is supported (single token move only)")
+	}
+	targetElementID := req.ActivateInstructions[0].ElementId
+	if targetElementID == "" {
+		return nil, status.Error(codes.InvalidArgument, "activateInstructions[0].elementId is required")
+	}
+
+	instanceID, err := s.zeebeKeys.ResolveKey("process_instance", req.ProcessInstanceKey)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
+	}
+
+	inst, err := s.processInstanceRepo.FindByID(instanceID)
+	if err != nil || inst == nil {
+		return nil, status.Errorf(codes.NotFound, "process instance not found")
+	}
+	def, err := s.processRepo.FindProcessDefinitionByID(inst.ProcessDefinitionID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	var graph engine.ProcessGraph
+	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
+		return nil, status.Error(codes.Internal, "failed to parse process graph")
+	}
+
+	activeExecutions, err := s.processInstanceRepo.GetActiveExecutions(instanceID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	if len(activeExecutions) != 1 {
+		return nil, status.Errorf(codes.FailedPrecondition, "expected exactly one active execution to move, found %d (multi-token modification is not supported over gRPC — use POST /v2/process-instances/:id/modification instead)", len(activeExecutions))
+	}
+
+	moves := []runtime.MoveInstruction{{
+		SourceElementID: activeExecutions[0].CurrentElementID,
+		TargetElementID: targetElementID,
+	}}
+
+	rt := runtime.NewRuntime(&graph, s.db, s.dispatcher)
+	if _, err := rt.ModifyInstance(ctx, instanceID, moves); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return &pb.ModifyProcessInstanceResponse{}, nil
 }

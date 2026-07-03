@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -683,86 +684,15 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 		reason = "Process terminated by user"
 	}
 
-	// Get process instance to check if it exists
-	_, err = pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{
-			"type":    "NotFound",
-			"message": "Process instance not found",
-		})
-	}
-
-	// Add termination reason as a variable
-	variables := map[string]interface{}{
-		"terminated":        true,
-		"terminatedAt":      time.Now(),
-		"terminationReason": reason,
-	}
-
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, variables); err != nil {
-		// Log error but continue with termination
-		fmt.Printf("Warning: Failed to add termination variables: %v\n", err)
-	}
-
-	// Soft-delete: mark the instance (and everything still open under it)
-	// terminated instead of hard-deleting the row. A hard DELETE would
-	// cascade onto audit_logs (ON DELETE CASCADE), wiping the instance's
-	// own replay history moments after it's written. Every other consumer
-	// (FindHistoricByID/FindAllHistoric, GetStatistics, history_controller.go,
-	// the frontend's ProcessInstance type/Badge) already expects a
-	// status='terminated' row to persist — this was the only path that
-	// didn't.
-	taskRepo := repository.NewTaskRepository(pc.db, pc.dispatcher)
-	engineRepo := repository.NewEngineRepository(pc.db, pc.dispatcher)
-
-	tx, err := pc.db.Beginx()
-	if err != nil {
+	// Shared with the gRPC CancelProcessInstance RPC.
+	if err := service.TerminateProcessInstance(pc.db, pc.dispatcher, instanceID, reason); err != nil {
+		if errors.Is(err, service.ErrProcessInstanceNotFound) {
+			return c.Status(404).JSON(fiber.Map{
+				"type":    "NotFound",
+				"message": "Process instance not found",
+			})
+		}
 		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-	defer tx.Rollback()
-
-	now := time.Now()
-	if err := pc.processInstanceRepo.UpdateProcessInstanceStatusTx(tx, instanceID, "terminated", &now); err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-
-	// Explicitly clean up everything a hard-delete's FK cascade used to
-	// clean up implicitly, so nothing is left looking open/active/pending
-	// for a process that no longer runs.
-	cancelledTaskIDs, err := taskRepo.CancelOpenTasksByProcessInstanceTx(tx, instanceID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-	if err := pc.processInstanceRepo.TerminateActiveExecutionsByProcessInstanceTx(tx, instanceID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-	cancelledJobIDs, err := engineRepo.CancelPendingJobsByProcessInstanceTx(tx, instanceID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-	if err := engineRepo.DeleteTimersByProcessInstanceTx(tx, instanceID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-	}
-
-	service.LogAuditErr("process terminated", pc.auditService.LogProcessTerminated(instanceID, reason))
-	for _, taskID := range cancelledTaskIDs {
-		service.LogAuditErr("task cancelled", pc.auditService.LogTaskCancelled(taskID, instanceID, "process terminated"))
-	}
-	for _, jobID := range cancelledJobIDs {
-		service.LogAuditErr("job cancelled", pc.auditService.LogJobFailed(jobID, instanceID, "cancelled: process terminated", 0))
-	}
-	service.LogAuditErr("timers cancelled", pc.auditService.LogTimerCancelled(instanceID, nil))
-
-	// Archive into historic_* tables and remove the live rows — see
-	// internal/service/archive_service.go. Best-effort: a failed archive
-	// leaves the instance live (already safely marked terminated above),
-	// never risking data loss.
-	if err := service.ArchiveAndDeleteProcessInstance(pc.db, instanceID, &reason); err != nil {
-		fmt.Printf("Warning: failed to archive terminated process instance %s: %v\n", instanceID, err)
 	}
 
 	return c.Status(204).Send(nil)

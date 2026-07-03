@@ -391,6 +391,12 @@ ON jobs(status);
 CREATE INDEX idx_jobs_type
 ON jobs(job_type);
 
+-- Composite partial index for the hot fetch-and-lock query (job_type +
+-- status = 'pending') — see migrations/008_jobs_composite_index.sql.
+CREATE INDEX IF NOT EXISTS idx_jobs_type_status_pending
+ON jobs(job_type, status)
+WHERE status = 'pending';
+
 -- =========================================================
 -- TIMER JOBS
 -- Used later for BPMN timers/events
@@ -691,6 +697,16 @@ ON historic_process_instances(process_definition_key);
 CREATE INDEX IF NOT EXISTS idx_historic_process_instances_tenant_id
 ON historic_process_instances(tenant_id);
 
+-- Analytics query support — see migrations/010_historic_process_instance_time_indexes.sql.
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_started_at
+ON historic_process_instances(started_at);
+
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_ended_at
+ON historic_process_instances(ended_at);
+
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_key_started_at
+ON historic_process_instances(process_definition_key, started_at);
+
 -- The archived form of a token-history step (see TokenHistoryStep in
 -- internal/service/token_history_service.go, which this mirrors exactly
 -- so BuildTokenHistory's output can be inserted here unchanged).
@@ -744,6 +760,32 @@ CREATE TABLE IF NOT EXISTS historic_variables (
 
 CREATE INDEX IF NOT EXISTS idx_historic_variables_process_instance_id
 ON historic_variables(process_instance_id);
+
+-- Archived incidents — see migrations/009_historic_incidents.sql for why
+-- this exists (incidents.process_instance_id has ON DELETE CASCADE, so
+-- without this, every incident vanishes the moment its instance archives).
+CREATE TABLE IF NOT EXISTS historic_incidents (
+    id UUID PRIMARY KEY,
+    process_instance_id UUID NOT NULL
+        REFERENCES historic_process_instances(id)
+        ON DELETE CASCADE,
+    process_definition_key TEXT NOT NULL,
+    job_id UUID NULL,
+    incident_type TEXT NOT NULL,
+    activity_id TEXT NOT NULL,
+    error_message TEXT NULL,
+    error_code TEXT NULL,
+    state TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    resolved_at TIMESTAMP NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_historic_incidents_process_definition_key
+ON historic_incidents(process_definition_key);
+
+CREATE INDEX IF NOT EXISTS idx_historic_incidents_process_instance_id
+ON historic_incidents(process_instance_id);
 
 -- Per-resource ACL for process definitions, keyed by process_key (covers
 -- every version under that key). A key with zero rows here is

@@ -10,6 +10,7 @@ import InstanceDetail from './pages/InstanceDetail';
 import Tasks from './pages/Tasks';
 import Incidents from './pages/Incidents';
 import History from './pages/History';
+import Analytics from './pages/Analytics';
 import AdminUsers from './pages/admin/Users';
 import AdminRoles from './pages/admin/Roles';
 import { Spinner } from './components/ui';
@@ -57,6 +58,7 @@ export default function App() {
               <Route path="/tasks"         element={<Tasks />} />
               <Route path="/incidents"     element={<Incidents />} />
               <Route path="/history"       element={<History />} />
+              <Route path="/analytics"     element={<Analytics />} />
               <Route path="/admin/users"   element={<AdminUsers />} />
               <Route path="/admin/roles"   element={<AdminRoles />} />
               <Route path="*"              element={<Navigate to="/" replace />} />

@@ -23,8 +23,33 @@ var (
 	ErrNodeNotFound         = errors.New("node not found in graph")
 )
 
-// graphCache holds deserialized ProcessGraph values keyed by process_instance_id string.
-var graphCache sync.Map
+// graphCache holds deserialized ProcessGraph values keyed by process_definition_id
+// string — the graph is a property of the definition, not the instance, so every
+// instance of the same definition shares one cache entry instead of duplicating
+// an identical graph per instance. instanceToDefCache is a small, cheap
+// instanceID->definitionID lookup so a cache hit still costs zero DB round
+// trips (mirrors what the old instance-keyed cache gave for free). Both are
+// bounded like internal/common/condition.go's compilationCache: evict one
+// arbitrary entry on overflow rather than growing forever.
+const (
+	graphCacheMaxEntries       = 500
+	instanceDefCacheMaxEntries = 5000
+)
+
+var (
+	graphCacheMu       sync.RWMutex
+	graphCache         = make(map[string]*engine.ProcessGraph)
+	instanceToDefCache = make(map[string]string)
+)
+
+// ClearGraphCache clears the process-graph cache. Mirrors condition.go's
+// ClearConditionCache; mainly useful for tests.
+func ClearGraphCache() {
+	graphCacheMu.Lock()
+	defer graphCacheMu.Unlock()
+	graphCache = make(map[string]*engine.ProcessGraph)
+	instanceToDefCache = make(map[string]string)
+}
 
 type EngineRepository struct {
 	db         *sqlx.DB
@@ -638,31 +663,68 @@ func (r *EngineRepository) GetProcessDefinitionByInstanceID(instanceID uuid.UUID
 }
 
 // GetProcessGraphByInstanceID retrieves the process graph for a process instance.
-// Results are cached in-process to avoid repeated JSON deserialization.
+// Results are cached in-process, deduplicated per process definition, to avoid
+// repeated JSON deserialization.
 func (r *EngineRepository) GetProcessGraphByInstanceID(instanceID uuid.UUID) (*engine.ProcessGraph, error) {
-	key := instanceID.String()
-	if cached, ok := graphCache.Load(key); ok {
-		return cached.(*engine.ProcessGraph), nil
+	instanceKey := instanceID.String()
+
+	graphCacheMu.RLock()
+	defID, haveDefID := instanceToDefCache[instanceKey]
+	var cachedGraph *engine.ProcessGraph
+	if haveDefID {
+		cachedGraph = graphCache[defID]
+	}
+	graphCacheMu.RUnlock()
+	if cachedGraph != nil {
+		return cachedGraph, nil
 	}
 
-	var graphJSON []byte
+	var row struct {
+		ParsedGraph         []byte    `db:"parsed_graph"`
+		ProcessDefinitionID uuid.UUID `db:"process_definition_id"`
+	}
 	query := `
-		SELECT pd.parsed_graph
+		SELECT pd.parsed_graph, pd.id AS process_definition_id
 		FROM public.process_definitions pd
 		JOIN public.process_instances pi ON pi.process_definition_id = pd.id
 		WHERE pi.id = $1
 	`
-	if err := r.db.Get(&graphJSON, query, instanceID); err != nil {
+	if err := r.db.Get(&row, query, instanceID); err != nil {
 		return nil, err
 	}
 
 	var graph engine.ProcessGraph
-	if err := json.Unmarshal(graphJSON, &graph); err != nil {
+	if err := json.Unmarshal(row.ParsedGraph, &graph); err != nil {
 		return nil, err
 	}
+	graphPtr := &graph
 
-	graphCache.Store(key, &graph)
-	return &graph, nil
+	defKey := row.ProcessDefinitionID.String()
+	graphCacheMu.Lock()
+	// Another instance of this same definition may already have populated
+	// graphCache — reuse that pointer instead of overwriting it with the
+	// one just parsed, so instances of one definition truly share a single
+	// cached graph rather than the most-recently-queried instance winning.
+	if existing, ok := graphCache[defKey]; ok {
+		graphPtr = existing
+	} else {
+		if len(graphCache) >= graphCacheMaxEntries {
+			for k := range graphCache {
+				delete(graphCache, k)
+				break
+			}
+		}
+		graphCache[defKey] = graphPtr
+	}
+	if len(instanceToDefCache) >= instanceDefCacheMaxEntries {
+		for k := range instanceToDefCache {
+			delete(instanceToDefCache, k)
+			break
+		}
+	}
+	instanceToDefCache[instanceKey] = defKey
+	graphCacheMu.Unlock()
+	return graphPtr, nil
 }
 
 // GetNodeByID retrieves a node from the graph by ID

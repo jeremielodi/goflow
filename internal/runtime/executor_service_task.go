@@ -59,6 +59,7 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	repository.NotifyJobAvailable(*node.JobType)
 	r.auditService.LogJobCreated(exec.ProcessInstanceID, jobID, *node.JobType)
 	return nil
 }

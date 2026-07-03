@@ -22,6 +22,7 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 	taskRepo := repository.NewTaskRepository(db, nil)
 	auditRepo := repository.NewAuditRepository(db)
 	archiveRepo := repository.NewHistoricArchiveRepository(db)
+	incidentRepo := repository.NewIncidentRepository(db)
 
 	instance, err := instanceRepo.FindByID(instanceID)
 	if err != nil {
@@ -49,6 +50,10 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 	if err != nil {
 		return fmt.Errorf("failed to load audit logs: %w", err)
 	}
+	incidents, err := incidentRepo.List(repository.IncidentFilter{ProcessInstanceID: &instanceID})
+	if err != nil {
+		return fmt.Errorf("failed to load incidents: %w", err)
+	}
 
 	steps := BuildTokenHistory(logs, tasks)
 	activityRows := make([]repository.HistoricActivityInstanceRow, len(steps))
@@ -63,6 +68,30 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 			Detail:            nilIfEmpty(step.Detail),
 			OccurredAt:        step.Timestamp,
 		}
+	}
+
+	incidentRows := make([]repository.HistoricIncidentRow, len(incidents))
+	for i, inc := range incidents {
+		row := repository.HistoricIncidentRow{
+			ID:                   inc.ID,
+			ProcessInstanceID:    instanceID,
+			ProcessDefinitionKey: instance.ProcessKey,
+			JobID:                inc.JobID,
+			IncidentType:         inc.IncidentType,
+			ActivityID:           inc.ActivityID,
+			State:                inc.State,
+			CreatedAt:            inc.CreatedAt,
+		}
+		if inc.ErrorMessage.Valid {
+			row.ErrorMessage = &inc.ErrorMessage.String
+		}
+		if inc.ErrorCode.Valid {
+			row.ErrorCode = &inc.ErrorCode.String
+		}
+		if inc.ResolvedAt.Valid {
+			row.ResolvedAt = &inc.ResolvedAt.Time
+		}
+		incidentRows[i] = row
 	}
 
 	taskRows := make([]repository.HistoricTaskRow, len(tasks))
@@ -115,6 +144,9 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 	}
 	if err = archiveRepo.InsertTasksTx(tx, instanceID, taskRows); err != nil {
 		return fmt.Errorf("failed to insert historic tasks: %w", err)
+	}
+	if err = archiveRepo.InsertIncidentsTx(tx, incidentRows); err != nil {
+		return fmt.Errorf("failed to insert historic incidents: %w", err)
 	}
 	if err = archiveRepo.InsertVariablesTx(tx, instanceID, variables, *instance.EndedAt); err != nil {
 		return fmt.Errorf("failed to insert historic variables: %w", err)

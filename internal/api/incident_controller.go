@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
 )
@@ -11,6 +14,7 @@ type IncidentController struct {
 	db           *sqlx.DB
 	incidentRepo *repository.IncidentRepository
 	extTaskRepo  *repository.ExternalTaskRepository
+	zeebeKeys    *repository.ZeebeKeyRepository
 }
 
 func NewIncidentController(db *sqlx.DB) *IncidentController {
@@ -18,7 +22,32 @@ func NewIncidentController(db *sqlx.DB) *IncidentController {
 		db:           db,
 		incidentRepo: repository.NewIncidentRepository(db),
 		extTaskRepo:  repository.NewExternalTaskRepository(db),
+		zeebeKeys:    repository.NewZeebeKeyRepository(db),
 	}
+}
+
+// withZeebeKey adds a zeebeKey field (assigned lazily via the same
+// zeebe_keys table jobs/instances already use) to an incident's JSON
+// representation, additively — no existing field changes shape. This is
+// the only way a gRPC caller can discover an incident's int64 key today,
+// since GoFlow has no gRPC-side incident listing to mint one on
+// (real Zeebe's own Gateway protocol has none either — real clients learn
+// incident keys from Operate/exporters, outside the Gateway).
+func (ctrl *IncidentController) withZeebeKey(inc *models.Incident) (map[string]interface{}, error) {
+	zeebeKey, err := ctrl.zeebeKeys.GetOrAssignKey("incident", inc.ID)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(inc)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	m["zeebeKey"] = zeebeKey
+	return m, nil
 }
 
 // GET /engine-rest/incident
@@ -46,7 +75,15 @@ func (ctrl *IncidentController) ListIncidents(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to list incidents", "error": err.Error()})
 	}
-	return c.JSON(incidents)
+	result := make([]map[string]interface{}, len(incidents))
+	for i := range incidents {
+		m, err := ctrl.withZeebeKey(&incidents[i])
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+		}
+		result[i] = m
+	}
+	return c.JSON(result)
 }
 
 // GET /engine-rest/incident/:id
@@ -62,7 +99,11 @@ func (ctrl *IncidentController) GetIncident(c *fiber.Ctx) error {
 	if inc == nil {
 		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
 	}
-	return c.JSON(inc)
+	m, err := ctrl.withZeebeKey(inc)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+	}
+	return c.JSON(m)
 }
 
 // DELETE /engine-rest/incident/:id
@@ -88,7 +129,15 @@ func (ctrl *IncidentController) GetByProcessInstance(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
-	return c.JSON(incidents)
+	result := make([]map[string]interface{}, len(incidents))
+	for i := range incidents {
+		m, err := ctrl.withZeebeKey(&incidents[i])
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+		}
+		result[i] = m
+	}
+	return c.JSON(result)
 }
 
 // POST /engine-rest/job/:id/retries   {"retries": N}

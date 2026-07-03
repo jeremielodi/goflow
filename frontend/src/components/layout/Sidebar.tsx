@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, GitBranch, Play, CheckSquare,
-  AlertTriangle, History, LogOut, Workflow, Users, Shield
+  AlertTriangle, History, LogOut, Workflow, Users, Shield, BarChart3
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -12,6 +12,7 @@ const navItems = [
   { to: '/tasks',      icon: CheckSquare,      label: 'Tasks' },
   { to: '/incidents',  icon: AlertTriangle,    label: 'Incidents' },
   { to: '/history',    icon: History,          label: 'History' },
+  { to: '/analytics',  icon: BarChart3,        label: 'Analytics' },
 ];
 
 const adminNavItems = [

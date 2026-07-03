@@ -25,6 +25,11 @@ const (
 	Gateway_ActivateJobs_FullMethodName          = "/gateway_protocol.Gateway/ActivateJobs"
 	Gateway_CompleteJob_FullMethodName           = "/gateway_protocol.Gateway/CompleteJob"
 	Gateway_FailJob_FullMethodName               = "/gateway_protocol.Gateway/FailJob"
+	Gateway_PublishMessage_FullMethodName        = "/gateway_protocol.Gateway/PublishMessage"
+	Gateway_CancelProcessInstance_FullMethodName = "/gateway_protocol.Gateway/CancelProcessInstance"
+	Gateway_EvaluateDecision_FullMethodName      = "/gateway_protocol.Gateway/EvaluateDecision"
+	Gateway_ResolveIncident_FullMethodName       = "/gateway_protocol.Gateway/ResolveIncident"
+	Gateway_ModifyProcessInstance_FullMethodName = "/gateway_protocol.Gateway/ModifyProcessInstance"
 )
 
 // GatewayClient is the client API for Gateway service.
@@ -37,6 +42,11 @@ type GatewayClient interface {
 	ActivateJobs(ctx context.Context, in *ActivateJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ActivateJobsResponse], error)
 	CompleteJob(ctx context.Context, in *CompleteJobRequest, opts ...grpc.CallOption) (*CompleteJobResponse, error)
 	FailJob(ctx context.Context, in *FailJobRequest, opts ...grpc.CallOption) (*FailJobResponse, error)
+	PublishMessage(ctx context.Context, in *PublishMessageRequest, opts ...grpc.CallOption) (*PublishMessageResponse, error)
+	CancelProcessInstance(ctx context.Context, in *CancelProcessInstanceRequest, opts ...grpc.CallOption) (*CancelProcessInstanceResponse, error)
+	EvaluateDecision(ctx context.Context, in *EvaluateDecisionRequest, opts ...grpc.CallOption) (*EvaluateDecisionResponse, error)
+	ResolveIncident(ctx context.Context, in *ResolveIncidentRequest, opts ...grpc.CallOption) (*ResolveIncidentResponse, error)
+	ModifyProcessInstance(ctx context.Context, in *ModifyProcessInstanceRequest, opts ...grpc.CallOption) (*ModifyProcessInstanceResponse, error)
 }
 
 type gatewayClient struct {
@@ -116,6 +126,56 @@ func (c *gatewayClient) FailJob(ctx context.Context, in *FailJobRequest, opts ..
 	return out, nil
 }
 
+func (c *gatewayClient) PublishMessage(ctx context.Context, in *PublishMessageRequest, opts ...grpc.CallOption) (*PublishMessageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishMessageResponse)
+	err := c.cc.Invoke(ctx, Gateway_PublishMessage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) CancelProcessInstance(ctx context.Context, in *CancelProcessInstanceRequest, opts ...grpc.CallOption) (*CancelProcessInstanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CancelProcessInstanceResponse)
+	err := c.cc.Invoke(ctx, Gateway_CancelProcessInstance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) EvaluateDecision(ctx context.Context, in *EvaluateDecisionRequest, opts ...grpc.CallOption) (*EvaluateDecisionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EvaluateDecisionResponse)
+	err := c.cc.Invoke(ctx, Gateway_EvaluateDecision_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) ResolveIncident(ctx context.Context, in *ResolveIncidentRequest, opts ...grpc.CallOption) (*ResolveIncidentResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveIncidentResponse)
+	err := c.cc.Invoke(ctx, Gateway_ResolveIncident_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) ModifyProcessInstance(ctx context.Context, in *ModifyProcessInstanceRequest, opts ...grpc.CallOption) (*ModifyProcessInstanceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ModifyProcessInstanceResponse)
+	err := c.cc.Invoke(ctx, Gateway_ModifyProcessInstance_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GatewayServer is the server API for Gateway service.
 // All implementations must embed UnimplementedGatewayServer
 // for forward compatibility.
@@ -126,6 +186,11 @@ type GatewayServer interface {
 	ActivateJobs(*ActivateJobsRequest, grpc.ServerStreamingServer[ActivateJobsResponse]) error
 	CompleteJob(context.Context, *CompleteJobRequest) (*CompleteJobResponse, error)
 	FailJob(context.Context, *FailJobRequest) (*FailJobResponse, error)
+	PublishMessage(context.Context, *PublishMessageRequest) (*PublishMessageResponse, error)
+	CancelProcessInstance(context.Context, *CancelProcessInstanceRequest) (*CancelProcessInstanceResponse, error)
+	EvaluateDecision(context.Context, *EvaluateDecisionRequest) (*EvaluateDecisionResponse, error)
+	ResolveIncident(context.Context, *ResolveIncidentRequest) (*ResolveIncidentResponse, error)
+	ModifyProcessInstance(context.Context, *ModifyProcessInstanceRequest) (*ModifyProcessInstanceResponse, error)
 	mustEmbedUnimplementedGatewayServer()
 }
 
@@ -153,6 +218,21 @@ func (UnimplementedGatewayServer) CompleteJob(context.Context, *CompleteJobReque
 }
 func (UnimplementedGatewayServer) FailJob(context.Context, *FailJobRequest) (*FailJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FailJob not implemented")
+}
+func (UnimplementedGatewayServer) PublishMessage(context.Context, *PublishMessageRequest) (*PublishMessageResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PublishMessage not implemented")
+}
+func (UnimplementedGatewayServer) CancelProcessInstance(context.Context, *CancelProcessInstanceRequest) (*CancelProcessInstanceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CancelProcessInstance not implemented")
+}
+func (UnimplementedGatewayServer) EvaluateDecision(context.Context, *EvaluateDecisionRequest) (*EvaluateDecisionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EvaluateDecision not implemented")
+}
+func (UnimplementedGatewayServer) ResolveIncident(context.Context, *ResolveIncidentRequest) (*ResolveIncidentResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ResolveIncident not implemented")
+}
+func (UnimplementedGatewayServer) ModifyProcessInstance(context.Context, *ModifyProcessInstanceRequest) (*ModifyProcessInstanceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ModifyProcessInstance not implemented")
 }
 func (UnimplementedGatewayServer) mustEmbedUnimplementedGatewayServer() {}
 func (UnimplementedGatewayServer) testEmbeddedByValue()                 {}
@@ -276,6 +356,96 @@ func _Gateway_FailJob_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Gateway_PublishMessage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishMessageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).PublishMessage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_PublishMessage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).PublishMessage(ctx, req.(*PublishMessageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_CancelProcessInstance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CancelProcessInstanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).CancelProcessInstance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_CancelProcessInstance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).CancelProcessInstance(ctx, req.(*CancelProcessInstanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_EvaluateDecision_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EvaluateDecisionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).EvaluateDecision(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_EvaluateDecision_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).EvaluateDecision(ctx, req.(*EvaluateDecisionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_ResolveIncident_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveIncidentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).ResolveIncident(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_ResolveIncident_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).ResolveIncident(ctx, req.(*ResolveIncidentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_ModifyProcessInstance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModifyProcessInstanceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).ModifyProcessInstance(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_ModifyProcessInstance_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).ModifyProcessInstance(ctx, req.(*ModifyProcessInstanceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Gateway_ServiceDesc is the grpc.ServiceDesc for Gateway service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -302,6 +472,26 @@ var Gateway_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "FailJob",
 			Handler:    _Gateway_FailJob_Handler,
+		},
+		{
+			MethodName: "PublishMessage",
+			Handler:    _Gateway_PublishMessage_Handler,
+		},
+		{
+			MethodName: "CancelProcessInstance",
+			Handler:    _Gateway_CancelProcessInstance_Handler,
+		},
+		{
+			MethodName: "EvaluateDecision",
+			Handler:    _Gateway_EvaluateDecision_Handler,
+		},
+		{
+			MethodName: "ResolveIncident",
+			Handler:    _Gateway_ResolveIncident_Handler,
+		},
+		{
+			MethodName: "ModifyProcessInstance",
+			Handler:    _Gateway_ModifyProcessInstance_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

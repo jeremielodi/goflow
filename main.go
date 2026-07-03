@@ -147,6 +147,7 @@ func main() {
 
 	timerController := api.NewTimerController(db)
 	incidentCtrl := api.NewIncidentController(db)
+	analyticsCtrl := api.NewAnalyticsController(db)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
 	processPermissionCtrl := api.NewProcessPermissionController(db)
@@ -331,6 +332,12 @@ func main() {
 	app.Get("/engine-rest/history/process-instance", historyCtrl.ListHistoricProcessInstances)
 	app.Get("/engine-rest/history/process-instance/:id", historyCtrl.GetHistoricProcessInstance)
 	app.Get("/engine-rest/history/activity-instance", historyCtrl.ListHistoricActivityInstances)
+
+	// ============================================================
+	// ANALYTICS ROUTES
+	// ============================================================
+
+	app.Get("/engine-rest/analytics/process-stats", analyticsCtrl.GetProcessStats)
 
 	// ============================================================
 	// MESSAGE & SIGNAL ROUTES
