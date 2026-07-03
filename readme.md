@@ -58,7 +58,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | React frontend (Operate + Tasklist-lite) | ✅ |
 | Docker / Docker Compose deployment | ✅ |
 | Horizontal scaling (PostgreSQL SKIP LOCKED) | ✅ |
-| gRPC / native Zeebe protocol | ❌ not implemented |
+| gRPC / native Zeebe protocol | ⚠️ core loop only — see [Roadmap](#roadmap) |
 
 ---
 
@@ -75,7 +75,7 @@ docker compose up -d --build --wait
 # Default superuser: admin@goflow.com / admin123 (seeded from docker-compose.yaml)
 ```
 
-The API is available at `http://localhost:8080`.
+The API is available at `http://localhost:8080` (REST) and `localhost:26500` (gRPC — Zeebe protocol core loop, see [Roadmap](#roadmap)).
 
 ---
 
@@ -397,8 +397,7 @@ GoFlow deliberately targets both REST API shapes with one engine. It is **not** 
 
 **Solid parity with Camunda 7:** the `/engine-rest/...` surface covers the BPMN element set above, external task workers, DMN, incidents, message/signal correlation, multi-tenancy, a complete write-side audit log, and — since the historic-archive work — a real `ACT_RU_*`/`ACT_HI_*`-style split: finished instances are archived into dedicated historic tables and removed from the live ones, with `/engine-rest/history/...` (process instances, activity instances, tasks) and the audit/token-replay endpoints all transparently serving from whichever side an instance currently lives on.
 
-**Solid REST-shape parity with Camunda 8:** `/v2/...` mirrors job activation, user-tasks, process-instance modification/search, DMN evaluation, forms, and flownode/incident/variable search. Two things are architecturally different, not just missing features:
-- No gRPC / native Zeebe protocol — real Zeebe client libraries won't talk to GoFlow, only HTTP clients.
+**Solid REST-shape parity with Camunda 8:** `/v2/...` mirrors job activation, user-tasks, process-instance modification/search, DMN evaluation, forms, and flownode/incident/variable search. On top of that, a native gRPC gateway now implements Zeebe's actual wire protocol for the core client loop (`Topology`, `DeployResource`, `CreateProcessInstance`, `ActivateJobs`, `CompleteJob`, `FailJob` — see [Roadmap](#roadmap)), so real Zeebe client SDKs can talk to GoFlow directly on port `26500`, not just HTTP clients. One thing remains architecturally different, not just a missing feature:
 - Single Postgres-backed monolith, not Zeebe's partitioned/distributed broker model — fine for small-to-medium workloads, not a horizontal-scaling story like Zeebe's.
 
 **Frontend:** the React app covers a real slice of Operate (instance inspection, plus a token-replay feature Operate doesn't offer by default) and Tasklist (task inbox), but there's no Modeler (BPMN authored externally) and no Optimize-equivalent analytics.
@@ -416,13 +415,14 @@ Prioritized by value vs. effort, based on gaps identified above and during the a
 - **Consolidated the duplicate "start process" code paths** — `StartProcess`, `v2 CreateProcessInstance`, `StartByDefinitionID`, and the async worker's `processStartProcess` now all share one `service.StartProcessInstance` function instead of four independent (and previously divergent) implementations.
 - **A genuine historic archive** — dedicated `historic_process_instances`/`historic_activity_instances`/`historic_tasks`/`historic_variables` tables, decoupled from the live tables, matching Camunda 7's `ACT_RU_*` (runtime) vs `ACT_HI_*` (history) split. Once an instance completes or terminates, `service.ArchiveAndDeleteProcessInstance` copies its data across and hard-deletes the live rows — live tables now only ever hold currently-running instances. Every read endpoint that could touch a finished instance (`GET /process-instance/:id`, its variables, `GET /audit/process/:id/token-history`, the whole History API, `POST /v2/process-instances/search`, `POST /v2/user-tasks/search`) transparently falls back to (or merges with) the historic tables, so nothing changed shape for callers — including zero changes needed in the frontend. The `HistoricTaskController` (previously misrouted at bare `/history/tasks`, unreachable through nginx) got fixed and folded into this work at `/engine-rest/history/task(/:id)(/count)`.
 - **Admin UI (Users/Roles) + per-resource process permissions** — the existing Users/Roles/Actions REST API now has a real frontend under an "Admin" nav section (`pages/admin/Users.tsx`, `Roles.tsx`), gated on the current user's own actions (`useAuth`'s `hasAction`, now populated from `login`/`GET /users/me`, previously discarded). On top of that, a new per-resource ACL lets specific users/roles be granted VIEW/START/MANAGE access to a *specific* process (keyed by `process_key`, covering every version) — `process_permissions` table, `CanAccessProcess` (`internal/service/process_authorization_service.go`), enforced at every list/get/start/deploy call site across both the v1 and v2 APIs. A process with no grants is unrestricted (open to any authenticated user, unchanged from before); granting access to anyone makes it restricted to just those grantees plus holders of the existing global `CAN_MANAGE_DEPLOY_PROCESS` action. Deploying a **new** process key still requires that global action (unchanged); deploying a new version of an **existing** restricted key only requires MANAGE on that specific key, which a per-resource grant can now satisfy on its own. Scoped to process definitions only this pass — deployments have no standalone list/read/delete surface in this app today, so a parallel deployment-level ACL would have nowhere to be used; the schema's `resource_type` column is left generic for that later if it's ever needed.
+- **gRPC gateway — Zeebe protocol core loop** — a native gRPC server (`internal/zeebegrpc`, port `26500`, Zeebe's own default gateway port) implements 6 of the Gateway protocol's 23 RPCs: `Topology`, `DeployResource`, `CreateProcessInstance`, `ActivateJobs` (server-streaming long-poll), `CompleteJob`, `FailJob` — the actual client core loop. The other 17 RPCs (`PublishMessage`, `CancelProcessInstance`, `EvaluateDecision`, etc.) aren't registered, so a real client calling them gets a standard gRPC `Unimplemented` status, the same experience as hitting an unsupported feature on a limited broker. Verified against the real `zeebe-node` SDK, not a hand-rolled client — deploying, starting, activating, completing, and failing jobs all work end-to-end over the actual Zeebe wire protocol. Two pieces of new, unavoidable-for-compatibility infrastructure: a `zeebe_keys` table mapping GoFlow's UUIDs to the `int64` keys the protocol requires (assigned lazily, persisted so a key survives restarts), and `DeployResources`/`CompleteJob`/`FailJob` were extracted out of their REST controllers into shared `internal/service` functions so gRPC and REST run the exact same engine logic. gRPC auth reuses the existing JWT validation via an `authorization: Bearer` metadata header, falling back to the seeded `super_admin` identity when no token is sent — matching self-managed Zeebe's own "no auth configured" default while still enforcing the same per-resource ACL for callers that do authenticate.
 
 ### Medium-term (real features)
 
 - **Basic analytics (Optimize-lite)** — process duration distributions, throughput over time, incident rate by process key. `Dashboard.tsx` already has basic counts to build on.
 - **In-browser BPMN Modeler** — `bpmn-js` is already a frontend dependency in view-only (`NavigatedViewer`) mode; swapping to the editable `Modeler` build for authoring + deploying from the browser is a moderate lift, not a new dependency.
+- **Remaining gRPC RPCs** — `PublishMessage`, `CancelProcessInstance`, `EvaluateDecision`, `ResolveIncident`, `ModifyProcessInstance`, and the rest of the 17 not yet implemented, if a real client workflow needs them.
 
 ### Long-term / architectural (flagged, not committed)
 
-- **gRPC / native Zeebe protocol** — would let real Zeebe client SDKs (zbc-*) talk to GoFlow directly, at the cost of maintaining a second protocol surface alongside REST.
 - **Partitioned/distributed execution** — genuinely replicating Zeebe's horizontal-scaling model (partitioning, Raft-replicated logs, no shared central database) is a different engine, not an incremental change to this one — see [Comparison](#comparison-to-camunda-7--camunda-8) above. Noted here for completeness, not planned.

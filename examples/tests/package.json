@@ -12,7 +12,10 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
-    "form-data": "^4.0.0"
+    "form-data": "^4.0.0",
+    "@grpc/grpc-js": "^1.10.0",
+    "@grpc/proto-loader": "^0.7.0",
+    "zeebe-node": "^8.3.0"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

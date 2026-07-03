@@ -111,6 +111,7 @@ async function main() {
     '21_oidc.test.ts',
     '22_audit_trail.test.ts',
     '23_admin_and_permissions.test.ts',
+    '24_grpc_gateway.test.ts',
   ];
 
   const exitCodes: number[] = [];

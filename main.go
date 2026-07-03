@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net"
 	"os"
 	"time"
 
@@ -17,11 +18,14 @@ import (
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/internal/worker"
+	"github.com/jeremielodi/goflow/internal/zeebegrpc"
+	"github.com/jeremielodi/goflow/internal/zeebegrpc/pb"
 	"github.com/jeremielodi/goflow/pkg/authentication"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jeremielodi/goflow/pkg/middleware"
 	"github.com/jmoiron/sqlx"
+	"google.golang.org/grpc"
 )
 
 func permissions(db *sqlx.DB, code string) fiber.Handler {
@@ -442,6 +446,33 @@ func main() {
 			"note":    "Metrics are not resettable without restart",
 		})
 	})
+
+	// ============================================================
+	// gRPC GATEWAY (Zeebe protocol subset — see internal/zeebegrpc)
+	// ============================================================
+
+	anonymousUserID, err := zeebegrpc.ResolveAnonymousUserID(db)
+	if err != nil {
+		log.Printf("⚠️ gRPC gateway: could not resolve a super_admin fallback identity, gRPC calls without a bearer token will be rejected: %v", err)
+	}
+
+	grpcServer := grpc.NewServer(
+		grpc.UnaryInterceptor(zeebegrpc.UnaryAuthInterceptor(jwcService, anonymousUserID)),
+		grpc.StreamInterceptor(zeebegrpc.StreamAuthInterceptor(jwcService, anonymousUserID)),
+	)
+	pb.RegisterGatewayServer(grpcServer, zeebegrpc.NewServer(db, taskEventDispatcher))
+
+	grpcLis, err := net.Listen("tcp", ":26500")
+	if err != nil {
+		log.Printf("⚠️ gRPC gateway: failed to listen on :26500: %v", err)
+	} else {
+		go func() {
+			log.Println("🚀 gRPC gateway (Zeebe protocol subset) listening on :26500")
+			if err := grpcServer.Serve(grpcLis); err != nil {
+				log.Printf("gRPC server stopped: %v", err)
+			}
+		}()
+	}
 
 	// ============================================================
 	// START SERVER

@@ -1,0 +1,203 @@
+syntax = "proto3";
+
+package gateway_protocol;
+
+option go_package = "github.com/jeremielodi/goflow/internal/zeebegrpc/pb";
+
+// gateway.proto — GoFlow's implementation of a subset of Zeebe's Gateway
+// Protocol (see https://github.com/camunda/camunda, module
+// zeebe/gateway-protocol). Only the 6 RPCs that make up Zeebe's actual
+// core client loop are implemented here: Topology, DeployResource,
+// CreateProcessInstance, ActivateJobs, CompleteJob, FailJob. Any other
+// method a real Zeebe client SDK calls (PublishMessage,
+// CancelProcessInstance, EvaluateDecision, ResolveIncident, ...) is not
+// registered on this server at all, so grpc-go returns a standard
+// UNIMPLEMENTED status automatically for that method path — the same
+// experience a real client gets calling an unsupported RPC against an
+// older/limited broker, no special-casing needed on our side.
+//
+// Message field NAMES, NUMBERS, and TYPES below are matched to the real
+// Zeebe protocol where implemented — this is required for wire
+// compatibility with unmodified Zeebe client SDKs (protobuf wire bytes
+// are keyed by field number+type, not name). This file is authored
+// independently rather than vendoring Camunda's source file, since exact
+// field numbers/types are the only part that's functionally unavoidable
+// for compatibility (the same category of thing GoFlow already does
+// throughout this codebase by matching Camunda 7/8's exact REST paths
+// and JSON shapes). Fields from newer/advanced Zeebe features not needed
+// for the core loop (start instructions, task listeners, tags, business
+// keys, multi-tenant partition filters, etc.) are intentionally omitted
+// — proto3 silently preserves unknown fields, so a real client that sets
+// them is unaffected for the fields we DO implement.
+//
+// Regenerate after editing (see buf.yaml / buf.gen.yaml in this directory):
+//   buf generate
+
+service Gateway {
+  rpc Topology(TopologyRequest) returns (TopologyResponse);
+  rpc DeployResource(DeployResourceRequest) returns (DeployResourceResponse);
+  rpc CreateProcessInstance(CreateProcessInstanceRequest) returns (CreateProcessInstanceResponse);
+  rpc ActivateJobs(ActivateJobsRequest) returns (stream ActivateJobsResponse);
+  rpc CompleteJob(CompleteJobRequest) returns (CompleteJobResponse);
+  rpc FailJob(FailJobRequest) returns (FailJobResponse);
+}
+
+// ── Topology ────────────────────────────────────────────────────────────
+// GoFlow is a single-node monolith, so this always reports one synthetic
+// broker owning one partition as LEADER/HEALTHY — real client SDKs
+// commonly call this first as a connectivity check.
+
+message TopologyRequest {}
+
+message TopologyResponse {
+  repeated BrokerInfo brokers = 1;
+  int32 clusterSize = 2;
+  int32 partitionsCount = 3;
+  int32 replicationFactor = 4;
+  string gatewayVersion = 5;
+}
+
+message BrokerInfo {
+  int32 nodeId = 1;
+  string host = 2;
+  int32 port = 3;
+  repeated Partition partitions = 4;
+  string version = 5;
+}
+
+enum PartitionBrokerRole {
+  LEADER = 0;
+  FOLLOWER = 1;
+  INACTIVE = 2;
+}
+
+enum PartitionBrokerHealth {
+  HEALTHY = 0;
+  UNHEALTHY = 1;
+  DEAD = 2;
+}
+
+message Partition {
+  int32 partitionId = 1;
+  PartitionBrokerRole role = 2;
+  PartitionBrokerHealth health = 3;
+}
+
+// ── DeployResource ──────────────────────────────────────────────────────
+
+message Resource {
+  string name = 1;
+  bytes content = 2;
+}
+
+message DeployResourceRequest {
+  repeated Resource resources = 1;
+  string tenantId = 2;
+}
+
+message DeployResourceResponse {
+  int64 key = 1;
+  repeated Deployment deployments = 2;
+  string tenantId = 3;
+}
+
+// Only the `process` branch is ever populated by this server (DMN/form
+// deployment via gRPC is out of scope this pass, even though the
+// underlying DeployResources service call deploys them if present in the
+// same request) — the other branches are declared for wire-shape
+// completeness only.
+message Deployment {
+  oneof Metadata {
+    ProcessMetadata process = 1;
+    DecisionMetadata decision = 2;
+    DecisionRequirementsMetadata decisionRequirements = 3;
+    FormMetadata form = 4;
+  }
+}
+
+message ProcessMetadata {
+  string bpmnProcessId = 1;
+  int32 version = 2;
+  int64 processDefinitionKey = 3;
+  string resourceName = 4;
+  string tenantId = 5;
+}
+
+message DecisionMetadata {}
+message DecisionRequirementsMetadata {}
+message FormMetadata {}
+
+// ── CreateProcessInstance ───────────────────────────────────────────────
+
+message CreateProcessInstanceRequest {
+  int64 processDefinitionKey = 1;
+  string bpmnProcessId = 2;
+  int32 version = 3;
+  string variables = 4;
+  // field 5 (startInstructions) intentionally omitted — out of scope.
+  string tenantId = 6;
+}
+
+message CreateProcessInstanceResponse {
+  int64 processDefinitionKey = 1;
+  string bpmnProcessId = 2;
+  int32 version = 3;
+  int64 processInstanceKey = 4;
+  string tenantId = 5;
+}
+
+// ── ActivateJobs (server-streaming) ─────────────────────────────────────
+
+message ActivateJobsRequest {
+  string type = 1;
+  string worker = 2;
+  int64 timeout = 3;
+  int32 maxJobsToActivate = 4;
+  repeated string fetchVariable = 5;
+  int64 requestTimeout = 6;
+}
+
+message ActivateJobsResponse {
+  repeated ActivatedJob jobs = 1;
+}
+
+message ActivatedJob {
+  int64 key = 1;
+  string type = 2;
+  int64 processInstanceKey = 3;
+  string bpmnProcessId = 4;
+  int32 processDefinitionVersion = 5;
+  int64 processDefinitionKey = 6;
+  string elementId = 7;
+  int64 elementInstanceKey = 8;
+  string customHeaders = 9;
+  string worker = 10;
+  int32 retries = 11;
+  int64 deadline = 12;
+  string variables = 13;
+  string tenantId = 14;
+}
+
+// ── CompleteJob ─────────────────────────────────────────────────────────
+
+message CompleteJobRequest {
+  int64 jobKey = 1;
+  string variables = 2;
+}
+
+message CompleteJobResponse {}
+
+// ── FailJob ─────────────────────────────────────────────────────────────
+// retries is the number to leave remaining AFTER this failure (Zeebe's
+// convention) — NOT a pre-decrement current count. See
+// internal/service/job_service.go's FailJob.
+
+message FailJobRequest {
+  int64 jobKey = 1;
+  int32 retries = 2;
+  string errorMessage = 3;
+  int64 retryBackOff = 4;
+  string variables = 5;
+}
+
+message FailJobResponse {}

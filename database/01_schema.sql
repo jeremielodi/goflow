@@ -761,6 +761,19 @@ CREATE TABLE IF NOT EXISTS process_permissions (
     UNIQUE (process_key, grantee_type, grantee_id, permission)
 );
 
+-- Maps GoFlow's internal UUIDs to the int64 "keys" the Zeebe gRPC gateway
+-- protocol requires (processDefinitionKey/processInstanceKey/job key are
+-- all int64 on the wire) — see internal/zeebegrpc. Keys are assigned
+-- lazily, the first time a resource is exposed over gRPC, and must
+-- persist across restarts since a client holds onto a job key between
+-- ActivateJobs and a later CompleteJob/FailJob call.
+CREATE TABLE IF NOT EXISTS zeebe_keys (
+    key BIGSERIAL PRIMARY KEY,
+    resource_type TEXT NOT NULL,
+    resource_id UUID NOT NULL,
+    UNIQUE (resource_type, resource_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_process_permissions_key
 ON process_permissions(process_key);
 

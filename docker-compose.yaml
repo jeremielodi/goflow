@@ -93,6 +93,7 @@ services:
       GOFLOW_ENV: production
     ports:
       - "8080:8080"
+      - "26500:26500" # gRPC gateway (Zeebe protocol subset — see internal/zeebegrpc)
     volumes:
       - ./migrations:/app/migrations
     healthcheck:
