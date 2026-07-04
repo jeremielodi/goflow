@@ -149,6 +149,8 @@ func (p *Processor) handle(ctx context.Context, data []byte) error {
 		return p.handleStartProcess(ctx, cmd.StartProcess)
 	case *pb.CommandEnvelope_CompleteJob:
 		return p.handleCompleteJob(ctx, cmd.CompleteJob)
+	case *pb.CommandEnvelope_FailJob:
+		return p.handleFailJob(ctx, cmd.FailJob)
 	default:
 		log.Printf("partition processor: unknown command type for instance %s", env.ProcessInstanceId)
 		return nil
@@ -279,12 +281,62 @@ func (p *Processor) handleCompleteJob(ctx context.Context, cmd *pb.CompleteJobCo
 	return nil
 }
 
-// resumeIfStranded handles CompleteJobCommand redelivery where
-// service.CompleteJob's own transaction already applied (ErrJobInvalidState
-// — the job is no longer "locked"). If the owning execution is still
-// 'active' (see handleStartProcess's identical reasoning), the subsequent
-// ExecuteExecution walk never happened and must be resumed now; otherwise a
-// prior attempt already carried it through and this is a safe no-op.
+func (p *Processor) handleFailJob(ctx context.Context, cmd *pb.FailJobCommand) error {
+	jobID, err := uuid.Parse(cmd.JobId)
+	if err != nil {
+		return fmt.Errorf("invalid job_id %q: %w", cmd.JobId, err)
+	}
+
+	// service.FailJob has no ErrJobInvalidState-style sentinel for "this
+	// job's outcome was already applied by a prior attempt" the way
+	// CompleteJob does — check the job's status ourselves before ever
+	// calling it, since re-running FailJob on an already-failed/already-
+	// reset job would redo its Postgres writes (harmless for the plain
+	// status fields, but the boundary-trigger branch would re-run
+	// UpdateExecutionNodeTx and could overwrite an execution that already
+	// advanced further via a completed resume).
+	var status string
+	if err := p.db.Get(&status, `SELECT status FROM public.jobs WHERE id = $1`, jobID); err != nil {
+		return fmt.Errorf("check job state for %s: %w", jobID, err)
+	}
+	if status != "locked" {
+		return p.resumeIfStranded(ctx, jobID)
+	}
+
+	result, err := service.FailJob(p.db, jobID, int(cmd.RetriesRemaining), cmd.ErrorMessage, cmd.ErrorCode)
+	if err != nil {
+		return fmt.Errorf("fail job %s: %w", jobID, err)
+	}
+	if !result.BoundaryTriggered {
+		// Either a plain retry reset (job goes back to pending, a worker
+		// will fetch it again later) or a permanent failure with an
+		// incident created (service.FailJob's own transaction already
+		// committed everything atomically) — neither needs a resume.
+		return nil
+	}
+
+	// service.FailJob's boundary-trigger branch already committed moving
+	// the execution's pointer to the boundary event's node — exactly like
+	// service.CompleteJob's non-terminal case, resuming via
+	// runtime.ExecuteExecution is what actually walks from there (the
+	// ErrorBoundaryEventType case in runtime.go is already generic, same
+	// as every other node type reused by this package).
+	rt := runtime.NewRuntime(result.Graph, p.db, p.dispatcher)
+	if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
+		return fmt.Errorf("resume execution after boundary-triggered failure for job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// resumeIfStranded handles redelivery where a job's terminal state was
+// already reached by a prior attempt (CompleteJobCommand's
+// ErrJobInvalidState branch, or FailJobCommand's own "job no longer
+// locked" check — see handleFailJob) but the SUBSEQUENT ExecuteExecution
+// walk may not have run yet. If the owning execution is still 'active'
+// (see handleStartProcess's identical reasoning), that walk never happened
+// and must be resumed now; otherwise a prior attempt already carried it
+// through (or the job's outcome never needed one, e.g. a plain retry reset
+// or an incident with no matching boundary) and this is a safe no-op.
 func (p *Processor) resumeIfStranded(ctx context.Context, jobID uuid.UUID) error {
 	var row struct {
 		ExecutionID       uuid.UUID `db:"execution_id"`

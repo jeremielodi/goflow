@@ -89,6 +89,20 @@ func (p *CommandProducer) CompleteJob(ctx context.Context, instanceID, jobID uui
 	return p.send(ctx, instanceID.String(), env)
 }
 
+func (p *CommandProducer) FailJob(ctx context.Context, instanceID, jobID uuid.UUID, retriesRemaining int32, errorMessage, errorCode string) error {
+	env := &pb.CommandEnvelope{
+		CommandId:         uuid.NewString(),
+		ProcessInstanceId: instanceID.String(),
+		Command: &pb.CommandEnvelope_FailJob{FailJob: &pb.FailJobCommand{
+			JobId:            jobID.String(),
+			RetriesRemaining: retriesRemaining,
+			ErrorMessage:     errorMessage,
+			ErrorCode:        errorCode,
+		}},
+	}
+	return p.send(ctx, instanceID.String(), env)
+}
+
 func (p *CommandProducer) send(ctx context.Context, key string, env *pb.CommandEnvelope) error {
 	data, err := proto.Marshal(env)
 	if err != nil {

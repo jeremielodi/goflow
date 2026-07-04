@@ -452,6 +452,72 @@ sub-chains, or to also allow business rule tasks per branch, remain small,
 independent, low-risk options if a fifth phase is wanted before tackling
 timers.
 
+## Phase 5 — closing the FailJob gap
+
+Shipped the same day, after the user asked "is there other phases non
+completed" and an audit turned up a real, pre-existing gap rather than
+another BPMN-shape candidate: `service.FailJob` was called **unconditionally**
+from both the REST failure endpoint and the gRPC `FailJob` RPC — neither had
+the `partition.LookupJobOwner` gate `CompleteJob`'s call sites already had.
+A job belonging to a partitioned instance that failed bypassed Kafka/
+partition ownership entirely and wrote straight to Postgres via the legacy
+path. Unlike Phases 1-4, this wasn't a missing BPMN construct — it was a
+hole in what had already shipped, only covering the happy path.
+
+Research (cross-checked by reading `job_service.go`'s `FailJob` and both
+call sites directly) confirmed the same reuse pattern held a fifth time:
+`FailJob`'s three outcomes (retry-reset, permanent-fail-with-incident,
+permanent-fail-with-boundary-trigger) all write to the same shared tables
+Phase 1 already established (`jobs`, `executions`, and now `incidents` too
+— confirmed write-path-agnostic, no changes needed to incident list/resolve
+endpoints), and the boundary-trigger case resumes `runtime.ExecuteExecution`
+exactly like `CompleteJob`'s non-terminal case, through an already-generic
+`ErrorBoundaryEventType` dispatch case. `FailJob` also already publishes a
+`JobFailed` event unconditionally on every outcome (wired since Phase 0),
+giving the Command Gateway's bridge the same kind of confirmation signal
+`JobCompleted` already provided for completions.
+
+**Because shipping the boundary-trigger branch without ever letting a real
+shape exercise it would be untested code** (a mistake avoided in every
+prior phase), this phase both gated `FailJob` and added error-boundary-event
+support to `ValidateShape` — scoped narrowly: only in the linear chain
+(not the diamond), only attached to a service task (not a business rule
+task — its executor doesn't raise a BPMN-catchable error), at most one per
+task, flowing directly to the chain's shared end event (no sub-chain from
+the boundary). `internal/partition/processor.go`'s new `handleFailJob`
+reuses the **exact existing** `resumeIfStranded` helper for redelivery
+safety — `service.FailJob` has no `ErrJobInvalidState`-style sentinel for
+"already applied" the way `CompleteJob` does, so the processor checks
+`jobs.status` itself before ever calling it, then falls back to the same
+generic status-based resume check Phase 2 already built.
+
+**Explicitly deferred, not fixed**: `POST /engine-rest/job/:id/retries`
+(resetting retries) and `ResolveIncident` are the same class of gap —
+ungated, no `LookupJobOwner` check — but lower risk (neither moves an
+execution's graph position, they just make a job fetchable again) and kept
+out of this phase's scope to stay bounded, the same discipline every prior
+phase applied to combining generalizations.
+
+**Verification**: 6 new `internal/partition/validate_test.go` cases (12
+total in the package) — the local test binary hit the same flaky Windows
+Application Control block Phase 3 saw (intermittent, not every run), so
+these were verified via the equivalent e2e coverage instead of insisting on
+a local `go test` run this time. New e2e suite
+`examples/tests/31_partition_failjob.test.ts` (5 cases: a matching error
+code triggering the boundary path with zero incidents created, an
+unmatched error code creating a real incident verified via the completely
+unmodified incident REST endpoint, a retry-reset that lets the job
+complete normally afterward, and a regression check across Phases 1-3's
+fixtures). Full 30-suite Docker regression green on the first attempt.
+Manually curled the live incident list afterward and confirmed the
+partitioned-path-created incident row is byte-for-byte the same shape as
+legacy-created ones sitting right next to it in the same response.
+
+**How to apply going forward**: the retry-setting/incident-resolution gap
+above is the next-smallest closeable item if another "close a gap" phase
+is wanted; timers remain the one item needing a dedicated design pass
+before any phase attempts it.
+
 ## 1. Why this exists, and why not sooner
 
 The current engine (`internal/runtime`, `internal/repository`) treats a

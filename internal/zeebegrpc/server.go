@@ -414,6 +414,17 @@ func (s *Server) FailJob(ctx context.Context, req *pb.FailJobRequest) (*pb.FailJ
 	// req.Retries is already "count to leave remaining after this
 	// failure" (Zeebe's own convention) — no extra decrement, unlike the
 	// REST HandleFailure path which uses Camunda 7's convention.
+
+	// Phase 5 (see architecture/event-sourced-kafka-design.md): jobs
+	// belonging to a partitioned-write-path instance fail via the Command
+	// Gateway instead of service.FailJob's direct Postgres transaction.
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.FailJob(instanceID, jobID, int(req.Retries), req.ErrorMessage, ""); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &pb.FailJobResponse{}, nil
+	}
+
 	result, err := service.FailJob(s.db, jobID, int(req.Retries), req.ErrorMessage, "")
 	if err != nil {
 		return nil, mapJobError(err)

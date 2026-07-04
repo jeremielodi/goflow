@@ -30,15 +30,17 @@ import (
 
 // ValidateShape rejects every BPMN graph except the two shapes the
 // partitioned engine supports so far:
-//   - Phase 1/3/4 (linear): one start event -> a chain of one or more
+//   - Phase 1/3/4/5 (linear): one start event -> a chain of one or more
 //     external service tasks and/or business rule tasks (DMN
 //     zeebe:calledDecision), each flowing directly into the next -> one
-//     end event.
+//     end event. Any service task in the chain may have at most one
+//     attached error boundary event (Phase 5), whose own single outgoing
+//     flow must target the chain's shared end event directly.
 //   - Phase 2 (diamond): one start event -> one exclusive gateway with
 //     exactly 2 outgoing flows, each with an explicit non-empty condition,
 //     each targeting a distinct service task -> both tasks flow to one
-//     shared end event. Diamond branches stay service-task-only — not
-//     combined with Phase 4's business rule task support, per this
+//     shared end event. Diamond branches stay service-task-only with no
+//     boundary events — not combined with Phase 4/5's extensions, per this
 //     package's discipline of never combining two generalizations in one
 //     phase.
 //
@@ -48,7 +50,7 @@ import (
 // message/signal correlation are simply not implemented by the
 // partitioned engine yet (see the design doc's "Explicit non-goals").
 func ValidateShape(graph *engine.ProcessGraph) error {
-	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes []*engine.Node
+	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes, boundaryNodes []*engine.Node
 	for _, n := range graph.Nodes {
 		switch n.Type {
 		case engine.StartEventType:
@@ -61,6 +63,8 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 			endNodes = append(endNodes, n)
 		case engine.ExclusiveGatewayType:
 			gatewayNodes = append(gatewayNodes, n)
+		case engine.ErrorBoundaryEventType:
+			boundaryNodes = append(boundaryNodes, n)
 		default:
 			return unsupportedShapeErr(n.Type)
 		}
@@ -78,8 +82,11 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 		chainNodes := make([]*engine.Node, 0, len(serviceTaskNodes)+len(businessRuleNodes))
 		chainNodes = append(chainNodes, serviceTaskNodes...)
 		chainNodes = append(chainNodes, businessRuleNodes...)
-		return validateLinearShape(startNode, chainNodes, endNodes[0])
-	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0:
+		if err := validateLinearShape(startNode, chainNodes, endNodes[0]); err != nil {
+			return err
+		}
+		return validateBoundaryEvents(boundaryNodes, serviceTaskNodes, endNodes[0])
+	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0:
 		if len(endNodes) != 1 {
 			return fmt.Errorf("the diamond shape requires both branches to converge on exactly one shared end event, found %d end events", len(endNodes))
 		}
@@ -87,6 +94,39 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 	default:
 		return unsupportedShapeErr("")
 	}
+}
+
+// validateBoundaryEvents checks every error boundary event in the graph
+// against the linear chain's shape: attached to one of the chain's
+// service tasks (not a business rule task — that executor doesn't raise a
+// BPMN-catchable error the way a failed job does), at most one per task,
+// a non-empty error code, and a single outgoing flow straight to the
+// chain's end event (no sub-chain from the boundary — the smallest
+// integration that still lets service.FailJob's boundary-trigger branch,
+// already generic per runtime.ExecuteExecution's ErrorBoundaryEventType
+// case, be exercised for real).
+func validateBoundaryEvents(boundaryNodes, serviceTaskNodes []*engine.Node, endNode *engine.Node) error {
+	serviceTaskByID := make(map[string]bool, len(serviceTaskNodes))
+	for _, t := range serviceTaskNodes {
+		serviceTaskByID[t.ID] = true
+	}
+	attachedTo := map[string]bool{}
+	for _, b := range boundaryNodes {
+		if b.AttachedToRef == "" || !serviceTaskByID[b.AttachedToRef] {
+			return fmt.Errorf("error boundary event %s must be attached to one of the chain's service tasks", b.ID)
+		}
+		if attachedTo[b.AttachedToRef] {
+			return fmt.Errorf("service task %s has more than one attached error boundary event, only one is supported", b.AttachedToRef)
+		}
+		attachedTo[b.AttachedToRef] = true
+		if strings.TrimSpace(b.ErrorCode) == "" {
+			return fmt.Errorf("error boundary event %s requires a non-empty error code", b.ID)
+		}
+		if len(b.Outgoing) != 1 || b.Outgoing[0].TargetRef != endNode.ID {
+			return fmt.Errorf("error boundary event %s must flow directly to the chain's end event", b.ID)
+		}
+	}
+	return nil
 }
 
 // validateLinearShape walks the chain from startNode's single outgoing
@@ -172,7 +212,7 @@ func validateDiamondShape(startNode, gateway *engine.Node, taskNodes []*engine.N
 
 func unsupportedShapeErr(badType engine.NodeType) error {
 	if badType != "" {
-		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, and endEvent", badType)
+		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, errorBoundaryEvent, and endEvent", badType)
 	}
-	return fmt.Errorf("the partitioned write path only supports two shapes: (1) start -> a chain of one or more service/business-rule tasks -> end, or (2) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
+	return fmt.Errorf("the partitioned write path only supports two shapes: (1) start -> a chain of one or more service/business-rule tasks (each optionally with one attached error boundary event) -> end, or (2) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
 }

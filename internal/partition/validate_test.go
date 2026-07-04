@@ -236,3 +236,81 @@ func TestValidateShape_Diamond_BusinessRuleTaskBranch_Rejected(t *testing.T) {
 		t.Fatal("expected a diamond with a business rule task in place of a branch service task to be rejected — diamond branches stay service-task-only")
 	}
 }
+
+func TestValidateShape_Chain_ValidBoundaryEvent_Passes(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "task", "")}},
+		&engine.Node{ID: "task", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "boundary", Type: engine.ErrorBoundaryEventType, AttachedToRef: "task", ErrorCode: "RISK_ERROR", Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err != nil {
+		t.Fatalf("expected a linear chain with a valid attached boundary event to pass, got: %v", err)
+	}
+}
+
+func TestValidateShape_BoundaryEvent_OnBusinessRuleTask_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "evaluate", "")}},
+		&engine.Node{ID: "evaluate", Type: engine.BusinessRuleTaskType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "boundary", Type: engine.ErrorBoundaryEventType, AttachedToRef: "evaluate", ErrorCode: "RISK_ERROR", Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a boundary event attached to a business rule task to be rejected")
+	}
+}
+
+func TestValidateShape_BoundaryEvent_NoErrorCode_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "task", "")}},
+		&engine.Node{ID: "task", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "boundary", Type: engine.ErrorBoundaryEventType, AttachedToRef: "task", ErrorCode: "", Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a boundary event with no error code to be rejected")
+	}
+}
+
+func TestValidateShape_BoundaryEvent_WrongTarget_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "task", "")}},
+		&engine.Node{ID: "task", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "boundary", Type: engine.ErrorBoundaryEventType, AttachedToRef: "task", ErrorCode: "RISK_ERROR", Outgoing: []engine.Flow{flow("f3", "task", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a boundary event whose outgoing flow doesn't target the shared end node to be rejected")
+	}
+}
+
+func TestValidateShape_BoundaryEvent_DuplicateOnSameTask_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "task", "")}},
+		&engine.Node{ID: "task", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "boundary1", Type: engine.ErrorBoundaryEventType, AttachedToRef: "task", ErrorCode: "RISK_ERROR", Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "boundary2", Type: engine.ErrorBoundaryEventType, AttachedToRef: "task", ErrorCode: "OTHER_ERROR", Outgoing: []engine.Flow{flow("f4", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected two boundary events attached to the same task to be rejected")
+	}
+}
+
+func TestValidateShape_Diamond_WithBoundaryEvent_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "gw", "")}},
+		&engine.Node{ID: "gw", Type: engine.ExclusiveGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", `${branch == "a"}`),
+			flow("f3", "taskB", `${branch == "b"}`),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "end", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "end", "")}},
+		&engine.Node{ID: "boundary", Type: engine.ErrorBoundaryEventType, AttachedToRef: "taskA", ErrorCode: "RISK_ERROR", Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a diamond shape with any boundary event present to be rejected — diamond branches don't support boundary events")
+	}
+}

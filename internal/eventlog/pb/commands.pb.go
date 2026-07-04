@@ -149,6 +149,74 @@ func (x *CompleteJobCommand) GetVariablesJson() string {
 	return ""
 }
 
+type FailJobCommand struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	JobId            string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	RetriesRemaining int32                  `protobuf:"varint,2,opt,name=retries_remaining,json=retriesRemaining,proto3" json:"retries_remaining,omitempty"`
+	ErrorMessage     string                 `protobuf:"bytes,3,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	ErrorCode        string                 `protobuf:"bytes,4,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *FailJobCommand) Reset() {
+	*x = FailJobCommand{}
+	mi := &file_commands_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FailJobCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FailJobCommand) ProtoMessage() {}
+
+func (x *FailJobCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_commands_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FailJobCommand.ProtoReflect.Descriptor instead.
+func (*FailJobCommand) Descriptor() ([]byte, []int) {
+	return file_commands_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *FailJobCommand) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *FailJobCommand) GetRetriesRemaining() int32 {
+	if x != nil {
+		return x.RetriesRemaining
+	}
+	return 0
+}
+
+func (x *FailJobCommand) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *FailJobCommand) GetErrorCode() string {
+	if x != nil {
+		return x.ErrorCode
+	}
+	return ""
+}
+
 type CommandEnvelope struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	CommandId         string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
@@ -157,6 +225,7 @@ type CommandEnvelope struct {
 	//
 	//	*CommandEnvelope_StartProcess
 	//	*CommandEnvelope_CompleteJob
+	//	*CommandEnvelope_FailJob
 	Command       isCommandEnvelope_Command `protobuf_oneof:"command"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -164,7 +233,7 @@ type CommandEnvelope struct {
 
 func (x *CommandEnvelope) Reset() {
 	*x = CommandEnvelope{}
-	mi := &file_commands_proto_msgTypes[2]
+	mi := &file_commands_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -176,7 +245,7 @@ func (x *CommandEnvelope) String() string {
 func (*CommandEnvelope) ProtoMessage() {}
 
 func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_commands_proto_msgTypes[2]
+	mi := &file_commands_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -189,7 +258,7 @@ func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEnvelope.ProtoReflect.Descriptor instead.
 func (*CommandEnvelope) Descriptor() ([]byte, []int) {
-	return file_commands_proto_rawDescGZIP(), []int{2}
+	return file_commands_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CommandEnvelope) GetCommandId() string {
@@ -231,6 +300,15 @@ func (x *CommandEnvelope) GetCompleteJob() *CompleteJobCommand {
 	return nil
 }
 
+func (x *CommandEnvelope) GetFailJob() *FailJobCommand {
+	if x != nil {
+		if x, ok := x.Command.(*CommandEnvelope_FailJob); ok {
+			return x.FailJob
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Command interface {
 	isCommandEnvelope_Command()
 }
@@ -243,9 +321,15 @@ type CommandEnvelope_CompleteJob struct {
 	CompleteJob *CompleteJobCommand `protobuf:"bytes,11,opt,name=complete_job,json=completeJob,proto3,oneof"`
 }
 
+type CommandEnvelope_FailJob struct {
+	FailJob *FailJobCommand `protobuf:"bytes,12,opt,name=fail_job,json=failJob,proto3,oneof"`
+}
+
 func (*CommandEnvelope_StartProcess) isCommandEnvelope_Command() {}
 
 func (*CommandEnvelope_CompleteJob) isCommandEnvelope_Command() {}
+
+func (*CommandEnvelope_FailJob) isCommandEnvelope_Command() {}
 
 var File_commands_proto protoreflect.FileDescriptor
 
@@ -260,14 +344,21 @@ const file_commands_proto_rawDesc = "" +
 	"\x0evariables_json\x18\x05 \x01(\tR\rvariablesJson\"R\n" +
 	"\x12CompleteJobCommand\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12%\n" +
-	"\x0evariables_json\x18\x02 \x01(\tR\rvariablesJson\"\x86\x02\n" +
+	"\x0evariables_json\x18\x02 \x01(\tR\rvariablesJson\"\x98\x01\n" +
+	"\x0eFailJobCommand\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12+\n" +
+	"\x11retries_remaining\x18\x02 \x01(\x05R\x10retriesRemaining\x12#\n" +
+	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12\x1d\n" +
+	"\n" +
+	"error_code\x18\x04 \x01(\tR\terrorCode\"\xc6\x02\n" +
 	"\x0fCommandEnvelope\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12.\n" +
 	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12M\n" +
 	"\rstart_process\x18\n" +
 	" \x01(\v2&.eventlog_protocol.StartProcessCommandH\x00R\fstartProcess\x12J\n" +
-	"\fcomplete_job\x18\v \x01(\v2%.eventlog_protocol.CompleteJobCommandH\x00R\vcompleteJobB\t\n" +
+	"\fcomplete_job\x18\v \x01(\v2%.eventlog_protocol.CompleteJobCommandH\x00R\vcompleteJob\x12>\n" +
+	"\bfail_job\x18\f \x01(\v2!.eventlog_protocol.FailJobCommandH\x00R\afailJobB\t\n" +
 	"\acommandB4Z2github.com/jeremielodi/goflow/internal/eventlog/pbb\x06proto3"
 
 var (
@@ -282,20 +373,22 @@ func file_commands_proto_rawDescGZIP() []byte {
 	return file_commands_proto_rawDescData
 }
 
-var file_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_commands_proto_goTypes = []any{
 	(*StartProcessCommand)(nil), // 0: eventlog_protocol.StartProcessCommand
 	(*CompleteJobCommand)(nil),  // 1: eventlog_protocol.CompleteJobCommand
-	(*CommandEnvelope)(nil),     // 2: eventlog_protocol.CommandEnvelope
+	(*FailJobCommand)(nil),      // 2: eventlog_protocol.FailJobCommand
+	(*CommandEnvelope)(nil),     // 3: eventlog_protocol.CommandEnvelope
 }
 var file_commands_proto_depIdxs = []int32{
 	0, // 0: eventlog_protocol.CommandEnvelope.start_process:type_name -> eventlog_protocol.StartProcessCommand
 	1, // 1: eventlog_protocol.CommandEnvelope.complete_job:type_name -> eventlog_protocol.CompleteJobCommand
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 2: eventlog_protocol.CommandEnvelope.fail_job:type_name -> eventlog_protocol.FailJobCommand
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_commands_proto_init() }
@@ -303,9 +396,10 @@ func file_commands_proto_init() {
 	if File_commands_proto != nil {
 		return
 	}
-	file_commands_proto_msgTypes[2].OneofWrappers = []any{
+	file_commands_proto_msgTypes[3].OneofWrappers = []any{
 		(*CommandEnvelope_StartProcess)(nil),
 		(*CommandEnvelope_CompleteJob)(nil),
+		(*CommandEnvelope_FailJob)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -313,7 +407,7 @@ func file_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_commands_proto_rawDesc), len(file_commands_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

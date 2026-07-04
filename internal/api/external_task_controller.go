@@ -304,6 +304,21 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 	// already "count to leave remaining after this failure".
 	newRetries := req.Retries - 1
 
+	// Phase 5 (see architecture/event-sourced-kafka-design.md): jobs
+	// belonging to a partitioned-write-path instance fail via the Command
+	// Gateway instead of service.FailJob's direct Postgres transaction.
+	// The bridge doesn't expose which of FailJob's three outcomes occurred
+	// (retry reset / incident / boundary trigger), so it returns one
+	// generic success message rather than reverse-engineering one —
+	// callers only need a 200, and Camunda 7's own API doesn't guarantee a
+	// specific message string here either.
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.FailJob(instanceID, jobID, newRetries, req.ErrorMessage, req.ErrorCode); err != nil {
+			return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
+		}
+		return c.JSON(fiber.Map{"title": "Success", "message": "failure processed"})
+	}
+
 	result, err := service.FailJob(ctrl.db, jobID, newRetries, req.ErrorMessage, req.ErrorCode)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})

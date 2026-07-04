@@ -122,6 +122,54 @@ func CompleteJob(instanceID, jobID uuid.UUID, variables map[string]interface{}) 
 	}
 }
 
+// FailJob is the Command Gateway's bridge for failing a job that belongs
+// to a partitioned-write-path instance. retriesRemaining follows Zeebe's
+// own convention (count to leave remaining after this failure, already
+// decremented by the caller — matching service.FailJob's own parameter).
+func FailJob(instanceID, jobID uuid.UUID, retriesRemaining int, errorMessage, errorCode string) error {
+	cmdProducer := eventlog.GlobalCommand()
+	consumer := eventlog.GlobalConsumer()
+	if cmdProducer == nil || consumer == nil {
+		return fmt.Errorf("partitioned write path is not configured on this instance")
+	}
+
+	// Waits on JobFailed (correlated by job_id) — already published
+	// unconditionally by all three of service.FailJob's outcomes (retry
+	// reset, permanent failure with incident, permanent failure with
+	// boundary trigger) since Phase 0. Same pre-register-the-replacement
+	// retry loop as CompleteJob's JobCompleted wait, for the same reason:
+	// Consumer only correlates by (instanceID, eventType), not job ID.
+	waiter := consumer.Register(instanceID.String(), "JobFailed")
+
+	produceCtx, cancel := context.WithTimeout(context.Background(), bridgeTimeout)
+	defer cancel()
+	if err := cmdProducer.FailJob(produceCtx, instanceID, jobID, int32(retriesRemaining), errorMessage, errorCode); err != nil {
+		waiter.Cancel()
+		return err
+	}
+
+	deadline := time.Now().Add(bridgeTimeout)
+	for {
+		next := consumer.Register(instanceID.String(), "JobFailed")
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm job failure: timed out waiting for job %s", jobID)
+		}
+		env, err := waiter.Await(context.Background(), remaining)
+		if err != nil {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm job failure: %w", err)
+		}
+		if jf := env.GetJobFailed(); jf != nil && jf.JobId == jobID.String() {
+			next.Cancel()
+			return nil
+		}
+		waiter = next
+	}
+}
+
 // LookupJobOwner resolves which write path owns jobID, without importing
 // internal/service (see package doc). Both of this codebase's job-complete
 // call sites (internal/api's REST handler, internal/zeebegrpc's RPC) call
