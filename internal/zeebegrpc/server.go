@@ -20,6 +20,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -175,14 +176,26 @@ func (s *Server) CreateProcessInstance(ctx context.Context, req *pb.CreateProces
 	}
 
 	tenantID := req.TenantId
-	instanceID, execID, err := service.StartProcessInstance(s.db, &graph, def.ID, &tenantID, vars)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
 
-	rt := runtime.NewRuntime(&graph, s.db, s.dispatcher)
-	if err := rt.ExecuteExecution(ctx, execID); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to execute process: %v", err)
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
+	// flagged write_path = 'partitioned' start via the Command Gateway
+	// instead of the legacy transactional path + rt.ExecuteExecution.
+	var instanceID, execID uuid.UUID
+	if def.WritePath == "partitioned" {
+		instanceID, execID, err = partition.StartProcess(&def, &tenantID, vars)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+	} else {
+		instanceID, execID, err = service.StartProcessInstance(s.db, &graph, def.ID, &tenantID, vars)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+
+		rt := runtime.NewRuntime(&graph, s.db, s.dispatcher)
+		if err := rt.ExecuteExecution(ctx, execID); err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to execute process: %v", err)
+		}
 	}
 
 	defKey, err := s.zeebeKeys.GetOrAssignKey("process_definition", def.ID)
@@ -359,6 +372,17 @@ func (s *Server) CompleteJob(ctx context.Context, req *pb.CompleteJobRequest) (*
 		if err := json.Unmarshal([]byte(req.Variables), &vars); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid variables JSON: %v", err)
 		}
+	}
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): jobs
+	// belonging to a partitioned-write-path instance complete via the
+	// Command Gateway instead of service.CompleteJob's direct Postgres
+	// transaction.
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.CompleteJob(instanceID, jobID, vars); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &pb.CompleteJobResponse{}, nil
 	}
 
 	result, err := service.CompleteJob(s.db, jobID, vars)

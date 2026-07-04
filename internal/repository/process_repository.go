@@ -209,7 +209,8 @@ func (r *ProcessRepository) FindLatestProcessDefinitionByKey(
             is_active,
             bpmn_xml,
             parsed_graph,
-            created_at
+            created_at,
+            write_path
         FROM public.process_definitions
         WHERE process_key = $1
         ORDER BY version DESC
@@ -241,7 +242,8 @@ func (r *ProcessRepository) FindProcessDefinitionByID(
             is_active,
             bpmn_xml,
             parsed_graph,
-            created_at
+            created_at,
+            write_path
         FROM public.process_definitions
         WHERE id = $1
         `,
@@ -275,7 +277,8 @@ func (r *ProcessRepository) FindProcessDefinitionByKeyAndVersion(
             is_active,
             bpmn_xml,
             parsed_graph,
-            created_at
+            created_at,
+            write_path
         FROM public.process_definitions
         WHERE process_key = $1
         AND version = $2
@@ -402,6 +405,30 @@ func (r *ProcessRepository) SetProcessDefinitionActive(
 		"public.process_definitions",
 		[]database.QueryParameter{
 			{Key: "is_active", Value: active},
+		},
+		database.QueryParameter{
+			Key:   "id",
+			Value: id,
+		},
+	)
+}
+
+// SetProcessDefinitionWritePath flips a definition between GoFlow's two
+// write paths — see architecture/event-sourced-kafka-design.md Phase 1.
+// Callers (internal/api's ProcessDefinitionController.SetWritePath) are
+// responsible for validating the graph shape before calling this with
+// "partitioned" — this method itself trusts the caller.
+func (r *ProcessRepository) SetProcessDefinitionWritePath(
+	id uuid.UUID,
+	writePath string,
+) (sql.Result, error) {
+
+	adapter := database.NewDabaseAdapter(r.db)
+
+	return adapter.Update(
+		"public.process_definitions",
+		[]database.QueryParameter{
+			{Key: "write_path", Value: writePath},
 		},
 		database.QueryParameter{
 			Key:   "id",

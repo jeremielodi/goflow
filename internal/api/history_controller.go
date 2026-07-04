@@ -24,15 +24,15 @@ func NewHistoryController(db *sqlx.DB) *HistoryController {
 
 // HistoricProcessInstanceResponse follows the Camunda 7 schema.
 type HistoricProcessInstanceResponse struct {
-	ID                  string     `json:"id"`
-	ProcessDefinitionID string     `json:"processDefinitionId"`
-	ProcessDefinitionKey string    `json:"processDefinitionKey"`
-	BusinessKey         *string    `json:"businessKey"`
-	StartTime           *time.Time `json:"startTime"`
-	EndTime             *time.Time `json:"endTime"`
-	DurationInMillis    *int64     `json:"durationInMillis"`
-	State               string     `json:"state"`
-	StartUserID         *string    `json:"startUserId"`
+	ID                   string     `json:"id"`
+	ProcessDefinitionID  string     `json:"processDefinitionId"`
+	ProcessDefinitionKey string     `json:"processDefinitionKey"`
+	BusinessKey          *string    `json:"businessKey"`
+	StartTime            *time.Time `json:"startTime"`
+	EndTime              *time.Time `json:"endTime"`
+	DurationInMillis     *int64     `json:"durationInMillis"`
+	State                string     `json:"state"`
+	StartUserID          *string    `json:"startUserId"`
 }
 
 // HistoricActivityInstanceResponse follows the Camunda 7 schema.
@@ -275,13 +275,13 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 		state = "active"
 	}
 	return c.JSON(HistoricProcessInstanceResponse{
-		ID:                  r.ID.String(),
-		ProcessDefinitionID: r.ProcessDefinitionID.String(),
+		ID:                   r.ID.String(),
+		ProcessDefinitionID:  r.ProcessDefinitionID.String(),
 		ProcessDefinitionKey: r.ProcessKey,
-		StartTime:           r.StartedAt,
-		EndTime:             r.EndedAt,
-		DurationInMillis:    dur,
-		State:               state,
+		StartTime:            r.StartedAt,
+		EndTime:              r.EndedAt,
+		DurationInMillis:     dur,
+		State:                state,
 	})
 }
 
@@ -314,13 +314,13 @@ func (hc *HistoryController) ListHistoricActivityInstances(c *fiber.Ctx) error {
 	args = append(args, maxResults, firstResult)
 
 	type row struct {
-		ID                  uuid.UUID  `db:"id"`
-		CurrentElementID    string     `db:"current_element_id"`
-		ProcessInstanceID   uuid.UUID  `db:"process_instance_id"`
-		ProcessDefinitionID uuid.UUID  `db:"process_definition_id"`
-		Status              string     `db:"status"`
-		CreatedAt           time.Time  `db:"created_at"`
-		UpdatedAt           time.Time  `db:"updated_at"`
+		ID                  uuid.UUID `db:"id"`
+		CurrentElementID    string    `db:"current_element_id"`
+		ProcessInstanceID   uuid.UUID `db:"process_instance_id"`
+		ProcessDefinitionID uuid.UUID `db:"process_definition_id"`
+		Status              string    `db:"status"`
+		CreatedAt           time.Time `db:"created_at"`
+		UpdatedAt           time.Time `db:"updated_at"`
 	}
 	var rows []row
 	if err := hc.db.Select(&rows, query, args...); err != nil {

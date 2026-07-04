@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -200,6 +201,20 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 	if err != nil {
 		log.Printf("❌ Failed to build graph: %v", err)
 		return JobResult{Success: false, Error: fmt.Errorf("failed to build graph: %w", err)}
+	}
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
+	// flagged write_path = 'partitioned' start via the Command Gateway,
+	// which already blocks for confirmation — no separate async execute
+	// step needed, unlike the legacy path below.
+	if procDef.WritePath == "partitioned" {
+		instanceID, _, err := partition.StartProcess(procDef, procDef.TenantID, job.Variables)
+		if err != nil {
+			log.Printf("❌ Failed to start partitioned process instance: %v", err)
+			return JobResult{Success: false, Error: err}
+		}
+		log.Printf("✅ Partitioned process instance %s started successfully", instanceID)
+		return JobResult{Success: true, Error: nil}
 	}
 
 	instanceID, execID, err := service.StartProcessInstance(p.db, graph, procDef.ID, procDef.TenantID, job.Variables)

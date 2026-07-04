@@ -14,9 +14,10 @@ import (
 	"github.com/jeremielodi/goflow/internal/api"
 	apiv2 "github.com/jeremielodi/goflow/internal/api/v2"
 	"github.com/jeremielodi/goflow/internal/engine"
-	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/eventlog"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -81,6 +82,30 @@ func main() {
 
 	// Create task event dispatcher
 	taskEventDispatcher := events.NewTaskEventDispatcher()
+
+	// Phase 1 partitioned write path (see
+	// architecture/event-sourced-kafka-design.md) — reuses the same
+	// KAFKA_BROKERS config as Phase 0 above; if that wasn't set, this
+	// stays fully disabled too (eventlog.GlobalCommand()/GlobalConsumer()
+	// stay nil, and every process definition either already defaults to
+	// write_path='legacy' or was never flippable in the first place since
+	// PATCH .../write-path itself needs this running to be meaningful).
+	if eventLogConsumer != nil {
+		brokers := strings.Split(util.DotEnvVariable("KAFKA_BROKERS"), ",")
+		const partitionCount = 12
+		if err := eventlog.EnsureTopics(brokers, partitionCount); err != nil {
+			log.Fatalln("partition processor: failed to ensure Kafka topics: ", err)
+		}
+		eventlog.SetGlobalCommandProducer(eventlog.NewCommandProducer(brokers))
+		eventlog.SetGlobalConsumer(eventLogConsumer)
+
+		processor, err := partition.NewProcessor(brokers, db, taskEventDispatcher)
+		if err != nil {
+			log.Fatalln("partition processor: ", err)
+		}
+		go processor.Run(context.Background())
+		log.Println("✅ Partition processor started (partitions:", partitionCount, ")")
+	}
 
 	// Create SSE listener for real-time events
 	sseListener := listeners.NewSSEListener()
@@ -302,6 +327,10 @@ func main() {
 	app.Get("/engine-rest/process-definition", processDefinitionCtrl.ListDefinitions)
 	app.Get("/engine-rest/process-definition/:id", processDefinitionCtrl.GetDefinition)
 	app.Post("/engine-rest/process-definition/:id/start", processDefinitionCtrl.StartByDefinitionID)
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): flips a
+	// definition onto the Kafka-partitioned write path, gated by a
+	// deploy-time BPMN-shape validator.
+	app.Patch("/engine-rest/process-definition/:id/write-path", processDefinitionCtrl.SetWritePath)
 
 	// Per-resource process permissions (see process_authorization_service.go) —
 	// each handler itself requires MANAGE on :key, so no route-level gate here.

@@ -424,9 +424,9 @@ func (s *AuditService) LogJobFailed(jobID, processInstanceID uuid.UUID, errorMes
 // signal are merged into the process instance's variable set.
 func (s *AuditService) LogVariablesMerged(processInstanceID uuid.UUID, merged map[string]interface{}, source string) error {
 	newData, _ := json.Marshal(map[string]interface{}{
-		"merged":    merged,
-		"source":    source,
-		"mergedAt":  time.Now(),
+		"merged":   merged,
+		"source":   source,
+		"mergedAt": time.Now(),
 	})
 
 	log := &models.AuditLog{
@@ -462,8 +462,8 @@ func (s *AuditService) LogTimerCancelled(processInstanceID uuid.UUID, executionI
 // LogMessageCorrelated logs when a published message correlates to a waiting execution
 func (s *AuditService) LogMessageCorrelated(processInstanceID uuid.UUID, messageName string) error {
 	newData, _ := json.Marshal(map[string]interface{}{
-		"messageName":   messageName,
-		"correlatedAt":  time.Now(),
+		"messageName":  messageName,
+		"correlatedAt": time.Now(),
 	})
 
 	log := &models.AuditLog{

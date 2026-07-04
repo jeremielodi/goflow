@@ -141,6 +141,11 @@ CREATE TABLE process_definitions (
     bpmn_xml TEXT NOT NULL, -- Original BPMN XML uploaded from Camunda Modeler
     parsed_graph JSONB NULL, -- Parsed process graph/cache with node structure
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- Definition creation timestamp
+    -- Phase 1 (see architecture/event-sourced-kafka-design.md, migration
+    -- 012_process_write_path.sql): 'legacy' (default, unchanged Postgres-
+    -- transactional engine) or 'partitioned' (Kafka command-log write path,
+    -- gated to a narrow BPMN shape by a deploy-time validator).
+    write_path TEXT NOT NULL DEFAULT 'legacy' CHECK (write_path IN ('legacy', 'partitioned')),
     UNIQUE(process_key, version)
 );
 

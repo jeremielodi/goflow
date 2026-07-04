@@ -19,7 +19,7 @@ func NewVariableController(db *sqlx.DB) *VariableController {
 type SearchVariablesRequest struct {
 	Filter struct {
 		ProcessInstanceKey string `json:"processInstanceKey"`
-		Name                string `json:"name"`
+		Name               string `json:"name"`
 	} `json:"filter"`
 }
 
@@ -54,8 +54,8 @@ func (vc *VariableController) SearchVariables(c *fiber.Ctx) error {
 			continue
 		}
 		items = append(items, fiber.Map{
-			"name":                name,
-			"value":               value,
+			"name":               name,
+			"value":              value,
 			"processInstanceKey": instanceID,
 		})
 	}

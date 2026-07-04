@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package eventlog_protocol;
+
+option go_package = "github.com/jeremielodi/goflow/internal/eventlog/pb";
+
+// commands.proto — Phase 1 command schema. A CommandEnvelope is produced to
+// goflow.process-commands, keyed by process_instance_id (same partitioning
+// scheme as events.proto's Envelope on goflow.process-events), and consumed
+// exactly once at a time per partition by internal/partition.Processor —
+// see architecture/event-sourced-kafka-design.md. Unlike events.proto,
+// which is Phase 0 shadow-mode observability, commands on this topic are
+// the actual write path for process definitions flagged write_path =
+// 'partitioned': the Command Gateway (internal/partition/gateway.go)
+// produces a command instead of writing to Postgres directly, and the
+// Partition Processor is the only thing that eventually calls the
+// Postgres-writing engine functions for that instance.
+//
+// Scope for this first vertical slice: only start -> one external service
+// task -> end is supported (enforced by a deploy-time graph-shape
+// validator), so only two command types exist so far.
+
+message StartProcessCommand {
+  string process_instance_id = 1;
+  string execution_id = 2;
+  string process_definition_id = 3;
+  string tenant_id = 4;
+  string variables_json = 5;
+}
+
+message CompleteJobCommand {
+  string job_id = 1;
+  string variables_json = 2;
+}
+
+message CommandEnvelope {
+  string command_id = 1;
+  string process_instance_id = 2;
+
+  oneof command {
+    StartProcessCommand start_process = 10;
+    CompleteJobCommand complete_job = 11;
+  }
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -425,7 +426,26 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), normalizedVars)
+	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
+	// flagged write_path = 'partitioned' start via the Command Gateway
+	// instead of the legacy transactional path + rt.ExecuteExecution.
+	if def.WritePath == "partitioned" {
+		instanceID, execID, err := partition.StartProcess(&def, tenantID, normalizedVars)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"title": "Internal Error", "message": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"processInstanceId": instanceID,
+			"executionId":       execID,
+			"processKey":        def.ProcessKey,
+			"version":           def.Version,
+			"message":           "process started successfully",
+		})
+	}
+
+	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, tenantID, normalizedVars)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Database Error",

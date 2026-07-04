@@ -19,9 +19,9 @@ func NewIncidentController(db *sqlx.DB) *IncidentController {
 type SearchIncidentsRequest struct {
 	Filter struct {
 		ProcessInstanceKey string `json:"processInstanceKey"`
-		State               string `json:"state"`
-		ErrorType           string `json:"errorType"`
-		ElementId           string `json:"elementId"`
+		State              string `json:"state"`
+		ErrorType          string `json:"errorType"`
+		ElementId          string `json:"elementId"`
 	} `json:"filter"`
 }
 

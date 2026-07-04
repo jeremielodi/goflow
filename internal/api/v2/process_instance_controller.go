@@ -15,6 +15,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -59,9 +60,9 @@ func processInstanceState(status string) string {
 
 func toV2ProcessInstance(inst *models.ProcessInstance) fiber.Map {
 	return fiber.Map{
-		"processInstanceKey":  inst.ID,
-		"processDefinitionId": inst.ProcessKey,
-		"processDefinitionKey": inst.ProcessDefinitionID,
+		"processInstanceKey":       inst.ID,
+		"processDefinitionId":      inst.ProcessKey,
+		"processDefinitionKey":     inst.ProcessDefinitionID,
 		"processDefinitionVersion": inst.Version,
 		"state":                    processInstanceState(inst.Status),
 		"startDate":                inst.StartedAt,
@@ -72,7 +73,7 @@ func toV2ProcessInstance(inst *models.ProcessInstance) fiber.Map {
 // CreateProcessInstanceRequest matches Camunda 8's CreateProcessInstance body.
 type CreateProcessInstanceRequest struct {
 	ProcessDefinitionId string                 `json:"processDefinitionId"`
-	Variables            map[string]interface{} `json:"variables"`
+	Variables           map[string]interface{} `json:"variables"`
 }
 
 // CreateProcessInstance handles POST /v2/process-instances.
@@ -115,7 +116,25 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
-	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), req.Variables)
+	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
+	// flagged write_path = 'partitioned' start via the Command Gateway
+	// instead of the legacy transactional path + rt.ExecuteExecution.
+	if def.WritePath == "partitioned" {
+		instanceID, _, err := partition.StartProcess(&def, tenantID, req.Variables)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
+		}
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
+			"processInstanceKey":       instanceID,
+			"processDefinitionId":      def.ProcessKey,
+			"processDefinitionKey":     def.ID,
+			"processDefinitionVersion": def.Version,
+		})
+	}
+
+	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, tenantID, req.Variables)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
@@ -129,9 +148,9 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"processInstanceKey":      instanceID,
-		"processDefinitionId":     def.ProcessKey,
-		"processDefinitionKey":    def.ID,
+		"processInstanceKey":       instanceID,
+		"processDefinitionId":      def.ProcessKey,
+		"processDefinitionKey":     def.ID,
 		"processDefinitionVersion": def.Version,
 	})
 }
@@ -188,7 +207,7 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 type SearchProcessInstancesRequest struct {
 	Filter struct {
 		ProcessDefinitionId string `json:"processDefinitionId"`
-		State                string `json:"state"`
+		State               string `json:"state"`
 	} `json:"filter"`
 }
 

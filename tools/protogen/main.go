@@ -33,6 +33,7 @@ type compileJob struct {
 var jobs = []compileJob{
 	{protoDir: "internal/zeebegrpc/proto", protoFile: "gateway.proto", outDir: "internal/zeebegrpc/pb"},
 	{protoDir: "internal/eventlog/proto", protoFile: "events.proto", outDir: "internal/eventlog/pb"},
+	{protoDir: "internal/eventlog/proto", protoFile: "commands.proto", outDir: "internal/eventlog/pb"},
 }
 
 func main() {

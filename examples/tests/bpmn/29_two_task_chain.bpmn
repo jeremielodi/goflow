@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_TwoTaskChainProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: Suite 29's fixture for Phase 3 of the event-sourced engine
+              (see architecture/event-sourced-kafka-design.md) — a linear
+              chain of two external service tasks, proving the partitioned
+              write path's Command Gateway correctly waits for the
+              specific job that completed (via JobCompleted, correlated by
+              job id) rather than assuming any job completion finishes the
+              whole process, which Phase 1 and Phase 2's shapes both
+              happened to do in exactly one hop.
+  -->
+
+  <bpmn:process id="TwoTaskChainProcess" name="Two Task Chain Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Started">
+      <bpmn:outgoing>Flow_Start_StepOne</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="stepOne" name="Step One">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="process-step-one" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Start_StepOne</bpmn:incoming>
+      <bpmn:outgoing>Flow_StepOne_StepTwo</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="stepTwo" name="Step Two">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="process-step-two" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_StepOne_StepTwo</bpmn:incoming>
+      <bpmn:outgoing>Flow_StepTwo_End</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="end" name="Done">
+      <bpmn:incoming>Flow_StepTwo_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_StepOne" sourceRef="start" targetRef="stepOne" />
+    <bpmn:sequenceFlow id="Flow_StepOne_StepTwo" sourceRef="stepOne" targetRef="stepTwo" />
+    <bpmn:sequenceFlow id="Flow_StepTwo_End" sourceRef="stepTwo" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_TwoTaskChainProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_TwoTaskChainProcess" bpmnElement="TwoTaskChainProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="stepOne_di" bpmnElement="stepOne">
+        <dc:Bounds x="240" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="stepTwo_di" bpmnElement="stepTwo">
+        <dc:Bounds x="400" y="230" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="560" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_StepOne_di" bpmnElement="Flow_Start_StepOne">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_StepOne_StepTwo_di" bpmnElement="Flow_StepOne_StepTwo">
+        <di:waypoint x="340" y="270" /><di:waypoint x="400" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_StepTwo_End_di" bpmnElement="Flow_StepTwo_End">
+        <di:waypoint x="500" y="270" /><di:waypoint x="560" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

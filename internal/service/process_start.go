@@ -2,6 +2,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,7 +11,16 @@ import (
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
+
+// ErrProcessAlreadyStarted is returned by StartProcessInstanceWithIDs when
+// instanceID already has a process_instances row — see that function's doc
+// for why this is a normal, expected outcome for its caller
+// (internal/partition.Processor), not an error condition for callers using
+// the plain StartProcessInstance (which always generates a fresh ID and so
+// can never hit this).
+var ErrProcessAlreadyStarted = fmt.Errorf("process instance already started")
 
 // StartProcessInstance creates a process instance, its initial variables,
 // and its first execution (parked at the start event) in one transaction,
@@ -31,6 +41,41 @@ func StartProcessInstance(
 	tenantID *string,
 	variables map[string]interface{},
 ) (instanceID, execID uuid.UUID, err error) {
+	instanceID = uuid.New()
+	execID = uuid.New()
+	if err := startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables); err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	return instanceID, execID, nil
+}
+
+// StartProcessInstanceWithIDs is StartProcessInstance for callers that must
+// choose the instance/execution IDs themselves before this function runs —
+// specifically internal/partition.Processor, whose Command Gateway
+// counterpart already committed to an instanceID (it's the Kafka partition
+// key) before producing the command that eventually calls this. Returns
+// ErrProcessAlreadyStarted if instanceID already exists: this is the
+// expected shape of a redelivered command after a crash between this
+// function's commit and its caller finishing the rest of the sequence
+// (e.g. runtime.ExecuteExecution) — not a real failure. Callers must check
+// for it with errors.Is and decide how to resume from there.
+func StartProcessInstanceWithIDs(
+	db *sqlx.DB,
+	graph *engine.ProcessGraph,
+	processDefinitionID, instanceID, execID uuid.UUID,
+	tenantID *string,
+	variables map[string]interface{},
+) error {
+	return startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables)
+}
+
+func startProcessInstance(
+	db *sqlx.DB,
+	graph *engine.ProcessGraph,
+	processDefinitionID, instanceID, execID uuid.UUID,
+	tenantID *string,
+	variables map[string]interface{},
+) error {
 	var startNodeID string
 	for _, node := range graph.Nodes {
 		if node.Type == engine.StartEventType {
@@ -39,7 +84,7 @@ func StartProcessInstance(
 		}
 	}
 	if startNodeID == "" {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("no start event found in process definition")
+		return fmt.Errorf("no start event found in process definition")
 	}
 
 	if variables == nil {
@@ -50,27 +95,29 @@ func StartProcessInstance(
 
 	tx, err := db.Beginx()
 	if err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("failed to begin transaction: %w", err)
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	instanceID = uuid.New()
 	now := time.Now()
 
 	if err = instanceRepo.CreateProcessInstanceTx(tx, instanceID, processDefinitionID, now, tenantID); err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("failed to create process instance: %w", err)
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return ErrProcessAlreadyStarted
+		}
+		return fmt.Errorf("failed to create process instance: %w", err)
 	}
 	if err = instanceRepo.CreateVariablesTx(tx, instanceID, variables, now); err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("failed to save process variables: %w", err)
+		return fmt.Errorf("failed to save process variables: %w", err)
 	}
 
-	execID = uuid.New()
 	if err = instanceRepo.CreateExecutionTx(tx, execID, instanceID, startNodeID, now); err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("failed to create execution: %w", err)
+		return fmt.Errorf("failed to create execution: %w", err)
 	}
 
 	if err = tx.Commit(); err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("failed to commit transaction: %w", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	auditService := NewAuditService(db)
@@ -86,5 +133,5 @@ func StartProcessInstance(
 		p.ExecutionCreated(instanceID.String(), execID.String(), "", startNodeID)
 	}
 
-	return instanceID, execID, nil
+	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -246,7 +247,28 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 		return c.Status(500).JSON(fiber.Map{"message": "failed to parse process graph"})
 	}
 
-	instanceID, execID, err := service.StartProcessInstance(ctrl.db, &graph, def.ID, common.InstanceTenant(def.TenantID, common.GetTenantId(c)), body.Variables)
+	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
+	// flagged write_path = 'partitioned' start via the Command Gateway
+	// instead of the legacy transactional path — skip
+	// service.StartProcessInstance/rt.ExecuteExecution entirely, since
+	// there's no legacy execution row to run them against.
+	if def.WritePath == "partitioned" {
+		instanceID, execID, err := partition.StartProcess(&def, tenantID, body.Variables)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"processInstanceId": instanceID,
+			"executionId":       execID,
+			"processKey":        def.ProcessKey,
+			"version":           def.Version,
+			"definitionId":      def.ID,
+		})
+	}
+
+	instanceID, execID, err := service.StartProcessInstance(ctrl.db, &graph, def.ID, tenantID, body.Variables)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
@@ -263,4 +285,52 @@ func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error
 		"version":           def.Version,
 		"definitionId":      def.ID,
 	})
+}
+
+// PATCH /engine-rest/process-definition/:id/write-path
+//
+// Flips a definition between GoFlow's two write paths — see
+// architecture/event-sourced-kafka-design.md Phase 1. "legacy" (the
+// default) is always allowed. Flipping to "partitioned" is rejected unless
+// the definition's graph matches one of the two shapes the partitioned
+// engine supports so far (partition.ValidateShape): a linear
+// start -> one service task -> end chain, or a "diamond"
+// start -> exclusiveGateway -> {taskA | taskB} -> shared end event — this
+// is an explicit scope fence, not a silent gap.
+func (ctrl *ProcessDefinitionController) SetWritePath(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"message": "invalid definition id"})
+	}
+
+	var body struct {
+		WritePath string `json:"writePath"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"message": "invalid request body"})
+	}
+	if body.WritePath != "legacy" && body.WritePath != "partitioned" {
+		return c.Status(400).JSON(fiber.Map{"message": "writePath must be \"legacy\" or \"partitioned\""})
+	}
+
+	def, err := ctrl.processRepo.FindProcessDefinitionByID(id)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"message": "process definition not found"})
+	}
+
+	if body.WritePath == "partitioned" {
+		var graph engine.ProcessGraph
+		if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": "failed to parse process graph"})
+		}
+		if err := partition.ValidateShape(&graph); err != nil {
+			return c.Status(400).JSON(fiber.Map{"message": err.Error()})
+		}
+	}
+
+	if _, err := ctrl.processRepo.SetProcessDefinitionWritePath(id, body.WritePath); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+	}
+
+	return c.JSON(fiber.Map{"id": id, "writePath": body.WritePath})
 }

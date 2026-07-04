@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -220,6 +221,21 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	}
 
 	normalizedVars := normalizeVariablesForExternal(req.Variables)
+
+	// Phase 1 (see architecture/event-sourced-kafka-design.md): jobs
+	// belonging to a partitioned-write-path instance complete via the
+	// Command Gateway instead of service.CompleteJob's direct Postgres
+	// transaction.
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.CompleteJob(instanceID, jobID, normalizedVars); err != nil {
+			return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"title":   "Success",
+			"message": "process completed",
+			"jobId":   jobID,
+		})
+	}
 
 	result, err := service.CompleteJob(ctrl.db, jobID, normalizedVars)
 	if err != nil {

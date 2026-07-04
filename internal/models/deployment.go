@@ -35,6 +35,9 @@ type ProcessDefinition struct {
 	BpmnXML      string          `db:"bpmn_xml"      json:"bpmnXml,omitempty"`
 	ParsedGraph  json.RawMessage `db:"parsed_graph"  json:"-"`
 	CreatedAt    time.Time       `db:"created_at"    json:"createdAt"`
+	// WritePath is "legacy" (default) or "partitioned" — see
+	// architecture/event-sourced-kafka-design.md Phase 1.
+	WritePath string `db:"write_path" json:"writePath"`
 }
 
 // ProcessDefinitionCreateModel for INSERT

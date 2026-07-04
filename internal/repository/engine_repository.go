@@ -871,7 +871,7 @@ func (r *EngineRepository) LockJob(jobID uuid.UUID, workerID string, lockDuratio
 func (r *EngineRepository) FindLatestProcessDefinitionByKey(processKey string) (*models.ProcessDefinition, error) {
 	var def models.ProcessDefinition
 	query := `
-        SELECT id, deployment_id, process_key, process_name, tenant_id, version, is_active, bpmn_xml, parsed_graph, created_at
+        SELECT id, deployment_id, process_key, process_name, tenant_id, version, is_active, bpmn_xml, parsed_graph, created_at, write_path
         FROM public.process_definitions
         WHERE process_key = $1 AND is_active = true
         ORDER BY version DESC

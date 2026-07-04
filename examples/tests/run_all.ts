@@ -114,6 +114,9 @@ async function main() {
     '24_grpc_gateway.test.ts',
     '25_analytics.test.ts',
     '26_eventlog_shadow.test.ts',
+    '27_partition_engine.test.ts',
+    '28_partition_diamond.test.ts',
+    '29_partition_chain.test.ts',
   ];
 
   const exitCodes: number[] = [];
