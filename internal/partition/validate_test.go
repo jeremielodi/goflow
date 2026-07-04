@@ -208,3 +208,31 @@ func TestValidateShape_Chain_DisconnectedTask_Rejected(t *testing.T) {
 		t.Fatal("expected an extra service task unreachable from start to be rejected")
 	}
 }
+
+func TestValidateShape_Chain_MixedServiceAndBusinessRuleTasks_Passes(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "evaluate", "")}},
+		&engine.Node{ID: "evaluate", Type: engine.BusinessRuleTaskType, Outgoing: []engine.Flow{flow("f2", "apply", "")}},
+		&engine.Node{ID: "apply", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err != nil {
+		t.Fatalf("expected a chain mixing a business rule task and a service task to pass, got: %v", err)
+	}
+}
+
+func TestValidateShape_Diamond_BusinessRuleTaskBranch_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "gw", "")}},
+		&engine.Node{ID: "gw", Type: engine.ExclusiveGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", `${branch == "a"}`),
+			flow("f3", "evaluate", `${branch == "b"}`),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "end", "")}},
+		&engine.Node{ID: "evaluate", Type: engine.BusinessRuleTaskType, Outgoing: []engine.Flow{flow("f5", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a diamond with a business rule task in place of a branch service task to be rejected — diamond branches stay service-task-only")
+	}
+}

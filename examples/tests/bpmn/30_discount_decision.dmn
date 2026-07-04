@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" id="Definitions_DiscountDecision" name="Discount Decision Definitions">
+
+  <!--
+    SCENARIO: Suite 30's fixture for Phase 4 of the event-sourced engine
+              (see architecture/event-sourced-kafka-design.md) — a single
+              input, single output decision table (unlike
+              17_approval_decision.dmn's multi-output table), so
+              EvaluateDecisionTable returns the raw discountRate value
+              directly rather than a wrapping object, keeping the e2e
+              assertion simple: bigger orders get a bigger discount.
+  -->
+
+  <decision id="discountDecision" name="Discount Decision">
+    <decisionTable id="DecisionTable_1" hitPolicy="UNIQUE">
+      <input id="Input_1" label="Amount">
+        <inputExpression id="InputExpression_1" typeRef="number"><text>amount</text></inputExpression>
+      </input>
+      <output id="Output_1" label="Discount Rate" name="discountRate" typeRef="number" />
+      <rule id="Rule_1">
+        <inputEntry id="Entry_1"><text>&lt; 1000</text></inputEntry>
+        <outputEntry id="Entry_2"><text>0</text></outputEntry>
+      </rule>
+      <rule id="Rule_2">
+        <inputEntry id="Entry_3"><text>&gt;= 1000</text></inputEntry>
+        <outputEntry id="Entry_4"><text>0.1</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+
+</definitions>

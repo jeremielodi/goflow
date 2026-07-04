@@ -30,27 +30,33 @@ import (
 
 // ValidateShape rejects every BPMN graph except the two shapes the
 // partitioned engine supports so far:
-//   - Phase 1/3 (linear): one start event -> a chain of one or more
-//     external service tasks, each flowing directly into the next ->
-//     one end event.
+//   - Phase 1/3/4 (linear): one start event -> a chain of one or more
+//     external service tasks and/or business rule tasks (DMN
+//     zeebe:calledDecision), each flowing directly into the next -> one
+//     end event.
 //   - Phase 2 (diamond): one start event -> one exclusive gateway with
 //     exactly 2 outgoing flows, each with an explicit non-empty condition,
 //     each targeting a distinct service task -> both tasks flow to one
-//     shared end event.
+//     shared end event. Diamond branches stay service-task-only — not
+//     combined with Phase 4's business rule task support, per this
+//     package's discipline of never combining two generalizations in one
+//     phase.
 //
 // Called only when a process definition is flipped to the partitioned
 // write path (PATCH .../write-path) — this is an explicit scope fence, not
-// a silent gap: parallel/inclusive gateways, timers, multi-instance,
-// message/signal correlation, and DMN are simply not implemented by the
+// a silent gap: parallel/inclusive gateways, timers, multi-instance, and
+// message/signal correlation are simply not implemented by the
 // partitioned engine yet (see the design doc's "Explicit non-goals").
 func ValidateShape(graph *engine.ProcessGraph) error {
-	var startNodes, endNodes, taskNodes, gatewayNodes []*engine.Node
+	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes []*engine.Node
 	for _, n := range graph.Nodes {
 		switch n.Type {
 		case engine.StartEventType:
 			startNodes = append(startNodes, n)
 		case engine.ServiceTaskType:
-			taskNodes = append(taskNodes, n)
+			serviceTaskNodes = append(serviceTaskNodes, n)
+		case engine.BusinessRuleTaskType:
+			businessRuleNodes = append(businessRuleNodes, n)
 		case engine.EndEventType:
 			endNodes = append(endNodes, n)
 		case engine.ExclusiveGatewayType:
@@ -65,31 +71,37 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 	startNode := startNodes[0]
 
 	switch {
-	case len(gatewayNodes) == 0 && len(taskNodes) >= 1:
+	case len(gatewayNodes) == 0 && len(serviceTaskNodes)+len(businessRuleNodes) >= 1:
 		if len(endNodes) != 1 {
 			return unsupportedShapeErr("")
 		}
-		return validateLinearShape(startNode, taskNodes, endNodes[0])
-	case len(gatewayNodes) == 1 && len(taskNodes) == 2:
+		chainNodes := make([]*engine.Node, 0, len(serviceTaskNodes)+len(businessRuleNodes))
+		chainNodes = append(chainNodes, serviceTaskNodes...)
+		chainNodes = append(chainNodes, businessRuleNodes...)
+		return validateLinearShape(startNode, chainNodes, endNodes[0])
+	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0:
 		if len(endNodes) != 1 {
 			return fmt.Errorf("the diamond shape requires both branches to converge on exactly one shared end event, found %d end events", len(endNodes))
 		}
-		return validateDiamondShape(startNode, gatewayNodes[0], taskNodes, endNodes[0])
+		return validateDiamondShape(startNode, gatewayNodes[0], serviceTaskNodes, endNodes[0])
 	default:
 		return unsupportedShapeErr("")
 	}
 }
 
 // validateLinearShape walks the chain from startNode's single outgoing
-// flow through service tasks (each must have exactly one outgoing flow to
-// the next node), until reaching endNode. Confirmed by research before
-// generalizing this from Phase 1's single-task case: service.CompleteJob
-// and runtime.ExecuteExecution have no assumption about chain length, so
-// this validator is the only thing that needs to change to support it.
-func validateLinearShape(startNode *engine.Node, taskNodes []*engine.Node, endNode *engine.Node) error {
-	taskByID := make(map[string]*engine.Node, len(taskNodes))
-	for _, t := range taskNodes {
-		taskByID[t.ID] = t
+// flow through chain nodes — service tasks and/or business rule tasks,
+// mixed in any order (each must have exactly one outgoing flow to the
+// next node) — until reaching endNode. Confirmed by research before
+// generalizing this from Phase 1's single-service-task case:
+// service.CompleteJob and runtime.ExecuteExecution have no assumption
+// about chain length or which of these two node types a given link is, so
+// this validator is the only thing that needs to change to support either
+// generalization.
+func validateLinearShape(startNode *engine.Node, chainNodes []*engine.Node, endNode *engine.Node) error {
+	nodeByID := make(map[string]*engine.Node, len(chainNodes))
+	for _, n := range chainNodes {
+		nodeByID[n.ID] = n
 	}
 
 	if len(startNode.Outgoing) != 1 {
@@ -99,25 +111,25 @@ func validateLinearShape(startNode *engine.Node, taskNodes []*engine.Node, endNo
 	visited := map[string]bool{}
 	current := startNode.Outgoing[0].TargetRef
 	for {
-		task, ok := taskByID[current]
+		node, ok := nodeByID[current]
 		if !ok {
-			return fmt.Errorf("the linear shape requires a chain of service tasks connecting start to end, found unexpected node %q", current)
+			return fmt.Errorf("the linear shape requires a chain of service/business-rule tasks connecting start to end, found unexpected node %q", current)
 		}
 		if visited[current] {
 			return fmt.Errorf("the linear shape does not support a loop back to task %q", current)
 		}
 		visited[current] = true
-		if len(task.Outgoing) != 1 {
-			return fmt.Errorf("the linear shape requires service task %q to have exactly one outgoing flow", current)
+		if len(node.Outgoing) != 1 {
+			return fmt.Errorf("the linear shape requires task %q to have exactly one outgoing flow", current)
 		}
-		next := task.Outgoing[0].TargetRef
+		next := node.Outgoing[0].TargetRef
 		if next == endNode.ID {
 			break
 		}
 		current = next
 	}
-	if len(visited) != len(taskNodes) {
-		return fmt.Errorf("the linear shape requires every service task to be part of the single start-to-end chain")
+	if len(visited) != len(chainNodes) {
+		return fmt.Errorf("the linear shape requires every task to be part of the single start-to-end chain")
 	}
 	return nil
 }
@@ -160,7 +172,7 @@ func validateDiamondShape(startNode, gateway *engine.Node, taskNodes []*engine.N
 
 func unsupportedShapeErr(badType engine.NodeType) error {
 	if badType != "" {
-		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, exclusiveGateway, and endEvent", badType)
+		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, and endEvent", badType)
 	}
-	return fmt.Errorf("the partitioned write path only supports two shapes: (1) start -> a chain of one or more service tasks -> end, or (2) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
+	return fmt.Errorf("the partitioned write path only supports two shapes: (1) start -> a chain of one or more service/business-rule tasks -> end, or (2) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
 }

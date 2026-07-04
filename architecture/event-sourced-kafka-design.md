@@ -402,6 +402,56 @@ inside `internal/partition.Processor`, rather than the current global
 diamond branches to sub-chains (combining Phase 2 and Phase 3) is a
 smaller, independent option if timers are deferred further.
 
+## Phase 4 — business rule task (DMN) in the linear chain
+
+Shipped the same day, immediately after Phase 3. Phase 3's own "how to
+apply" flagged two candidates (timers, or combining Phase 2+3 into
+sub-chain diamond branches); research for this phase found a **better**
+third option and used it instead of either, without needing to ask —
+unlike Phase 3, there was no real tradeoff to weigh here, since a business
+rule task beat both flagged candidates on every axis (safety, value, and
+alignment with the design doc's own §9.3 "DMN" item).
+
+Confirmed by reading `internal/runtime/executor_business_rule_task.go`
+directly: a business rule task evaluates its DMN decision **synchronously
+inline** — one Postgres read for the stored decision table plus a pure
+`dmn.EvaluateDecisionTable` call, both inside the *same* transaction that
+advances `current_element_id` via `UpdateExecutionNodeTx`, then the walk
+continues in the same `ExecuteExecution` call. No job row, no external
+worker, no wait state — architecturally identical to the exclusive-gateway
+case Phase 2 already made redelivery-safe, not the service-task case that
+needed the `status`-based fix. Since `UpdateExecutionNodeTx` never touches
+`executions.status`, a business rule task never moves `status` away from
+`'active'` — Phase 1/2's existing `status == 'active'` redelivery check in
+`internal/partition/processor.go` already covers it correctly, with no new
+stranding case. This meant the **entire diff was one file**:
+`internal/partition/validate.go`'s linear-chain bucketing now accepts
+`BusinessRuleTaskType` nodes mixed with `ServiceTaskType` nodes in any
+order (the diamond shape's two branches deliberately stay
+service-task-only, per this package's running discipline of never
+combining two generalizations in one phase) — zero changes to
+`internal/service`, `internal/runtime`, or `internal/partition/processor.go`/
+`gateway.go`, the fourth phase in a row where the legacy-engine-reuse
+architecture needed nothing beyond the validator.
+
+**Verification**: 6 new `internal/partition/validate_test.go` cases total
+(2 new for this phase: a chain mixing a business rule task and a service
+task passes; a diamond with a business rule task in place of one branch's
+service task is rejected) — this time the local test binary ran cleanly
+(the Windows Application Control block from Phase 3 didn't recur). New
+e2e suite `examples/tests/30_partition_dmn.test.ts` (4 cases: valid flip,
+two different order amounts routing to two different DMN rules — proving
+the evaluation genuinely re-runs rather than being cached from the first
+call — and a regression check that Phases 1-3's fixtures still work). Full
+29-suite Docker regression green on the first attempt.
+
+**How to apply going forward**: timers are still the one candidate that
+needs a dedicated design pass (partition-scoped claiming) before it can be
+folded in safely — that hasn't changed. Extending diamond branches to
+sub-chains, or to also allow business rule tasks per branch, remain small,
+independent, low-risk options if a fifth phase is wanted before tackling
+timers.
+
 ## 1. Why this exists, and why not sooner
 
 The current engine (`internal/runtime`, `internal/repository`) treats a
