@@ -42,6 +42,36 @@ services:
       - goflow-network
     restart: unless-stopped
 
+  # Redpanda (Kafka-wire-compatible event log — Phase 0 shadow-mode event
+  # sourcing scoping, see architecture/event-sourced-kafka-design.md; single
+  # node, dev-mode only, not a durability/HA setup)
+  redpanda:
+    image: redpandadata/redpanda:v24.2.4
+    container_name: goflow-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
   # GoFlow Application
   goflow:
     build: .
@@ -51,6 +81,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redpanda:
+        condition: service_healthy
     environment:
       # Database
       DB_HOST: postgres
@@ -58,7 +90,10 @@ services:
       DB_USER: goflow
       DB_PASS: goflow123
       DB_NAME: goflow
-      
+
+      # Event log (Phase 0 shadow mode — see internal/eventlog)
+      KAFKA_BROKERS: redpanda:9092
+
       # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -142,3 +177,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  redpanda_data:

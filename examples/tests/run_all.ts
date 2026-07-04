@@ -113,6 +113,7 @@ async function main() {
     '23_admin_and_permissions.test.ts',
     '24_grpc_gateway.test.ts',
     '25_analytics.test.ts',
+    '26_eventlog_shadow.test.ts',
   ];
 
   const exitCodes: number[] = [];

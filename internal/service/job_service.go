@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -245,6 +246,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 			}
 			LogAuditErr("execution completed", auditService.LogExecutionCompleted(executionID, processInstanceID, currentElementID))
 			LogAuditErr("process completed", auditService.LogProcessCompleted(processInstanceID, existingVars))
+			if p := eventlog.Global(); p != nil {
+				p.JobCompleted(processInstanceID.String(), jobID.String())
+				p.ProcessCompleted(processInstanceID.String())
+			}
 			return &CompleteJobResult{ProcessInstanceID: processInstanceID, ProcessCompleted: true}, nil
 		}
 		nextNodeID, err = common.ResolveNext(currentNode, existingVars)
@@ -277,6 +282,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		LogAuditErr("execution moved", auditService.LogExecutionMoved(miParentExecID, processInstanceID, miParentFromNode, miParentToNode, nil))
 	}
 	LogAuditErr("execution moved", auditService.LogExecutionMoved(executionID, processInstanceID, currentElementID, nextNodeID, existingVars))
+
+	if p := eventlog.Global(); p != nil {
+		p.JobCompleted(processInstanceID.String(), jobID.String())
+	}
 
 	return &CompleteJobResult{ProcessInstanceID: processInstanceID, ProcessCompleted: false, Graph: &graph, ExecutionID: executionID}, nil
 }
@@ -348,6 +357,9 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 								if commitErr := tx.Commit(); commitErr == nil {
 									LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, errorMessage, 0))
 									LogAuditErr("execution moved", auditService.LogExecutionMoved(jobCtx.ExecutionID, jobCtx.ProcessInstanceID, jobCtx.CurrentElementID, node.ID, nil))
+									if p := eventlog.Global(); p != nil {
+										p.JobFailed(jobCtx.ProcessInstanceID.String(), jobID.String(), errorMessage, 0, false)
+									}
 									result.BoundaryTriggered = true
 									result.Graph = &graph
 									result.ExecutionID = jobCtx.ExecutionID
@@ -386,6 +398,12 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 	}
 	if jobCtxErr == nil && jobCtxEarly != nil {
 		LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtxEarly.ProcessInstanceID, errorMessage, retriesRemaining))
+		if p := eventlog.Global(); p != nil {
+			// incidentCreated is approximated as "permanently failed" here —
+			// good enough for Phase 0 shadow verification; the exact incident
+			// row's success/failure isn't tracked separately above.
+			p.JobFailed(jobCtxEarly.ProcessInstanceID.String(), jobID.String(), errorMessage, int32(retriesRemaining), result.PermanentlyFailed)
+		}
 	}
 
 	return result, nil

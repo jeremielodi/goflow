@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
 )
@@ -87,6 +88,10 @@ func TerminateProcessInstance(db *sqlx.DB, dispatcher *events.TaskEventDispatche
 		LogAuditErr("job cancelled", auditService.LogJobFailed(jobID, instanceID, "cancelled: process terminated", 0))
 	}
 	LogAuditErr("timers cancelled", auditService.LogTimerCancelled(instanceID, nil))
+
+	if p := eventlog.Global(); p != nil {
+		p.ProcessTerminated(instanceID.String(), reason)
+	}
 
 	if err := ArchiveAndDeleteProcessInstance(db, instanceID, &reason); err != nil {
 		fmt.Printf("Warning: failed to archive terminated process instance %s: %v\n", instanceID, err)

@@ -14,6 +14,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/joho/godotenv v1.5.1
+	github.com/segmentio/kafka-go v0.4.51
 	github.com/xuri/excelize/v2 v2.10.1
 	golang.org/x/text v0.35.0
 	google.golang.org/grpc v1.65.0
@@ -21,6 +22,7 @@ require (
 
 require (
 	github.com/fasthttp/websocket v1.5.8 // indirect
+	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/savsgio/gotils v0.0.0-20240303185622-093b76447511 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 )

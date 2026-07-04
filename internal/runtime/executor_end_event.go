@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -29,6 +30,10 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	service.LogAuditErr("execution completed", r.auditService.LogExecutionCompleted(exec.ID, exec.ProcessInstanceID, exec.CurrentElementID))
 	finalVars, _ := engineRepo.GetProcessVariables(exec.ProcessInstanceID)
 	service.LogAuditErr("process completed", r.auditService.LogProcessCompleted(exec.ProcessInstanceID, finalVars))
+
+	if p := eventlog.Global(); p != nil {
+		p.ProcessCompleted(exec.ProcessInstanceID.String())
+	}
 
 	// Check if this is a call-activity child: if so, resume the parent
 	// execution. Must happen BEFORE archiving below — once archived, this

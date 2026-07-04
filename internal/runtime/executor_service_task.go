@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 )
 
@@ -67,5 +68,9 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		log.Printf("failed to notify job available for type %s: %v", *node.JobType, err)
 	}
 	r.auditService.LogJobCreated(exec.ProcessInstanceID, jobID, *node.JobType)
+
+	if p := eventlog.Global(); p != nil {
+		p.JobCreated(exec.ProcessInstanceID.String(), jobID.String(), exec.ID.String(), *node.JobType)
+	}
 	return nil
 }

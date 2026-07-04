@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
 )
@@ -75,6 +76,14 @@ func StartProcessInstance(
 	auditService := NewAuditService(db)
 	LogAuditErr("process started", auditService.LogProcessStarted(instanceID, variables, nil))
 	LogAuditErr("execution created", auditService.LogExecutionCreated(execID, instanceID, nil, startNodeID))
+
+	if p := eventlog.Global(); p != nil {
+		// Phase 0 shadow-mode event (see architecture/event-sourced-kafka-design.md).
+		// processKey/version aren't available in this function's scope without
+		// an extra lookup, so they're left blank here — the shadow consumer
+		// only needs the event type + processInstanceId to verify the pipe.
+		p.ProcessStarted(instanceID.String(), processDefinitionID.String(), "", 0)
+	}
 
 	return instanceID, execID, nil
 }

@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package eventlog_protocol;
+
+option go_package = "github.com/jeremielodi/goflow/internal/eventlog/pb";
+
+import "google/protobuf/timestamp.proto";
+
+// events.proto — Phase 0 ("shadow mode") domain event schema for GoFlow's
+// event-sourced engine scoping. See architecture/event-sourced-kafka-design.md
+// for the full context: this schema exists to validate a Kafka-compatible
+// event backbone (Redpanda in this dev stack) alongside the existing
+// Postgres-transactional engine, which remains the only write path and
+// source of truth in Phase 0. Nothing here is consumed by anything that
+// affects engine behavior yet — a shadow consumer just proves the pipe is
+// durable, ordered (per process instance, via partition-key routing on
+// process_instance_id), and well-formed.
+//
+// Deliberately narrow: only the core process/job lifecycle transitions are
+// covered (see the table in the Phase 0 plan) — parallel gateway fork/join,
+// multi-instance, message/signal correlation, and timers are not yet
+// represented here. Extend this file (new message + a new Envelope.event
+// oneof field, next available field number) as those are added later.
+
+message ProcessStarted {
+  string process_instance_id = 1;
+  string process_definition_id = 2;
+  string process_key = 3;
+  int32 version = 4;
+}
+
+message JobCreated {
+  string job_id = 1;
+  string process_instance_id = 2;
+  string execution_id = 3;
+  string job_type = 4;
+}
+
+message JobCompleted {
+  string job_id = 1;
+  string process_instance_id = 2;
+}
+
+message JobFailed {
+  string job_id = 1;
+  string process_instance_id = 2;
+  string error_message = 3;
+  int32 retries_remaining = 4;
+  bool incident_created = 5;
+}
+
+message IncidentResolved {
+  string incident_id = 1;
+  string job_id = 2;
+  string process_instance_id = 3;
+}
+
+message ProcessTerminated {
+  string process_instance_id = 1;
+  string reason = 2;
+}
+
+message ProcessCompleted {
+  string process_instance_id = 1;
+}
+
+// Envelope is the single message type actually written to the Kafka/Redpanda
+// topic. process_instance_id is duplicated at this level (also present on
+// every inner event) so a consumer can route/partition without unwrapping
+// the oneof first.
+message Envelope {
+  string event_id = 1;
+  string process_instance_id = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+
+  oneof event {
+    ProcessStarted process_started = 10;
+    JobCreated job_created = 11;
+    JobCompleted job_completed = 12;
+    JobFailed job_failed = 13;
+    IncidentResolved incident_resolved = 14;
+    ProcessTerminated process_terminated = 15;
+    ProcessCompleted process_completed = 16;
+  }
+}

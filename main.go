@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gofiber/contrib/websocket"
@@ -14,6 +15,7 @@ import (
 	apiv2 "github.com/jeremielodi/goflow/internal/api/v2"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/listeners"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
@@ -58,6 +60,23 @@ func main() {
 	// degrading gRPC job dispatch latency down to the fallback poll.
 	if _, err := repository.StartJobWakeListener(database.ConnStringForListener(util)); err != nil {
 		log.Fatalln("job wake listener: ", err)
+	}
+
+	// Phase 0 shadow-mode event log (see
+	// architecture/event-sourced-kafka-design.md) — optional. If
+	// KAFKA_BROKERS isn't set (e.g. local `go run` outside Docker),
+	// eventlog.Global() stays nil and every publish call site becomes a
+	// silent no-op; nothing about the engine's real write path depends on
+	// this being configured.
+	var eventLogConsumer *eventlog.Consumer
+	if brokersEnv := util.DotEnvVariable("KAFKA_BROKERS"); brokersEnv != "" {
+		brokers := strings.Split(brokersEnv, ",")
+		eventlog.SetGlobalProducer(eventlog.NewProducer(brokers))
+		eventLogConsumer = eventlog.NewConsumer(brokers, "goflow-eventlog-shadow")
+		go eventLogConsumer.Run(context.Background())
+		log.Println("✅ Event log shadow mode started (brokers:", brokersEnv, ")")
+	} else {
+		log.Println("⏭️ KAFKA_BROKERS not set — event log shadow mode disabled")
 	}
 
 	// Create task event dispatcher
@@ -158,6 +177,7 @@ func main() {
 	timerController := api.NewTimerController(db)
 	incidentCtrl := api.NewIncidentController(db)
 	analyticsCtrl := api.NewAnalyticsController(db)
+	eventLogCtrl := api.NewEventLogController(eventLogConsumer)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
 	processPermissionCtrl := api.NewProcessPermissionController(db)
@@ -348,6 +368,13 @@ func main() {
 	// ============================================================
 
 	app.Get("/engine-rest/analytics/process-stats", analyticsCtrl.GetProcessStats)
+
+	// ============================================================
+	// EVENT LOG (Phase 0 shadow-mode debug/verification surface — see
+	// architecture/event-sourced-kafka-design.md; not a real API surface)
+	// ============================================================
+
+	app.Get("/engine-rest/eventlog/recent", eventLogCtrl.GetRecent)
 
 	// ============================================================
 	// MESSAGE & SIGNAL ROUTES

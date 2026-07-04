@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -173,6 +174,13 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to update job retries", "error": err.Error()})
 	}
 
+	// Fetch the open incident's identity (if any) before resolving it, so
+	// a Phase 0 shadow event can be published after commit — see below.
+	var incidentID, incidentInstanceID uuid.UUID
+	hasOpenIncident := tx.QueryRowx(`
+		SELECT id, process_instance_id FROM public.incidents WHERE job_id = $1 AND state = 'open' LIMIT 1
+	`, jobID).Scan(&incidentID, &incidentInstanceID) == nil
+
 	// Resolve any open incident for this job
 	if err := ctrl.incidentRepo.ResolveByJobID(tx, jobID); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to resolve incident", "error": err.Error()})
@@ -180,6 +188,12 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 
 	if err := tx.Commit(); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to commit"})
+	}
+
+	if hasOpenIncident {
+		if p := eventlog.Global(); p != nil {
+			p.IncidentResolved(incidentInstanceID.String(), incidentID.String(), jobID.String())
+		}
 	}
 
 	return c.JSON(fiber.Map{"message": "retries set, incident resolved"})
