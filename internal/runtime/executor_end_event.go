@@ -32,6 +32,7 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	service.LogAuditErr("process completed", r.auditService.LogProcessCompleted(exec.ProcessInstanceID, finalVars))
 
 	if p := eventlog.Global(); p != nil {
+		p.ExecutionCompleted(exec.ProcessInstanceID.String(), exec.ID.String(), exec.CurrentElementID)
 		p.ProcessCompleted(exec.ProcessInstanceID.String())
 	}
 
@@ -91,6 +92,9 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 		return fmt.Errorf("callActivity end: reactivate parent: %w", err)
 	}
 	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(*parentExecutionID, *parentInstanceID, parentExec.CurrentElementID, nextNodeID, nil))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(parentInstanceID.String(), parentExecutionID.String(), parentExec.CurrentElementID, nextNodeID)
+	}
 
 	// Resume parent
 	return ResumeExecution(r.DB, *parentExecutionID, r.dispatcher)

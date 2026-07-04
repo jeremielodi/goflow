@@ -121,6 +121,22 @@ func envelopeEventType(env *pb.Envelope) string {
 		return "ProcessTerminated"
 	case *pb.Envelope_ProcessCompleted:
 		return "ProcessCompleted"
+	case *pb.Envelope_ExecutionCreated:
+		return "ExecutionCreated"
+	case *pb.Envelope_ExecutionMoved:
+		return "ExecutionMoved"
+	case *pb.Envelope_ExecutionCompleted:
+		return "ExecutionCompleted"
+	case *pb.Envelope_GatewayForked:
+		return "GatewayForked"
+	case *pb.Envelope_GatewayJoined:
+		return "GatewayJoined"
+	case *pb.Envelope_TimerTriggered:
+		return "TimerTriggered"
+	case *pb.Envelope_MessageCorrelated:
+		return "MessageCorrelated"
+	case *pb.Envelope_SignalBroadcast:
+		return "SignalBroadcast"
 	default:
 		return "Unknown"
 	}
@@ -192,6 +208,89 @@ func (p *Producer) ProcessCompleted(instanceID string) {
 	p.send(instanceID, &pb.Envelope{
 		Event: &pb.Envelope_ProcessCompleted{ProcessCompleted: &pb.ProcessCompleted{
 			ProcessInstanceId: instanceID,
+		}},
+	})
+}
+
+func (p *Producer) ExecutionCreated(instanceID, executionID, parentExecutionID, nodeID string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_ExecutionCreated{ExecutionCreated: &pb.ExecutionCreated{
+			ExecutionId:       executionID,
+			ProcessInstanceId: instanceID,
+			ParentExecutionId: parentExecutionID,
+			NodeId:            nodeID,
+		}},
+	})
+}
+
+func (p *Producer) ExecutionMoved(instanceID, executionID, fromNode, toNode string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_ExecutionMoved{ExecutionMoved: &pb.ExecutionMoved{
+			ExecutionId:       executionID,
+			ProcessInstanceId: instanceID,
+			FromNode:          fromNode,
+			ToNode:            toNode,
+		}},
+	})
+}
+
+func (p *Producer) ExecutionCompleted(instanceID, executionID, nodeID string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_ExecutionCompleted{ExecutionCompleted: &pb.ExecutionCompleted{
+			ExecutionId:       executionID,
+			ProcessInstanceId: instanceID,
+			NodeId:            nodeID,
+		}},
+	})
+}
+
+func (p *Producer) GatewayForked(instanceID, gatewayID string, childExecutions int32) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_GatewayForked{GatewayForked: &pb.GatewayForked{
+			ProcessInstanceId: instanceID,
+			GatewayId:         gatewayID,
+			ChildExecutions:   childExecutions,
+		}},
+	})
+}
+
+func (p *Producer) GatewayJoined(instanceID, gatewayID string, expectedCount, receivedCount int32) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_GatewayJoined{GatewayJoined: &pb.GatewayJoined{
+			ProcessInstanceId: instanceID,
+			GatewayId:         gatewayID,
+			ExpectedCount:     expectedCount,
+			ReceivedCount:     receivedCount,
+		}},
+	})
+}
+
+func (p *Producer) TimerTriggered(instanceID, timerID, timerType string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TimerTriggered{TimerTriggered: &pb.TimerTriggered{
+			ProcessInstanceId: instanceID,
+			TimerId:           timerID,
+			TimerType:         timerType,
+		}},
+	})
+}
+
+func (p *Producer) MessageCorrelated(instanceID, messageName string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_MessageCorrelated{MessageCorrelated: &pb.MessageCorrelated{
+			ProcessInstanceId: instanceID,
+			MessageName:       messageName,
+		}},
+	})
+}
+
+// SignalBroadcast has no owning process instance — a broadcast spans zero or
+// more instances — so it's published with an empty partition key.
+func (p *Producer) SignalBroadcast(signalName string, resumedCount int32) {
+	p.send("", &pb.Envelope{
+		Event: &pb.Envelope_SignalBroadcast{SignalBroadcast: &pb.SignalBroadcast{
+			SignalName:   signalName,
+			ResumedCount: resumedCount,
 		}},
 	})
 }

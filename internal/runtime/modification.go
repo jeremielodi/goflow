@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -93,6 +94,9 @@ func (r *Runtime) ModifyInstance(ctx context.Context, instanceID uuid.UUID, move
 				service.LogAuditErr("task cancelled", r.auditService.LogTaskCancelled(taskID, instanceID, "process instance modification (move token)"))
 			}
 			service.LogAuditErr("execution created", r.auditService.LogExecutionCreated(newExecID, instanceID, nil, move.TargetElementID))
+			if p := eventlog.Global(); p != nil {
+				p.ExecutionCreated(instanceID.String(), newExecID.String(), "", move.TargetElementID)
+			}
 
 			newExecutionIDs = append(newExecutionIDs, newExecID)
 		}

@@ -248,6 +248,7 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 			LogAuditErr("process completed", auditService.LogProcessCompleted(processInstanceID, existingVars))
 			if p := eventlog.Global(); p != nil {
 				p.JobCompleted(processInstanceID.String(), jobID.String())
+				p.ExecutionCompleted(processInstanceID.String(), executionID.String(), currentElementID)
 				p.ProcessCompleted(processInstanceID.String())
 			}
 			return &CompleteJobResult{ProcessInstanceID: processInstanceID, ProcessCompleted: true}, nil
@@ -285,6 +286,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 
 	if p := eventlog.Global(); p != nil {
 		p.JobCompleted(processInstanceID.String(), jobID.String())
+		if miParentMoved {
+			p.ExecutionMoved(processInstanceID.String(), miParentExecID.String(), miParentFromNode, miParentToNode)
+		}
+		p.ExecutionMoved(processInstanceID.String(), executionID.String(), currentElementID, nextNodeID)
 	}
 
 	return &CompleteJobResult{ProcessInstanceID: processInstanceID, ProcessCompleted: false, Graph: &graph, ExecutionID: executionID}, nil
@@ -359,6 +364,7 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 									LogAuditErr("execution moved", auditService.LogExecutionMoved(jobCtx.ExecutionID, jobCtx.ProcessInstanceID, jobCtx.CurrentElementID, node.ID, nil))
 									if p := eventlog.Global(); p != nil {
 										p.JobFailed(jobCtx.ProcessInstanceID.String(), jobID.String(), errorMessage, 0, false)
+										p.ExecutionMoved(jobCtx.ProcessInstanceID.String(), jobCtx.ExecutionID.String(), jobCtx.CurrentElementID, node.ID)
 									}
 									result.BoundaryTriggered = true
 									result.Graph = &graph

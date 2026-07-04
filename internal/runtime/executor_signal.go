@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -60,5 +61,8 @@ func (r *Runtime) executeSignalBoundaryEvent(ctx context.Context, engineRepo *re
 		return err
 	}
 	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, nil))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(exec.ProcessInstanceID.String(), exec.ID.String(), node.ID, next)
+	}
 	return nil
 }

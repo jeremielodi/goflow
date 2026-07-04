@@ -16,11 +16,12 @@ import "google/protobuf/timestamp.proto";
 // durable, ordered (per process instance, via partition-key routing on
 // process_instance_id), and well-formed.
 //
-// Deliberately narrow: only the core process/job lifecycle transitions are
-// covered (see the table in the Phase 0 plan) — parallel gateway fork/join,
-// multi-instance, message/signal correlation, and timers are not yet
-// represented here. Extend this file (new message + a new Envelope.event
-// oneof field, next available field number) as those are added later.
+// Coverage: the original 7 messages (fields 10-16) are the core process/job
+// lifecycle. The next 8 (fields 17-24) extend coverage to every other
+// transition already instrumented by internal/service/audit_service.go's
+// generic Log* methods (execution movement, gateway fork/join, timers,
+// message/signal correlation) — mirroring those same call sites rather than
+// inventing new per-BPMN-element event logic.
 
 message ProcessStarted {
   string process_instance_id = 1;
@@ -64,6 +65,57 @@ message ProcessCompleted {
   string process_instance_id = 1;
 }
 
+message ExecutionCreated {
+  string execution_id = 1;
+  string process_instance_id = 2;
+  string parent_execution_id = 3;
+  string node_id = 4;
+}
+
+message ExecutionMoved {
+  string execution_id = 1;
+  string process_instance_id = 2;
+  string from_node = 3;
+  string to_node = 4;
+}
+
+message ExecutionCompleted {
+  string execution_id = 1;
+  string process_instance_id = 2;
+  string node_id = 3;
+}
+
+message GatewayForked {
+  string process_instance_id = 1;
+  string gateway_id = 2;
+  int32 child_executions = 3;
+}
+
+message GatewayJoined {
+  string process_instance_id = 1;
+  string gateway_id = 2;
+  int32 expected_count = 3;
+  int32 received_count = 4;
+}
+
+message TimerTriggered {
+  string process_instance_id = 1;
+  string timer_id = 2;
+  string timer_type = 3;
+}
+
+message MessageCorrelated {
+  string process_instance_id = 1;
+  string message_name = 2;
+}
+
+// SignalBroadcast has no process_instance_id — a broadcast spans zero or
+// more instances, not one. Published with an empty partition key.
+message SignalBroadcast {
+  string signal_name = 1;
+  int32 resumed_count = 2;
+}
+
 // Envelope is the single message type actually written to the Kafka/Redpanda
 // topic. process_instance_id is duplicated at this level (also present on
 // every inner event) so a consumer can route/partition without unwrapping
@@ -81,5 +133,13 @@ message Envelope {
     IncidentResolved incident_resolved = 14;
     ProcessTerminated process_terminated = 15;
     ProcessCompleted process_completed = 16;
+    ExecutionCreated execution_created = 17;
+    ExecutionMoved execution_moved = 18;
+    ExecutionCompleted execution_completed = 19;
+    GatewayForked gateway_forked = 20;
+    GatewayJoined gateway_joined = 21;
+    TimerTriggered timer_triggered = 22;
+    MessageCorrelated message_correlated = 23;
+    SignalBroadcast signal_broadcast = 24;
   }
 }

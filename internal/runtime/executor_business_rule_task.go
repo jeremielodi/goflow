@@ -8,6 +8,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/dmn"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -80,6 +81,9 @@ func (r *Runtime) executeBusinessRuleTask(ctx context.Context, engineRepo *repos
 		return "", err
 	}
 	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, next, variables))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(exec.ProcessInstanceID.String(), exec.ID.String(), node.ID, next)
+	}
 
 	return next, nil
 }

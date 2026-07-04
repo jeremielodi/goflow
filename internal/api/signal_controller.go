@@ -5,6 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -116,6 +117,9 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 		}
 		if currentNodeID != "" && targetElementID != "" {
 			service.LogAuditErr("execution moved", sc.auditService.LogExecutionMoved(sub.ExecutionID, sub.ProcessInstanceID, currentNodeID, targetElementID, variables))
+			if p := eventlog.Global(); p != nil {
+				p.ExecutionMoved(sub.ProcessInstanceID.String(), sub.ExecutionID.String(), currentNodeID, targetElementID)
+			}
 		}
 		if err := runtime.ResumeExecution(sc.db, sub.ExecutionID, sc.dispatcher); err != nil {
 			errs = append(errs, fmt.Sprintf("resume %s: %v", sub.ExecutionID, err))
@@ -124,6 +128,9 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 		resumed++
 	}
 	service.LogAuditErr("signal broadcast", sc.auditService.LogSignalBroadcast(name, resumed))
+	if p := eventlog.Global(); p != nil {
+		p.SignalBroadcast(name, int32(resumed))
+	}
 
 	return resumed, errs, nil
 }

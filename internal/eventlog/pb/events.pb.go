@@ -442,6 +442,494 @@ func (x *ProcessCompleted) GetProcessInstanceId() string {
 	return ""
 }
 
+type ExecutionCreated struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId       string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	ProcessInstanceId string                 `protobuf:"bytes,2,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	ParentExecutionId string                 `protobuf:"bytes,3,opt,name=parent_execution_id,json=parentExecutionId,proto3" json:"parent_execution_id,omitempty"`
+	NodeId            string                 `protobuf:"bytes,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ExecutionCreated) Reset() {
+	*x = ExecutionCreated{}
+	mi := &file_events_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionCreated) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionCreated) ProtoMessage() {}
+
+func (x *ExecutionCreated) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionCreated.ProtoReflect.Descriptor instead.
+func (*ExecutionCreated) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ExecutionCreated) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *ExecutionCreated) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *ExecutionCreated) GetParentExecutionId() string {
+	if x != nil {
+		return x.ParentExecutionId
+	}
+	return ""
+}
+
+func (x *ExecutionCreated) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type ExecutionMoved struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId       string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	ProcessInstanceId string                 `protobuf:"bytes,2,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	FromNode          string                 `protobuf:"bytes,3,opt,name=from_node,json=fromNode,proto3" json:"from_node,omitempty"`
+	ToNode            string                 `protobuf:"bytes,4,opt,name=to_node,json=toNode,proto3" json:"to_node,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ExecutionMoved) Reset() {
+	*x = ExecutionMoved{}
+	mi := &file_events_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionMoved) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionMoved) ProtoMessage() {}
+
+func (x *ExecutionMoved) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionMoved.ProtoReflect.Descriptor instead.
+func (*ExecutionMoved) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ExecutionMoved) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *ExecutionMoved) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *ExecutionMoved) GetFromNode() string {
+	if x != nil {
+		return x.FromNode
+	}
+	return ""
+}
+
+func (x *ExecutionMoved) GetToNode() string {
+	if x != nil {
+		return x.ToNode
+	}
+	return ""
+}
+
+type ExecutionCompleted struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionId       string                 `protobuf:"bytes,1,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	ProcessInstanceId string                 `protobuf:"bytes,2,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	NodeId            string                 `protobuf:"bytes,3,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *ExecutionCompleted) Reset() {
+	*x = ExecutionCompleted{}
+	mi := &file_events_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecutionCompleted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecutionCompleted) ProtoMessage() {}
+
+func (x *ExecutionCompleted) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecutionCompleted.ProtoReflect.Descriptor instead.
+func (*ExecutionCompleted) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ExecutionCompleted) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *ExecutionCompleted) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *ExecutionCompleted) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+type GatewayForked struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ProcessInstanceId string                 `protobuf:"bytes,1,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	GatewayId         string                 `protobuf:"bytes,2,opt,name=gateway_id,json=gatewayId,proto3" json:"gateway_id,omitempty"`
+	ChildExecutions   int32                  `protobuf:"varint,3,opt,name=child_executions,json=childExecutions,proto3" json:"child_executions,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GatewayForked) Reset() {
+	*x = GatewayForked{}
+	mi := &file_events_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GatewayForked) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GatewayForked) ProtoMessage() {}
+
+func (x *GatewayForked) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GatewayForked.ProtoReflect.Descriptor instead.
+func (*GatewayForked) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *GatewayForked) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *GatewayForked) GetGatewayId() string {
+	if x != nil {
+		return x.GatewayId
+	}
+	return ""
+}
+
+func (x *GatewayForked) GetChildExecutions() int32 {
+	if x != nil {
+		return x.ChildExecutions
+	}
+	return 0
+}
+
+type GatewayJoined struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ProcessInstanceId string                 `protobuf:"bytes,1,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	GatewayId         string                 `protobuf:"bytes,2,opt,name=gateway_id,json=gatewayId,proto3" json:"gateway_id,omitempty"`
+	ExpectedCount     int32                  `protobuf:"varint,3,opt,name=expected_count,json=expectedCount,proto3" json:"expected_count,omitempty"`
+	ReceivedCount     int32                  `protobuf:"varint,4,opt,name=received_count,json=receivedCount,proto3" json:"received_count,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *GatewayJoined) Reset() {
+	*x = GatewayJoined{}
+	mi := &file_events_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GatewayJoined) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GatewayJoined) ProtoMessage() {}
+
+func (x *GatewayJoined) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GatewayJoined.ProtoReflect.Descriptor instead.
+func (*GatewayJoined) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GatewayJoined) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *GatewayJoined) GetGatewayId() string {
+	if x != nil {
+		return x.GatewayId
+	}
+	return ""
+}
+
+func (x *GatewayJoined) GetExpectedCount() int32 {
+	if x != nil {
+		return x.ExpectedCount
+	}
+	return 0
+}
+
+func (x *GatewayJoined) GetReceivedCount() int32 {
+	if x != nil {
+		return x.ReceivedCount
+	}
+	return 0
+}
+
+type TimerTriggered struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ProcessInstanceId string                 `protobuf:"bytes,1,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	TimerId           string                 `protobuf:"bytes,2,opt,name=timer_id,json=timerId,proto3" json:"timer_id,omitempty"`
+	TimerType         string                 `protobuf:"bytes,3,opt,name=timer_type,json=timerType,proto3" json:"timer_type,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *TimerTriggered) Reset() {
+	*x = TimerTriggered{}
+	mi := &file_events_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimerTriggered) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimerTriggered) ProtoMessage() {}
+
+func (x *TimerTriggered) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimerTriggered.ProtoReflect.Descriptor instead.
+func (*TimerTriggered) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *TimerTriggered) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *TimerTriggered) GetTimerId() string {
+	if x != nil {
+		return x.TimerId
+	}
+	return ""
+}
+
+func (x *TimerTriggered) GetTimerType() string {
+	if x != nil {
+		return x.TimerType
+	}
+	return ""
+}
+
+type MessageCorrelated struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	ProcessInstanceId string                 `protobuf:"bytes,1,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	MessageName       string                 `protobuf:"bytes,2,opt,name=message_name,json=messageName,proto3" json:"message_name,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *MessageCorrelated) Reset() {
+	*x = MessageCorrelated{}
+	mi := &file_events_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MessageCorrelated) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MessageCorrelated) ProtoMessage() {}
+
+func (x *MessageCorrelated) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MessageCorrelated.ProtoReflect.Descriptor instead.
+func (*MessageCorrelated) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *MessageCorrelated) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *MessageCorrelated) GetMessageName() string {
+	if x != nil {
+		return x.MessageName
+	}
+	return ""
+}
+
+type SignalBroadcast struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SignalName    string                 `protobuf:"bytes,1,opt,name=signal_name,json=signalName,proto3" json:"signal_name,omitempty"`
+	ResumedCount  int32                  `protobuf:"varint,2,opt,name=resumed_count,json=resumedCount,proto3" json:"resumed_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalBroadcast) Reset() {
+	*x = SignalBroadcast{}
+	mi := &file_events_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalBroadcast) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalBroadcast) ProtoMessage() {}
+
+func (x *SignalBroadcast) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalBroadcast.ProtoReflect.Descriptor instead.
+func (*SignalBroadcast) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *SignalBroadcast) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *SignalBroadcast) GetResumedCount() int32 {
+	if x != nil {
+		return x.ResumedCount
+	}
+	return 0
+}
+
 type Envelope struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	EventId           string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
@@ -456,6 +944,14 @@ type Envelope struct {
 	//	*Envelope_IncidentResolved
 	//	*Envelope_ProcessTerminated
 	//	*Envelope_ProcessCompleted
+	//	*Envelope_ExecutionCreated
+	//	*Envelope_ExecutionMoved
+	//	*Envelope_ExecutionCompleted
+	//	*Envelope_GatewayForked
+	//	*Envelope_GatewayJoined
+	//	*Envelope_TimerTriggered
+	//	*Envelope_MessageCorrelated
+	//	*Envelope_SignalBroadcast
 	Event         isEnvelope_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -463,7 +959,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_events_proto_msgTypes[7]
+	mi := &file_events_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +971,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_events_proto_msgTypes[7]
+	mi := &file_events_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +984,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_events_proto_rawDescGZIP(), []int{7}
+	return file_events_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Envelope) GetEventId() string {
@@ -582,6 +1078,78 @@ func (x *Envelope) GetProcessCompleted() *ProcessCompleted {
 	return nil
 }
 
+func (x *Envelope) GetExecutionCreated() *ExecutionCreated {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_ExecutionCreated); ok {
+			return x.ExecutionCreated
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetExecutionMoved() *ExecutionMoved {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_ExecutionMoved); ok {
+			return x.ExecutionMoved
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetExecutionCompleted() *ExecutionCompleted {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_ExecutionCompleted); ok {
+			return x.ExecutionCompleted
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGatewayForked() *GatewayForked {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_GatewayForked); ok {
+			return x.GatewayForked
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetGatewayJoined() *GatewayJoined {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_GatewayJoined); ok {
+			return x.GatewayJoined
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetTimerTriggered() *TimerTriggered {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_TimerTriggered); ok {
+			return x.TimerTriggered
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetMessageCorrelated() *MessageCorrelated {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_MessageCorrelated); ok {
+			return x.MessageCorrelated
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetSignalBroadcast() *SignalBroadcast {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_SignalBroadcast); ok {
+			return x.SignalBroadcast
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Event interface {
 	isEnvelope_Event()
 }
@@ -614,6 +1182,38 @@ type Envelope_ProcessCompleted struct {
 	ProcessCompleted *ProcessCompleted `protobuf:"bytes,16,opt,name=process_completed,json=processCompleted,proto3,oneof"`
 }
 
+type Envelope_ExecutionCreated struct {
+	ExecutionCreated *ExecutionCreated `protobuf:"bytes,17,opt,name=execution_created,json=executionCreated,proto3,oneof"`
+}
+
+type Envelope_ExecutionMoved struct {
+	ExecutionMoved *ExecutionMoved `protobuf:"bytes,18,opt,name=execution_moved,json=executionMoved,proto3,oneof"`
+}
+
+type Envelope_ExecutionCompleted struct {
+	ExecutionCompleted *ExecutionCompleted `protobuf:"bytes,19,opt,name=execution_completed,json=executionCompleted,proto3,oneof"`
+}
+
+type Envelope_GatewayForked struct {
+	GatewayForked *GatewayForked `protobuf:"bytes,20,opt,name=gateway_forked,json=gatewayForked,proto3,oneof"`
+}
+
+type Envelope_GatewayJoined struct {
+	GatewayJoined *GatewayJoined `protobuf:"bytes,21,opt,name=gateway_joined,json=gatewayJoined,proto3,oneof"`
+}
+
+type Envelope_TimerTriggered struct {
+	TimerTriggered *TimerTriggered `protobuf:"bytes,22,opt,name=timer_triggered,json=timerTriggered,proto3,oneof"`
+}
+
+type Envelope_MessageCorrelated struct {
+	MessageCorrelated *MessageCorrelated `protobuf:"bytes,23,opt,name=message_correlated,json=messageCorrelated,proto3,oneof"`
+}
+
+type Envelope_SignalBroadcast struct {
+	SignalBroadcast *SignalBroadcast `protobuf:"bytes,24,opt,name=signal_broadcast,json=signalBroadcast,proto3,oneof"`
+}
+
 func (*Envelope_ProcessStarted) isEnvelope_Event() {}
 
 func (*Envelope_JobCreated) isEnvelope_Event() {}
@@ -627,6 +1227,22 @@ func (*Envelope_IncidentResolved) isEnvelope_Event() {}
 func (*Envelope_ProcessTerminated) isEnvelope_Event() {}
 
 func (*Envelope_ProcessCompleted) isEnvelope_Event() {}
+
+func (*Envelope_ExecutionCreated) isEnvelope_Event() {}
+
+func (*Envelope_ExecutionMoved) isEnvelope_Event() {}
+
+func (*Envelope_ExecutionCompleted) isEnvelope_Event() {}
+
+func (*Envelope_GatewayForked) isEnvelope_Event() {}
+
+func (*Envelope_GatewayJoined) isEnvelope_Event() {}
+
+func (*Envelope_TimerTriggered) isEnvelope_Event() {}
+
+func (*Envelope_MessageCorrelated) isEnvelope_Event() {}
+
+func (*Envelope_SignalBroadcast) isEnvelope_Event() {}
 
 var File_events_proto protoreflect.FileDescriptor
 
@@ -663,7 +1279,45 @@ const file_events_proto_rawDesc = "" +
 	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"B\n" +
 	"\x10ProcessCompleted\x12.\n" +
-	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\"\xb1\x05\n" +
+	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\"\xae\x01\n" +
+	"\x10ExecutionCreated\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12.\n" +
+	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12.\n" +
+	"\x13parent_execution_id\x18\x03 \x01(\tR\x11parentExecutionId\x12\x17\n" +
+	"\anode_id\x18\x04 \x01(\tR\x06nodeId\"\x99\x01\n" +
+	"\x0eExecutionMoved\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12.\n" +
+	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12\x1b\n" +
+	"\tfrom_node\x18\x03 \x01(\tR\bfromNode\x12\x17\n" +
+	"\ato_node\x18\x04 \x01(\tR\x06toNode\"\x80\x01\n" +
+	"\x12ExecutionCompleted\x12!\n" +
+	"\fexecution_id\x18\x01 \x01(\tR\vexecutionId\x12.\n" +
+	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12\x17\n" +
+	"\anode_id\x18\x03 \x01(\tR\x06nodeId\"\x89\x01\n" +
+	"\rGatewayForked\x12.\n" +
+	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\x12\x1d\n" +
+	"\n" +
+	"gateway_id\x18\x02 \x01(\tR\tgatewayId\x12)\n" +
+	"\x10child_executions\x18\x03 \x01(\x05R\x0fchildExecutions\"\xac\x01\n" +
+	"\rGatewayJoined\x12.\n" +
+	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\x12\x1d\n" +
+	"\n" +
+	"gateway_id\x18\x02 \x01(\tR\tgatewayId\x12%\n" +
+	"\x0eexpected_count\x18\x03 \x01(\x05R\rexpectedCount\x12%\n" +
+	"\x0ereceived_count\x18\x04 \x01(\x05R\rreceivedCount\"z\n" +
+	"\x0eTimerTriggered\x12.\n" +
+	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\x12\x19\n" +
+	"\btimer_id\x18\x02 \x01(\tR\atimerId\x12\x1d\n" +
+	"\n" +
+	"timer_type\x18\x03 \x01(\tR\ttimerType\"f\n" +
+	"\x11MessageCorrelated\x12.\n" +
+	"\x13process_instance_id\x18\x01 \x01(\tR\x11processInstanceId\x12!\n" +
+	"\fmessage_name\x18\x02 \x01(\tR\vmessageName\"W\n" +
+	"\x0fSignalBroadcast\x12\x1f\n" +
+	"\vsignal_name\x18\x01 \x01(\tR\n" +
+	"signalName\x12#\n" +
+	"\rresumed_count\x18\x02 \x01(\x05R\fresumedCount\"\xb9\n" +
+	"\n" +
 	"\bEnvelope\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12.\n" +
 	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12;\n" +
@@ -678,7 +1332,15 @@ const file_events_proto_rawDesc = "" +
 	"job_failed\x18\r \x01(\v2\x1c.eventlog_protocol.JobFailedH\x00R\tjobFailed\x12R\n" +
 	"\x11incident_resolved\x18\x0e \x01(\v2#.eventlog_protocol.IncidentResolvedH\x00R\x10incidentResolved\x12U\n" +
 	"\x12process_terminated\x18\x0f \x01(\v2$.eventlog_protocol.ProcessTerminatedH\x00R\x11processTerminated\x12R\n" +
-	"\x11process_completed\x18\x10 \x01(\v2#.eventlog_protocol.ProcessCompletedH\x00R\x10processCompletedB\a\n" +
+	"\x11process_completed\x18\x10 \x01(\v2#.eventlog_protocol.ProcessCompletedH\x00R\x10processCompleted\x12R\n" +
+	"\x11execution_created\x18\x11 \x01(\v2#.eventlog_protocol.ExecutionCreatedH\x00R\x10executionCreated\x12L\n" +
+	"\x0fexecution_moved\x18\x12 \x01(\v2!.eventlog_protocol.ExecutionMovedH\x00R\x0eexecutionMoved\x12X\n" +
+	"\x13execution_completed\x18\x13 \x01(\v2%.eventlog_protocol.ExecutionCompletedH\x00R\x12executionCompleted\x12I\n" +
+	"\x0egateway_forked\x18\x14 \x01(\v2 .eventlog_protocol.GatewayForkedH\x00R\rgatewayForked\x12I\n" +
+	"\x0egateway_joined\x18\x15 \x01(\v2 .eventlog_protocol.GatewayJoinedH\x00R\rgatewayJoined\x12L\n" +
+	"\x0ftimer_triggered\x18\x16 \x01(\v2!.eventlog_protocol.TimerTriggeredH\x00R\x0etimerTriggered\x12U\n" +
+	"\x12message_correlated\x18\x17 \x01(\v2$.eventlog_protocol.MessageCorrelatedH\x00R\x11messageCorrelated\x12O\n" +
+	"\x10signal_broadcast\x18\x18 \x01(\v2\".eventlog_protocol.SignalBroadcastH\x00R\x0fsignalBroadcastB\a\n" +
 	"\x05eventB4Z2github.com/jeremielodi/goflow/internal/eventlog/pbb\x06proto3"
 
 var (
@@ -693,7 +1355,7 @@ func file_events_proto_rawDescGZIP() []byte {
 	return file_events_proto_rawDescData
 }
 
-var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_events_proto_goTypes = []any{
 	(*ProcessStarted)(nil),        // 0: eventlog_protocol.ProcessStarted
 	(*JobCreated)(nil),            // 1: eventlog_protocol.JobCreated
@@ -702,23 +1364,39 @@ var file_events_proto_goTypes = []any{
 	(*IncidentResolved)(nil),      // 4: eventlog_protocol.IncidentResolved
 	(*ProcessTerminated)(nil),     // 5: eventlog_protocol.ProcessTerminated
 	(*ProcessCompleted)(nil),      // 6: eventlog_protocol.ProcessCompleted
-	(*Envelope)(nil),              // 7: eventlog_protocol.Envelope
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*ExecutionCreated)(nil),      // 7: eventlog_protocol.ExecutionCreated
+	(*ExecutionMoved)(nil),        // 8: eventlog_protocol.ExecutionMoved
+	(*ExecutionCompleted)(nil),    // 9: eventlog_protocol.ExecutionCompleted
+	(*GatewayForked)(nil),         // 10: eventlog_protocol.GatewayForked
+	(*GatewayJoined)(nil),         // 11: eventlog_protocol.GatewayJoined
+	(*TimerTriggered)(nil),        // 12: eventlog_protocol.TimerTriggered
+	(*MessageCorrelated)(nil),     // 13: eventlog_protocol.MessageCorrelated
+	(*SignalBroadcast)(nil),       // 14: eventlog_protocol.SignalBroadcast
+	(*Envelope)(nil),              // 15: eventlog_protocol.Envelope
+	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 }
 var file_events_proto_depIdxs = []int32{
-	8, // 0: eventlog_protocol.Envelope.occurred_at:type_name -> google.protobuf.Timestamp
-	0, // 1: eventlog_protocol.Envelope.process_started:type_name -> eventlog_protocol.ProcessStarted
-	1, // 2: eventlog_protocol.Envelope.job_created:type_name -> eventlog_protocol.JobCreated
-	2, // 3: eventlog_protocol.Envelope.job_completed:type_name -> eventlog_protocol.JobCompleted
-	3, // 4: eventlog_protocol.Envelope.job_failed:type_name -> eventlog_protocol.JobFailed
-	4, // 5: eventlog_protocol.Envelope.incident_resolved:type_name -> eventlog_protocol.IncidentResolved
-	5, // 6: eventlog_protocol.Envelope.process_terminated:type_name -> eventlog_protocol.ProcessTerminated
-	6, // 7: eventlog_protocol.Envelope.process_completed:type_name -> eventlog_protocol.ProcessCompleted
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	16, // 0: eventlog_protocol.Envelope.occurred_at:type_name -> google.protobuf.Timestamp
+	0,  // 1: eventlog_protocol.Envelope.process_started:type_name -> eventlog_protocol.ProcessStarted
+	1,  // 2: eventlog_protocol.Envelope.job_created:type_name -> eventlog_protocol.JobCreated
+	2,  // 3: eventlog_protocol.Envelope.job_completed:type_name -> eventlog_protocol.JobCompleted
+	3,  // 4: eventlog_protocol.Envelope.job_failed:type_name -> eventlog_protocol.JobFailed
+	4,  // 5: eventlog_protocol.Envelope.incident_resolved:type_name -> eventlog_protocol.IncidentResolved
+	5,  // 6: eventlog_protocol.Envelope.process_terminated:type_name -> eventlog_protocol.ProcessTerminated
+	6,  // 7: eventlog_protocol.Envelope.process_completed:type_name -> eventlog_protocol.ProcessCompleted
+	7,  // 8: eventlog_protocol.Envelope.execution_created:type_name -> eventlog_protocol.ExecutionCreated
+	8,  // 9: eventlog_protocol.Envelope.execution_moved:type_name -> eventlog_protocol.ExecutionMoved
+	9,  // 10: eventlog_protocol.Envelope.execution_completed:type_name -> eventlog_protocol.ExecutionCompleted
+	10, // 11: eventlog_protocol.Envelope.gateway_forked:type_name -> eventlog_protocol.GatewayForked
+	11, // 12: eventlog_protocol.Envelope.gateway_joined:type_name -> eventlog_protocol.GatewayJoined
+	12, // 13: eventlog_protocol.Envelope.timer_triggered:type_name -> eventlog_protocol.TimerTriggered
+	13, // 14: eventlog_protocol.Envelope.message_correlated:type_name -> eventlog_protocol.MessageCorrelated
+	14, // 15: eventlog_protocol.Envelope.signal_broadcast:type_name -> eventlog_protocol.SignalBroadcast
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_events_proto_init() }
@@ -726,7 +1404,7 @@ func file_events_proto_init() {
 	if File_events_proto != nil {
 		return
 	}
-	file_events_proto_msgTypes[7].OneofWrappers = []any{
+	file_events_proto_msgTypes[15].OneofWrappers = []any{
 		(*Envelope_ProcessStarted)(nil),
 		(*Envelope_JobCreated)(nil),
 		(*Envelope_JobCompleted)(nil),
@@ -734,6 +1412,14 @@ func file_events_proto_init() {
 		(*Envelope_IncidentResolved)(nil),
 		(*Envelope_ProcessTerminated)(nil),
 		(*Envelope_ProcessCompleted)(nil),
+		(*Envelope_ExecutionCreated)(nil),
+		(*Envelope_ExecutionMoved)(nil),
+		(*Envelope_ExecutionCompleted)(nil),
+		(*Envelope_GatewayForked)(nil),
+		(*Envelope_GatewayJoined)(nil),
+		(*Envelope_TimerTriggered)(nil),
+		(*Envelope_MessageCorrelated)(nil),
+		(*Envelope_SignalBroadcast)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -741,7 +1427,7 @@ func file_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_events_proto_rawDesc), len(file_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

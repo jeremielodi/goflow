@@ -13,22 +13,58 @@ of in the abstract.
 ## Phase 0 — what's actually running today
 
 The existing Postgres-transactional engine is **unchanged and remains the
-only write path.** After each of 7 core transitions commits, a domain event
-is *also* published (fire-and-forget) to a Redpanda topic, partitioned by
-`processInstanceId`. A minimal in-memory consumer proves the pipe is
-durable, ordered per instance, and well-formed — nothing yet depends on it.
+only write path.** After every state-transition transaction commits, a
+domain event is *also* published (fire-and-forget) to a Redpanda topic,
+partitioned by `processInstanceId`. A background consumer both keeps an
+in-memory debug ring buffer and folds a subset of events into read-model
+tables — see below — proving the pipe is durable, ordered per instance,
+well-formed, and genuinely capable of reconstructing state.
 
-**Wired events** (see `internal/eventlog/proto/events.proto` for exact
-shapes): `ProcessStarted`, `JobCreated`, `JobCompleted`, `JobFailed`,
-`IncidentResolved`, `ProcessTerminated`, `ProcessCompleted`. Hook points:
-`service.StartProcessInstance`, `runtime.executeServiceTask`,
-`service.CompleteJob` (both branches), `service.FailJob` (both branches),
-`api.IncidentController.SetJobRetries`, `service.TerminateProcessInstance`,
-`runtime.executeEndEvent`.
+**Wired events, full coverage** (see `internal/eventlog/proto/events.proto`
+for exact shapes) — 15 total, mirroring every generic transition already
+instrumented by `internal/service/audit_service.go`'s `Log*` methods rather
+than inventing new per-BPMN-element event logic:
+- Core lifecycle (shipped first): `ProcessStarted`, `JobCreated`,
+  `JobCompleted`, `JobFailed`, `IncidentResolved`, `ProcessTerminated`,
+  `ProcessCompleted`.
+- Extended coverage (shipped 2026-07-04): `ExecutionCreated`,
+  `ExecutionMoved`, `ExecutionCompleted` (every BPMN element executor that
+  moves a token — business rule/script/message/signal/timer/error-boundary
+  tasks, exclusive/inclusive gateway advances, call-activity resume, process
+  instance modification), `GatewayForked`/`GatewayJoined` (parallel and
+  inclusive gateway fork/join, in `internal/runtime/runtime.go`),
+  `TimerTriggered` (`internal/service/timer_scheduler.go`),
+  `MessageCorrelated`/`SignalBroadcast` (`internal/api/message_controller.go`,
+  `internal/api/signal_controller.go`). `SignalBroadcast` has no owning
+  instance (a broadcast spans zero or more instances) and publishes with an
+  empty partition key.
+- ~30 call sites total wired, all following the identical
+  `if p := eventlog.Global(); p != nil { p.X(...) }` idiom placed
+  immediately after the corresponding existing audit call.
 
-**Deferred** (not wired, tracked here rather than silently dropped): parallel
-gateway fork/join, multi-instance progress, message/signal correlation,
-timers, variable-update-only transitions.
+**Still not represented**: variable-update-only transitions with no
+accompanying execution move (folded into the events above wherever they
+already carry variables, but not a standalone event type).
+
+## Read-model projector (Phase 0, not Phase 1)
+
+`internal/eventlog.Consumer` folds a **coarse subset** of the event stream —
+`ProcessStarted`/`ProcessCompleted`/`ProcessTerminated`/`JobCreated`/
+`JobCompleted`/`JobFailed` only — into two new, purely additive Postgres
+tables (`eventlog_projected_instances`, `eventlog_projected_jobs`;
+`database/migrations/011_eventlog_projection.sql`), upserted one row per
+event via `internal/repository/eventlog_projection_repository.go`. Nothing
+else in the app reads or writes these tables. This is deliberately scoped to
+prove "coarse instance/job state is reconstructable from events alone," not
+a full read-model replacement — execution-level events (moves, gateways,
+timers, correlation) remain visible only via the debug ring buffer.
+Verified against real traffic post-ship: `GET /engine-rest/eventlog/projected`
+showed 78 projected instances / 88 projected jobs with correct
+statuses/timestamps/job-types matching the real engine's data, not just
+passing assertions in isolation.
+
+New debug endpoint: `GET /engine-rest/eventlog/projected` (alongside the
+existing `/eventlog/recent` ring-buffer view), same dev-only framing.
 
 **Resolved tech decisions** (were open questions in §11; superseded by real
 constraints found in this codebase during implementation):
@@ -62,11 +98,36 @@ Phase 1+: *any* new side-channel write into a hot path — even one that's
 "best-effort" in its error handling — must also be fire-and-forget in its
 latency, or it can silently perturb timing-sensitive existing code.
 
-**Verification**: new e2e suite `examples/tests/26_eventlog_shadow.test.ts`
-(clean completion, permanent-failure-with-incident-resolution, and
-termination flows, each polling the dev-only debug endpoint
-`GET /engine-rest/eventlog/recent` — a 500-entry in-memory ring buffer over
-the shadow consumer). Full 26-suite Docker regression green.
+**Two more real bugs found while expanding coverage (not before it)**:
+- A BPMN test fixture's XML comment contained the literal substring
+  `--no-timers` (a flag name referenced in prose) — invalid inside an XML
+  comment (`--` may not appear anywhere inside `<!-- -->`), which silently
+  broke that fixture's deploy call.
+- That deploy failure happened during test *setup*, before `runSuite(...)`
+  was ever invoked — the test file's `run().catch(console.error)` printed
+  the error but never set a nonzero exit code, so `run_all.ts` counted the
+  entire suite (0 of 9 tests actually run) as passed. Same class of gap as
+  the historical "runSuite exit-code bug" — that fix only covers failures
+  *inside* the test loop, not setup failures before it. Fixed locally in
+  this suite's footer (`run().catch(err => { console.error(err);
+  process.exit(1); })`) — **note for later**: every other suite file in
+  `examples/tests/` still uses the bare `run().catch(console.error)` form
+  and has the same latent gap for setup-phase failures; not fixed
+  repo-wide in this pass since it's outside this feature's scope, but worth
+  a dedicated cleanup pass given it already caused one false-green result.
+
+**Verification**: e2e suite `examples/tests/26_eventlog_shadow.test.ts`, 9
+cases — the original 4 (clean completion, permanent-failure +
+incident-resolution, termination) plus 5 more added with the extended
+coverage: parallel gateway fork/join (reusing `03_meal_preparation.bpmn`),
+a short (2s) timer fixture built for this suite specifically (existing
+timer fixtures are 20-60s and reserved for the `--no-timers`-skipped
+suites), message correlation (reusing `10_order_notification.bpmn`), signal
+broadcast (reusing `11_inventory_broadcast.bpmn`), and projector parity
+(cross-checking a projected row against the real REST API's view of the
+same instance). Full 26-suite Docker regression green; manually verified
+the projector against real traffic afterward (see above) rather than
+trusting green tests alone.
 
 **How to apply**: Phase 1 (an actual partition-owning write path) is a much
 larger step than Phase 0 and still needs the open questions in §11 answered

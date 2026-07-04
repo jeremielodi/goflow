@@ -819,5 +819,36 @@ CREATE TABLE IF NOT EXISTS zeebe_keys (
 CREATE INDEX IF NOT EXISTS idx_process_permissions_key
 ON process_permissions(process_key);
 
+-- Phase 0 event-sourced engine scoping (shadow mode) — see
+-- migrations/011_eventlog_projection.sql and
+-- architecture/event-sourced-kafka-design.md. Populated only by
+-- internal/eventlog.Consumer's background projector, not read/written by
+-- any real request path — exists purely to prove engine state is
+-- reconstructable from the published event stream alone.
+CREATE TABLE IF NOT EXISTS eventlog_projected_instances (
+    id UUID PRIMARY KEY,
+    process_definition_id UUID NULL,
+    process_key TEXT NULL,
+    version INT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NULL,
+    ended_at TIMESTAMPTZ NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS eventlog_projected_jobs (
+    id UUID PRIMARY KEY,
+    process_instance_id UUID NOT NULL,
+    execution_id UUID NULL,
+    job_type TEXT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT NULL,
+    retries_remaining INT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_eventlog_projected_jobs_process_instance_id
+ON eventlog_projected_jobs(process_instance_id);
+
 CREATE INDEX IF NOT EXISTS idx_process_permissions_grantee
 ON process_permissions(grantee_type, grantee_id);

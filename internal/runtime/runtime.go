@@ -18,6 +18,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -470,6 +471,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			fromNode := currentID
 			currentID = next
 			service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, fromNode, next, variables))
+			if p := eventlog.Global(); p != nil {
+				p.ExecutionMoved(exec.ProcessInstanceID.String(), exec.ID.String(), fromNode, next)
+			}
 
 		case engine.ServiceTaskType:
 			if node.MultiInstance != nil && exec.ParentExecutionID != nil {
@@ -528,6 +532,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				}
 				// Log gateway fork
 				r.auditService.LogGatewayForked(exec.ProcessInstanceID, node.ID, len(node.Outgoing))
+				if p := eventlog.Global(); p != nil {
+					p.GatewayForked(exec.ProcessInstanceID.String(), node.ID, int32(len(node.Outgoing)))
+				}
 
 				// Execute each child execution so branches advance to their first tasks
 				engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
@@ -595,6 +602,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 
 				// Log gateway join
 				r.auditService.LogGatewayJoined(exec.ProcessInstanceID, node.ID, expectedCount, receivedCount)
+				if p := eventlog.Global(); p != nil {
+					p.GatewayJoined(exec.ProcessInstanceID.String(), node.ID, int32(expectedCount), int32(receivedCount))
+				}
 
 				// If all branches have joined, resume the parent execution
 				if err == nil && finalState.ReceivedIncoming >= finalState.ExpectedIncoming && exec.ParentExecutionID != nil {
@@ -616,6 +626,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 					return fmt.Errorf("inclusive gateway fork failed: %w", err)
 				}
 				r.auditService.LogGatewayForked(exec.ProcessInstanceID, node.ID, len(node.Outgoing))
+				if p := eventlog.Global(); p != nil {
+					p.GatewayForked(exec.ProcessInstanceID.String(), node.ID, int32(len(node.Outgoing)))
+				}
 
 				children, err := engineRepo.GetChildExecutions(exec.ID)
 				if err != nil {
@@ -645,6 +658,9 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			`, exec.ProcessInstanceID, node.ID)
 
 			r.auditService.LogGatewayJoined(exec.ProcessInstanceID, node.ID, finalState.ExpectedIncoming, finalState.ReceivedIncoming)
+			if p := eventlog.Global(); p != nil {
+				p.GatewayJoined(exec.ProcessInstanceID.String(), node.ID, int32(finalState.ExpectedIncoming), int32(finalState.ReceivedIncoming))
+			}
 
 			if finalState.ReceivedIncoming >= finalState.ExpectedIncoming && exec.ParentExecutionID != nil {
 				parentExec, getErr := engineRepo.GetActiveExecution(ctx, *exec.ParentExecutionID)

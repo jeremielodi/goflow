@@ -72,7 +72,7 @@ func main() {
 	if brokersEnv := util.DotEnvVariable("KAFKA_BROKERS"); brokersEnv != "" {
 		brokers := strings.Split(brokersEnv, ",")
 		eventlog.SetGlobalProducer(eventlog.NewProducer(brokers))
-		eventLogConsumer = eventlog.NewConsumer(brokers, "goflow-eventlog-shadow")
+		eventLogConsumer = eventlog.NewConsumer(brokers, "goflow-eventlog-shadow", db)
 		go eventLogConsumer.Run(context.Background())
 		log.Println("✅ Event log shadow mode started (brokers:", brokersEnv, ")")
 	} else {
@@ -177,7 +177,7 @@ func main() {
 	timerController := api.NewTimerController(db)
 	incidentCtrl := api.NewIncidentController(db)
 	analyticsCtrl := api.NewAnalyticsController(db)
-	eventLogCtrl := api.NewEventLogController(eventLogConsumer)
+	eventLogCtrl := api.NewEventLogController(eventLogConsumer, db)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
 	processPermissionCtrl := api.NewProcessPermissionController(db)
@@ -375,6 +375,7 @@ func main() {
 	// ============================================================
 
 	app.Get("/engine-rest/eventlog/recent", eventLogCtrl.GetRecent)
+	app.Get("/engine-rest/eventlog/projected", eventLogCtrl.GetProjected)
 
 	// ============================================================
 	// MESSAGE & SIGNAL ROUTES

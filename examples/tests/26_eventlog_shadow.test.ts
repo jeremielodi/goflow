@@ -20,6 +20,10 @@ import * as path from 'path';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
 
 const BPMN = path.join(__dirname, 'bpmn', '24_grpc_process.bpmn');
+const PARALLEL_BPMN = path.join(__dirname, 'bpmn', '03_meal_preparation.bpmn');
+const SHORT_TIMER_BPMN = path.join(__dirname, 'bpmn', '26_short_timer.bpmn');
+const ORDER_BPMN = path.join(__dirname, 'bpmn', '10_order_notification.bpmn');
+const SIGNAL_BPMN = path.join(__dirname, 'bpmn', '11_inventory_broadcast.bpmn');
 const client = new GoFlowClient();
 
 interface RecentEvent {
@@ -53,6 +57,10 @@ async function waitForEventTypes(instanceId: string, expectedTypes: string[], ti
 async function run() {
   await client.loginAsSuperUser();
   await client.deployBpmn(BPMN);
+  await client.deployBpmn(PARALLEL_BPMN);
+  await client.deployBpmn(SHORT_TIMER_BPMN);
+  await client.deployBpmn(ORDER_BPMN);
+  await client.deployBpmn(SIGNAL_BPMN);
 
   await runSuite({
     name: '26 — Event log shadow mode',
@@ -149,8 +157,144 @@ async function run() {
           assert(events.some((e) => e.type === 'ProcessTerminated'), `expected a ProcessTerminated event for ${instanceId}`);
         },
       },
+
+      {
+        name: '[E] Parallel gateway fork/join publishes GatewayForked then GatewayJoined',
+        async fn() {
+          const inst = await client.startProcess('MealPrepProcess', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          // By the time the salad user task appears, the fork has already
+          // happened — both branches (cook_pasta job + prepare_salad task)
+          // are concurrently active.
+          const saladTask = await client.waitForTask('prepare_salad', instanceId, 10000);
+
+          const cookDone = client.pollExternalTask('cook_pasta', async () => ({ pastaReady: true }), 20000);
+          await client.completeTask(saladTask.id, { saladReady: true });
+          await cookDone;
+
+          const events = await waitForEventTypes(instanceId, ['GatewayForked', 'GatewayJoined']);
+          const order = events.map((e) => e.type);
+          assert(order.includes('GatewayForked'), `expected a GatewayForked event, got ${JSON.stringify(order)}`);
+          assert(order.includes('GatewayJoined'), `expected a GatewayJoined event, got ${JSON.stringify(order)}`);
+          assert(order.indexOf('GatewayForked') < order.lastIndexOf('GatewayJoined'), 'expected GatewayForked to precede GatewayJoined');
+
+          // Clean up so the process doesn't linger.
+          const eatTask = await client.waitForTask('eat_meal', instanceId, 15000);
+          await client.completeTask(eatTask.id);
+          await client.waitForProcessEnd(instanceId, 10000);
+        },
+      },
+
+      {
+        name: '[F] A short intermediate timer publishes TimerTriggered',
+        async fn() {
+          const inst = await client.startProcess('ShortTimerProcess', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          const events = await waitForEventTypes(instanceId, ['TimerTriggered'], 15000);
+          assert(events.some((e) => e.type === 'TimerTriggered'), `expected a TimerTriggered event for ${instanceId}`);
+
+          await client.waitForProcessEnd(instanceId, 10000);
+        },
+      },
+
+      {
+        name: '[G] Message correlation publishes MessageCorrelated',
+        async fn() {
+          const inst = await client.startProcess('orderNotification', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          // Give the instance a moment to park at the message catch event.
+          await sleep(500);
+          await client.api.post('/engine-rest/message', {
+            messageName: 'PaymentReceived',
+            processInstanceId: instanceId,
+          });
+
+          const events = await waitForEventTypes(instanceId, ['MessageCorrelated'], 15000);
+          assert(events.some((e) => e.type === 'MessageCorrelated'), `expected a MessageCorrelated event for ${instanceId}`);
+        },
+      },
+
+      {
+        name: '[H] Signal broadcast publishes SignalBroadcast (no processInstanceId)',
+        async fn() {
+          const inst = await client.startProcess('inventoryAlert', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          // inventoryAlert runs a check-inventory external task BEFORE
+          // parking at the signal catch event — must complete it first, or
+          // Broadcast finds zero matching subscriptions and returns early
+          // (internal/api/signal_controller.go's Broadcast short-circuits
+          // before reaching LogSignalBroadcast/the eventlog publish call
+          // when len(subs) == 0), so no SignalBroadcast event is published
+          // at all.
+          await client.pollExternalTask('check-inventory', async () => ({ checked: true }), 15000, instanceId);
+          await sleep(500);
+
+          const before = (await fetchRecent()).filter((e) => e.type === 'SignalBroadcast').length;
+          await client.api.post('/engine-rest/signal', { name: 'RestockAlert' });
+
+          const deadline = Date.now() + 15000;
+          let found = false;
+          while (Date.now() < deadline) {
+            const broadcasts = (await fetchRecent()).filter((e) => e.type === 'SignalBroadcast');
+            if (broadcasts.length > before) {
+              found = true;
+              // SignalBroadcast has no owning instance — confirmed empty here.
+              assert(broadcasts[broadcasts.length - 1].processInstanceId === '', 'expected SignalBroadcast to have an empty processInstanceId');
+              break;
+            }
+            await sleep(500);
+          }
+          assert(found, 'expected a new SignalBroadcast event after broadcasting RestockAlert');
+
+          // Clean up so the instance doesn't linger.
+          await client.pollExternalTask('update-inventory', async () => ({ updated: true }), 15000, instanceId);
+          await client.waitForProcessEnd(instanceId, 10000);
+        },
+      },
+
+      {
+        name: '[I] Projector reflects real instance/job state after a full lifecycle',
+        async fn() {
+          const inst = await client.startProcess('GrpcProcess', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          await client.pollExternalTask('grpc_review', async () => ({ reviewed: true }), 15000, instanceId);
+          await client.waitForProcessEnd(instanceId);
+
+          const deadline = Date.now() + 15000;
+          let projectedInstance: any = null;
+          let projectedJob: any = null;
+          while (Date.now() < deadline) {
+            const res = await client.api.get('/engine-rest/eventlog/projected');
+            projectedInstance = (res.data?.instances ?? []).find((i: any) => i.id === instanceId);
+            projectedJob = (res.data?.jobs ?? []).find((j: any) => j.processInstanceId === instanceId);
+            if (projectedInstance?.status === 'completed' && projectedJob?.status === 'completed') break;
+            await sleep(500);
+          }
+          assert(!!projectedInstance, `expected a projected instance row for ${instanceId}`);
+          assert(projectedInstance.status === 'completed', `expected projected instance status=completed, got ${projectedInstance?.status}`);
+          assert(!!projectedJob, `expected a projected job row for instance ${instanceId}`);
+          assert(projectedJob.status === 'completed', `expected projected job status=completed, got ${projectedJob?.status}`);
+
+          // Cross-check against the real REST view of the same instance.
+          const real = await client.api.get(`/engine-rest/history/process-instance/${instanceId}`);
+          assert(real.data?.state === 'completed', `expected real historic instance to also report completed, got ${JSON.stringify(real.data)}`);
+        },
+      },
     ],
   });
 }
 
-run().catch(console.error);
+run().catch(err => {
+  // A failure before runSuite() is invoked (e.g. a deploy error during
+  // setup) would otherwise print but exit 0 — runSuite's own tests set
+  // process.exitCode on failure, but only cover failures inside the test
+  // loop itself, not setup. Explicit here so a broken fixture can't
+  // silently pass.
+  console.error(err);
+  process.exit(1);
+});

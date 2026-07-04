@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -154,6 +155,9 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 		return
 	}
 	LogAuditErr("timer triggered", s.auditService.LogTimerTriggered(timer.ProcessInstanceID, timer.ID, timer.EventType))
+	if p := eventlog.Global(); p != nil {
+		p.TimerTriggered(timer.ProcessInstanceID.String(), timer.ID.String(), timer.EventType)
+	}
 	for _, taskID := range cancelledTaskIDs {
 		LogAuditErr("task cancelled", s.auditService.LogTaskCancelled(taskID, timer.ProcessInstanceID, "boundary timer fired"))
 	}
@@ -161,6 +165,9 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 		var toNodeID string
 		if err := s.db.Get(&toNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err == nil {
 			LogAuditErr("execution moved", s.auditService.LogExecutionMoved(execID, timer.ProcessInstanceID, fromNodeID, toNodeID, nil))
+			if p := eventlog.Global(); p != nil {
+				p.ExecutionMoved(timer.ProcessInstanceID.String(), execID.String(), fromNodeID, toNodeID)
+			}
 		}
 	}
 

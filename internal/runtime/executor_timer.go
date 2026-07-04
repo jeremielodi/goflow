@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -38,6 +39,9 @@ func (r *Runtime) executeBoundaryTimerNode(ctx context.Context, engineRepo *repo
 		return "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(exec.ID, exec.ProcessInstanceID, node.ID, nextNodeID, nil))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(exec.ProcessInstanceID.String(), exec.ID.String(), node.ID, nextNodeID)
+	}
 
 	return nextNodeID, nil
 }

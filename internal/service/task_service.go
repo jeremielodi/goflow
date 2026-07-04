@@ -11,6 +11,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/pkg/database"
@@ -174,6 +175,9 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		LogAuditErr("variables merged", s.auditService.LogVariablesMerged(task.ProcessInstanceID, userVars, "taskComplete"))
 	}
 	LogAuditErr("execution moved", s.auditService.LogExecutionMoved(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey, nextID, currentVars))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(task.ProcessInstanceID.String(), task.ExecutionID.String(), task.TaskDefinitionKey, nextID)
+	}
 
 	// Dispatch TASK_COMPLETED event
 	if s.dispatcher != nil {
@@ -284,6 +288,10 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 	}
 	LogAuditErr("execution completed", s.auditService.LogExecutionCompleted(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey))
 	LogAuditErr("process completed", s.auditService.LogProcessCompleted(task.ProcessInstanceID, currentVars))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionCompleted(task.ProcessInstanceID.String(), task.ExecutionID.String(), task.TaskDefinitionKey)
+		p.ProcessCompleted(task.ProcessInstanceID.String())
+	}
 
 	// Dispatch TASK_COMPLETED event for final task
 	if s.dispatcher != nil {

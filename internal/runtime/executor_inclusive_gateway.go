@@ -10,6 +10,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -229,6 +230,9 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 			service.LogAuditErr("variables merged", auditService.LogVariablesMerged(exec.ProcessInstanceID, mergedVariables, "gatewayJoin"))
 		}
 		service.LogAuditErr("execution moved", auditService.LogExecutionMoved(*exec.ParentExecutionID, exec.ProcessInstanceID, gatewayNode.ID, nextNodeID, nil))
+		if p := eventlog.Global(); p != nil {
+			p.ExecutionMoved(exec.ProcessInstanceID.String(), exec.ParentExecutionID.String(), gatewayNode.ID, nextNodeID)
+		}
 	}
 
 	return nil

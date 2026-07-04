@@ -8,6 +8,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -143,6 +144,12 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 	service.LogAuditErr("message correlated", mc.auditService.LogMessageCorrelated(sub.ProcessInstanceID, messageName))
 	if fromNode != "" && targetElementID != "" {
 		service.LogAuditErr("execution moved", mc.auditService.LogExecutionMoved(sub.ExecutionID, sub.ProcessInstanceID, fromNode, targetElementID, variables))
+	}
+	if p := eventlog.Global(); p != nil {
+		p.MessageCorrelated(sub.ProcessInstanceID.String(), messageName)
+		if fromNode != "" && targetElementID != "" {
+			p.ExecutionMoved(sub.ProcessInstanceID.String(), sub.ExecutionID.String(), fromNode, targetElementID)
+		}
 	}
 
 	// Resume execution

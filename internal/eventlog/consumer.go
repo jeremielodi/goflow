@@ -6,10 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/jeremielodi/goflow/internal/eventlog/pb"
+	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jmoiron/sqlx"
 )
 
 // RecentEvent is the JSON-friendly, flattened view of a consumed Envelope
@@ -24,23 +27,27 @@ type RecentEvent struct {
 
 const ringBufferSize = 500
 
-// Consumer reads Topic and keeps the last ringBufferSize events in memory.
-// This is Phase 0 shadow-mode verification only — it proves the pipe is
-// durable, ordered per instance, and well-formed. It is NOT a real
-// projector; that's Phase 1+ (see architecture/event-sourced-kafka-design.md).
+// Consumer reads Topic and keeps the last ringBufferSize events in memory,
+// exposed via the debug ring buffer, and folds a subset of events (coarse
+// process-instance/job state) into the eventlog_projected_* tables via
+// projRepo — see architecture/event-sourced-kafka-design.md. This proves
+// engine state is reconstructable from the event stream; it is NOT a real
+// read-model replacement or Phase 1's actual write path.
 type Consumer struct {
-	mu     sync.Mutex
-	ring   []RecentEvent
-	reader *kafka.Reader
+	mu       sync.Mutex
+	ring     []RecentEvent
+	reader   *kafka.Reader
+	projRepo *repository.EventLogProjectionRepository
 }
 
-func NewConsumer(brokers []string, groupID string) *Consumer {
+func NewConsumer(brokers []string, groupID string, db *sqlx.DB) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: brokers,
 			Topic:   Topic,
 			GroupID: groupID,
 		}),
+		projRepo: repository.NewEventLogProjectionRepository(db),
 	}
 }
 
@@ -65,6 +72,88 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 
 		c.record(toRecentEvent(&env))
+		c.project(&env)
+	}
+}
+
+// project folds a subset of events (coarse process-instance/job state) into
+// the eventlog_projected_* tables. Scoped to what's needed to prove
+// "instance/job state is reconstructable from events" — execution-level
+// events (moves, gateways, timers, correlation) are visible via the debug
+// ring buffer above but not folded into a table here. Errors are logged,
+// never fatal to the consumer loop — a dropped projection update is a gap
+// in this verification surface, not a problem for the real engine.
+func (c *Consumer) project(env *pb.Envelope) {
+	switch e := env.Event.(type) {
+	case *pb.Envelope_ProcessStarted:
+		id, err := uuid.Parse(e.ProcessStarted.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		var defID *uuid.UUID
+		if parsed, err := uuid.Parse(e.ProcessStarted.ProcessDefinitionId); err == nil {
+			defID = &parsed
+		}
+		if err := c.projRepo.UpsertInstance(id, defID, e.ProcessStarted.ProcessKey, e.ProcessStarted.Version, "running", env.OccurredAt.AsTime()); err != nil {
+			log.Printf("eventlog projector: UpsertInstance failed: %v", err)
+		}
+	case *pb.Envelope_ProcessCompleted:
+		id, err := uuid.Parse(e.ProcessCompleted.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		if err := c.projRepo.UpdateInstanceStatus(id, "completed", env.OccurredAt.AsTime()); err != nil {
+			log.Printf("eventlog projector: UpdateInstanceStatus failed: %v", err)
+		}
+	case *pb.Envelope_ProcessTerminated:
+		id, err := uuid.Parse(e.ProcessTerminated.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		if err := c.projRepo.UpdateInstanceStatus(id, "terminated", env.OccurredAt.AsTime()); err != nil {
+			log.Printf("eventlog projector: UpdateInstanceStatus failed: %v", err)
+		}
+	case *pb.Envelope_JobCreated:
+		jobID, err := uuid.Parse(e.JobCreated.JobId)
+		if err != nil {
+			return
+		}
+		instanceID, err := uuid.Parse(e.JobCreated.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		var execID *uuid.UUID
+		if parsed, err := uuid.Parse(e.JobCreated.ExecutionId); err == nil {
+			execID = &parsed
+		}
+		if err := c.projRepo.UpsertJob(jobID, instanceID, execID, e.JobCreated.JobType, "created"); err != nil {
+			log.Printf("eventlog projector: UpsertJob failed: %v", err)
+		}
+	case *pb.Envelope_JobCompleted:
+		jobID, err := uuid.Parse(e.JobCompleted.JobId)
+		if err != nil {
+			return
+		}
+		instanceID, err := uuid.Parse(e.JobCompleted.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		if err := c.projRepo.UpdateJobStatus(jobID, instanceID, "completed", "", nil); err != nil {
+			log.Printf("eventlog projector: UpdateJobStatus failed: %v", err)
+		}
+	case *pb.Envelope_JobFailed:
+		jobID, err := uuid.Parse(e.JobFailed.JobId)
+		if err != nil {
+			return
+		}
+		instanceID, err := uuid.Parse(e.JobFailed.ProcessInstanceId)
+		if err != nil {
+			return
+		}
+		retries := e.JobFailed.RetriesRemaining
+		if err := c.projRepo.UpdateJobStatus(jobID, instanceID, "failed", e.JobFailed.ErrorMessage, &retries); err != nil {
+			log.Printf("eventlog projector: UpdateJobStatus failed: %v", err)
+		}
 	}
 }
 
@@ -115,6 +204,30 @@ func toRecentEvent(env *pb.Envelope) RecentEvent {
 	case *pb.Envelope_ProcessCompleted:
 		base.Type = "ProcessCompleted"
 		base.Detail = e.ProcessCompleted
+	case *pb.Envelope_ExecutionCreated:
+		base.Type = "ExecutionCreated"
+		base.Detail = e.ExecutionCreated
+	case *pb.Envelope_ExecutionMoved:
+		base.Type = "ExecutionMoved"
+		base.Detail = e.ExecutionMoved
+	case *pb.Envelope_ExecutionCompleted:
+		base.Type = "ExecutionCompleted"
+		base.Detail = e.ExecutionCompleted
+	case *pb.Envelope_GatewayForked:
+		base.Type = "GatewayForked"
+		base.Detail = e.GatewayForked
+	case *pb.Envelope_GatewayJoined:
+		base.Type = "GatewayJoined"
+		base.Detail = e.GatewayJoined
+	case *pb.Envelope_TimerTriggered:
+		base.Type = "TimerTriggered"
+		base.Detail = e.TimerTriggered
+	case *pb.Envelope_MessageCorrelated:
+		base.Type = "MessageCorrelated"
+		base.Detail = e.MessageCorrelated
+	case *pb.Envelope_SignalBroadcast:
+		base.Type = "SignalBroadcast"
+		base.Detail = e.SignalBroadcast
 	default:
 		base.Type = "Unknown"
 	}

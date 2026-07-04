@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_ShortTimer"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    Minimal fixture for suite 26's TimerTriggered event coverage. This
+    project's other timer fixtures (01_pizza_delivery.bpmn, 04_oven_timer.bpmn)
+    use long (20 to 60 second) durations and are deliberately skipped from
+    normal regression runs via the no-timers flag, since they are too slow
+    to add to a suite that runs every time. This one uses a 2 second
+    duration so it can run inline in suite 26 without materially slowing
+    the regression.
+  -->
+  <bpmn:process id="ShortTimerProcess" name="Short Timer" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_ShortTimer">
+      <bpmn:outgoing>Flow_Start_Timer</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:intermediateCatchEvent id="timer_short" name="Wait 2s">
+      <bpmn:incoming>Flow_Start_Timer</bpmn:incoming>
+      <bpmn:outgoing>Flow_Timer_End</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_Short">
+        <bpmn:timeDuration>PT2S</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:endEvent id="End_ShortTimer">
+      <bpmn:incoming>Flow_Timer_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Timer" sourceRef="Start_ShortTimer" targetRef="timer_short" />
+    <bpmn:sequenceFlow id="Flow_Timer_End" sourceRef="timer_short" targetRef="End_ShortTimer" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ShortTimer">
+    <bpmndi:BPMNPlane id="BPMNPlane_ShortTimer" bpmnElement="ShortTimerProcess">
+
+      <bpmndi:BPMNShape id="Start_ShortTimer_di" bpmnElement="Start_ShortTimer">
+        <dc:Bounds x="152" y="159" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="timer_short_di" bpmnElement="timer_short">
+        <dc:Bounds x="270" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="258" y="202" width="60" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_ShortTimer_di" bpmnElement="End_ShortTimer">
+        <dc:Bounds x="392" y="159" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Timer_di" bpmnElement="Flow_Start_Timer">
+        <di:waypoint x="188" y="177" />
+        <di:waypoint x="270" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Timer_End_di" bpmnElement="Flow_Timer_End">
+        <di:waypoint x="306" y="177" />
+        <di:waypoint x="392" y="177" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

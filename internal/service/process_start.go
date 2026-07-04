@@ -83,6 +83,7 @@ func StartProcessInstance(
 		// an extra lookup, so they're left blank here — the shadow consumer
 		// only needs the event type + processInstanceId to verify the pipe.
 		p.ProcessStarted(instanceID.String(), processDefinitionID.String(), "", 0)
+		p.ExecutionCreated(instanceID.String(), execID.String(), "", startNodeID)
 	}
 
 	return instanceID, execID, nil
