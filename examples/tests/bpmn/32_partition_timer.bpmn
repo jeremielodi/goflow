@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_PartitionTimerProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: Suite 32's fixture for Phase 6 of the event-sourced engine
+              (see architecture/event-sourced-kafka-design.md) — the
+              smallest possible timer shape (start, one 2 second
+              intermediate timer, end, no service task at all), proving
+              TimerScheduler's new TimerPartitionRouter gate actually
+              routes a due timer through the Command Gateway instead of
+              resuming it directly for a partitioned instance.
+  -->
+
+  <bpmn:process id="PartitionTimerProcess" name="Partition Timer Process" isExecutable="true" camunda:historyTimeToLive="30">
+
+    <bpmn:startEvent id="Start_PartitionTimer">
+      <bpmn:outgoing>Flow_Start_Timer</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:intermediateCatchEvent id="timer_partition" name="Wait 2s">
+      <bpmn:incoming>Flow_Start_Timer</bpmn:incoming>
+      <bpmn:outgoing>Flow_Timer_End</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_Partition">
+        <bpmn:timeDuration>PT2S</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:endEvent id="End_PartitionTimer">
+      <bpmn:incoming>Flow_Timer_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Timer" sourceRef="Start_PartitionTimer" targetRef="timer_partition" />
+    <bpmn:sequenceFlow id="Flow_Timer_End" sourceRef="timer_partition" targetRef="End_PartitionTimer" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_PartitionTimerProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_PartitionTimerProcess" bpmnElement="PartitionTimerProcess">
+
+      <bpmndi:BPMNShape id="Start_PartitionTimer_di" bpmnElement="Start_PartitionTimer">
+        <dc:Bounds x="152" y="159" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="timer_partition_di" bpmnElement="timer_partition">
+        <dc:Bounds x="270" y="159" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="258" y="202" width="60" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNShape id="End_PartitionTimer_di" bpmnElement="End_PartitionTimer">
+        <dc:Bounds x="392" y="159" width="36" height="36" />
+      </bpmndi:BPMNShape>
+
+      <bpmndi:BPMNEdge id="Flow_Start_Timer_di" bpmnElement="Flow_Start_Timer">
+        <di:waypoint x="188" y="177" />
+        <di:waypoint x="270" y="177" />
+      </bpmndi:BPMNEdge>
+
+      <bpmndi:BPMNEdge id="Flow_Timer_End_di" bpmnElement="Flow_Timer_End">
+        <di:waypoint x="306" y="177" />
+        <di:waypoint x="392" y="177" />
+      </bpmndi:BPMNEdge>
+
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

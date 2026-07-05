@@ -17,21 +17,49 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-type TimerScheduler struct {
-	db           *sqlx.DB
-	engineRepo   *repository.EngineRepository
-	stopChan     chan bool
-	resumer      func(ctx context.Context, execID uuid.UUID) error
-	auditService *AuditService
+// TimerPartitionRouter lets a due timer belonging to a partitioned-write-
+// path instance be routed through the Command Gateway (a produced
+// TimerFiredCommand) instead of this package's own direct
+// ResumeTimerExecution write — see architecture/event-sourced-kafka-design.md
+// Phase 6. Implemented by internal/partition, wired only in main.go: this
+// package cannot import internal/partition directly, since
+// internal/partition already imports internal/service (the same
+// dependency-inversion pattern used throughout this codebase's Kafka work
+// whenever a lower layer needs to call into a higher one).
+//
+// Unlike every other command in this series (Start/Complete/Fail/
+// SetRetries/ResolveIncident), FireTimer has no caller waiting for a
+// synchronous response — TimerScheduler's background poll loop doesn't
+// need to block on confirmation before moving to the next due timer, so
+// there's no produce-then-wait bridge here, just a produce.
+type TimerPartitionRouter interface {
+	// FireTimer returns (true, nil) if timer's instance is partitioned and
+	// was handled by producing a command — the caller must NOT also run
+	// ResumeTimerExecution for it. Returns (false, nil) for a legacy
+	// instance (including lookup errors — the legacy path is always a
+	// safe fallback).
+	FireTimer(ctx context.Context, timer models.TimerJob) (handled bool, err error)
 }
 
-func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher) *TimerScheduler {
+type TimerScheduler struct {
+	db              *sqlx.DB
+	dispatcher      *events.TaskEventDispatcher
+	engineRepo      *repository.EngineRepository
+	stopChan        chan bool
+	resumer         func(ctx context.Context, execID uuid.UUID) error
+	auditService    *AuditService
+	partitionRouter TimerPartitionRouter
+}
+
+func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher, partitionRouter TimerPartitionRouter) *TimerScheduler {
 	return &TimerScheduler{
-		db:           db,
-		engineRepo:   repository.NewEngineRepository(db, dispatcher),
-		stopChan:     make(chan bool),
-		resumer:      resumer,
-		auditService: NewAuditService(db),
+		db:              db,
+		dispatcher:      dispatcher,
+		engineRepo:      repository.NewEngineRepository(db, dispatcher),
+		stopChan:        make(chan bool),
+		resumer:         resumer,
+		auditService:    NewAuditService(db),
+		partitionRouter: partitionRouter,
 	}
 }
 
@@ -61,7 +89,11 @@ func (s *TimerScheduler) Stop() {
 	s.stopChan <- true
 }
 
-// processDueTimers atomically claims and fires all due timers.
+// processDueTimers atomically claims and fires all due timers. Claiming
+// (EngineRepository.ClaimDueTimers) stays global and unconditional for
+// every instance, partitioned or not — it only flips timer_jobs.is_triggered,
+// never touches executions, so there's nothing here for Kafka partition
+// ownership to race against (see the design doc for the full reasoning).
 func (s *TimerScheduler) processDueTimers(ctx context.Context) {
 	timers, err := s.engineRepo.ClaimDueTimers(ctx, 20)
 	if err != nil {
@@ -75,103 +107,58 @@ func (s *TimerScheduler) processDueTimers(ctx context.Context) {
 	}
 }
 
-// triggerTimer triggers a single timer
+// triggerTimer triggers a single timer. For a partitioned-write-path
+// instance, the partitionRouter takes over the execution-resume step
+// entirely (via a produced command, applied later by the owning
+// Partition Processor) — this function only still handles cycle
+// rescheduling and the TimerTriggered observability event for that case,
+// since neither touches executions.
 func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob) {
 	log.Printf("Triggering timer %s for process instance %s", timer.ID, timer.ProcessInstanceID)
 
-	// Parse payload
-	var payload map[string]interface{}
-	if len(timer.Payload) > 0 {
-		json.Unmarshal(timer.Payload, &payload)
-	}
-
-	tx, err := s.db.BeginTxx(ctx, nil)
-	if err != nil {
-		log.Printf("Failed to begin transaction for timer %s: %v", timer.ID, err)
-		return
-	}
-	defer tx.Rollback()
-
 	var execID uuid.UUID
-	var fromNodeID string
-	var cancelledTaskIDs []uuid.UUID
 	if timer.ExecutionID != nil {
 		execID = *timer.ExecutionID
-		fromNodeID, cancelledTaskIDs, err = s.resumeExecution(tx, execID, timer)
+	}
+
+	if s.partitionRouter != nil && execID != uuid.Nil {
+		handled, err := s.partitionRouter.FireTimer(ctx, timer)
 		if err != nil {
+			log.Printf("timer %s: partition router failed: %v", timer.ID, err)
+			return
+		}
+		if handled {
+			s.scheduleNextCycleIfNeeded(ctx, timer)
+			LogAuditErr("timer triggered", s.auditService.LogTimerTriggered(timer.ProcessInstanceID, timer.ID, timer.EventType))
+			if p := eventlog.Global(); p != nil {
+				p.TimerTriggered(timer.ProcessInstanceID.String(), timer.ID.String(), timer.EventType)
+			}
+			return
+		}
+	}
+
+	// Legacy path — unchanged behavior for every non-partitioned instance.
+	if execID != uuid.Nil {
+		targetNodeID, err := ParseTimerTargetNode(timer.Payload)
+		if err != nil {
+			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
+			return
+		}
+		if _, _, err := ResumeTimerExecution(s.db, s.dispatcher, execID, targetNodeID); err != nil {
 			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
 			return
 		}
 	}
 
-	// Handle timer cycles
-	isCycle, _ := payload["is_cycle"].(bool)
-	if isCycle {
-		totalCycles, _ := payload["total_cycles"].(float64)
-		repeatInterval, _ := payload["repeat_interval"].(string)
-		currentCycle, _ := payload["current_cycle"].(float64)
+	s.scheduleNextCycleIfNeeded(ctx, timer)
 
-		nextCycle := int(currentCycle) + 1
-		totalCyclesInt := int(totalCycles)
-
-		// Convert PT10S to 10s for time.ParseDuration
-		intervalStr := repeatInterval
-		if strings.HasPrefix(intervalStr, "PT") {
-			intervalStr = strings.TrimPrefix(intervalStr, "PT")
-			intervalStr = strings.ToLower(intervalStr)
-			// Replace H with h, M with m, S with s
-			intervalStr = strings.ReplaceAll(intervalStr, "H", "h")
-			intervalStr = strings.ReplaceAll(intervalStr, "M", "m")
-			intervalStr = strings.ReplaceAll(intervalStr, "S", "s")
-		}
-
-		interval, err := time.ParseDuration(intervalStr)
-		if err != nil {
-			log.Printf("Failed to parse repeat interval: %v, using default 10s", err)
-			interval = 10 * time.Second
-		}
-
-		// Check if we have more cycles (totalCycles = -1 means infinite)
-		if totalCyclesInt == -1 || nextCycle < totalCyclesInt {
-			nextDueAt := time.Now().UTC().Add(interval)
-
-			payload["current_cycle"] = nextCycle
-			newPayload, _ := json.Marshal(payload)
-
-			nextTimerID := uuid.New()
-			err = s.engineRepo.CreateTimerWithDurationSeconds(tx, nextTimerID, timer.ProcessInstanceID, timer.ExecutionID, int(interval.Seconds()), timer.EventType, newPayload, nextCycle, totalCyclesInt, repeatInterval)
-			if err != nil {
-				log.Printf("Failed to schedule next cycle: %v", err)
-			} else {
-				log.Printf("🔄 Scheduled cycle %d/%d for timer %s at %s",
-					nextCycle, totalCyclesInt, timer.ID, nextDueAt)
-			}
-		} else {
-			log.Printf("✅ Timer cycle completed for timer %s (final cycle)", timer.ID)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		log.Printf("Failed to commit transaction for timer %s: %v", timer.ID, err)
-		return
-	}
 	LogAuditErr("timer triggered", s.auditService.LogTimerTriggered(timer.ProcessInstanceID, timer.ID, timer.EventType))
 	if p := eventlog.Global(); p != nil {
 		p.TimerTriggered(timer.ProcessInstanceID.String(), timer.ID.String(), timer.EventType)
 	}
-	for _, taskID := range cancelledTaskIDs {
-		LogAuditErr("task cancelled", s.auditService.LogTaskCancelled(taskID, timer.ProcessInstanceID, "boundary timer fired"))
-	}
-	if fromNodeID != "" && execID != uuid.Nil {
-		var toNodeID string
-		if err := s.db.Get(&toNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err == nil {
-			LogAuditErr("execution moved", s.auditService.LogExecutionMoved(execID, timer.ProcessInstanceID, fromNodeID, toNodeID, nil))
-			if p := eventlog.Global(); p != nil {
-				p.ExecutionMoved(timer.ProcessInstanceID.String(), execID.String(), fromNodeID, toNodeID)
-			}
-		}
-	}
 
-	// Continue execution after transaction is committed
+	// Continue execution after ResumeTimerExecution's own transaction
+	// committed.
 	if execID != uuid.Nil && s.resumer != nil {
 		time.Sleep(100 * time.Millisecond)
 		log.Printf("🔄 Continuing execution %s after timer", execID)
@@ -181,28 +168,116 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 	}
 }
 
-// resumeExecution resumes an execution that was waiting for a timer. Returns
-// the node the execution moved from and the IDs of any tasks it cancelled,
-// so the caller can audit-log both once the transaction has committed.
-func (s *TimerScheduler) resumeExecution(tx *sqlx.Tx, execID uuid.UUID, timer models.TimerJob) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
-	// Parse payload to get the target node
+// scheduleNextCycleIfNeeded inserts the next timer_jobs row for a cycle
+// timer. Only ever touches timer_jobs, never executions — safe to run
+// unconditionally regardless of write path, so it's shared by both the
+// legacy and partitioned branches of triggerTimer above.
+func (s *TimerScheduler) scheduleNextCycleIfNeeded(ctx context.Context, timer models.TimerJob) {
 	var payload map[string]interface{}
 	if len(timer.Payload) > 0 {
-		if err := json.Unmarshal(timer.Payload, &payload); err != nil {
-			return "", nil, fmt.Errorf("failed to parse timer payload: %w", err)
-		}
+		json.Unmarshal(timer.Payload, &payload)
+	}
+	isCycle, _ := payload["is_cycle"].(bool)
+	if !isCycle {
+		return
 	}
 
-	targetNodeID, ok := payload["target_node_id"].(string)
-	if !ok {
-		return "", nil, fmt.Errorf("target_node_id not found in timer payload")
+	totalCycles, _ := payload["total_cycles"].(float64)
+	repeatInterval, _ := payload["repeat_interval"].(string)
+	currentCycle, _ := payload["current_cycle"].(float64)
+
+	nextCycle := int(currentCycle) + 1
+	totalCyclesInt := int(totalCycles)
+
+	// Convert PT10S to 10s for time.ParseDuration
+	intervalStr := repeatInterval
+	if strings.HasPrefix(intervalStr, "PT") {
+		intervalStr = strings.TrimPrefix(intervalStr, "PT")
+		intervalStr = strings.ToLower(intervalStr)
+		intervalStr = strings.ReplaceAll(intervalStr, "H", "h")
+		intervalStr = strings.ReplaceAll(intervalStr, "M", "m")
+		intervalStr = strings.ReplaceAll(intervalStr, "S", "s")
 	}
+
+	interval, err := time.ParseDuration(intervalStr)
+	if err != nil {
+		log.Printf("Failed to parse repeat interval: %v, using default 10s", err)
+		interval = 10 * time.Second
+	}
+
+	// totalCycles == -1 means infinite
+	if totalCyclesInt != -1 && nextCycle >= totalCyclesInt {
+		log.Printf("✅ Timer cycle completed for timer %s (final cycle)", timer.ID)
+		return
+	}
+
+	nextDueAt := time.Now().UTC().Add(interval)
+	payload["current_cycle"] = nextCycle
+	newPayload, _ := json.Marshal(payload)
+
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		log.Printf("Failed to begin transaction to schedule next cycle for timer %s: %v", timer.ID, err)
+		return
+	}
+	defer tx.Rollback()
+
+	nextTimerID := uuid.New()
+	if err := s.engineRepo.CreateTimerWithDurationSeconds(tx, nextTimerID, timer.ProcessInstanceID, timer.ExecutionID, int(interval.Seconds()), timer.EventType, newPayload, nextCycle, totalCyclesInt, repeatInterval); err != nil {
+		log.Printf("Failed to schedule next cycle: %v", err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("Failed to commit next-cycle transaction for timer %s: %v", timer.ID, err)
+		return
+	}
+	log.Printf("🔄 Scheduled cycle %d/%d for timer %s at %s", nextCycle, totalCyclesInt, timer.ID, nextDueAt)
+}
+
+// ParseTimerTargetNode extracts the target_node_id an intermediate timer's
+// payload was created with (see internal/runtime/executor_timer.go's
+// executeIntermediateTimer) — shared by TimerScheduler's own legacy path
+// and internal/partition.TimerRouter, which needs it before producing a
+// TimerFiredCommand.
+func ParseTimerTargetNode(payload []byte) (string, error) {
+	var parsed map[string]interface{}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			return "", fmt.Errorf("failed to parse timer payload: %w", err)
+		}
+	}
+	targetNodeID, ok := parsed["target_node_id"].(string)
+	if !ok {
+		return "", fmt.Errorf("target_node_id not found in timer payload")
+	}
+	return targetNodeID, nil
+}
+
+// ResumeTimerExecution resumes an execution that was waiting for a timer:
+// cancels any user tasks left in "created" state on it (see the doc
+// comment on internal/runtime/executor_timer.go for why there's no
+// separate branch for boundary vs. plain intermediate timers — this
+// cancellation is a no-op today for any node type the partitioned engine
+// currently supports, since it doesn't support user tasks yet), then
+// moves current_element_id to targetNodeID — extracted from what used to
+// be TimerScheduler's own private resumeExecution method, now shared with
+// internal/partition's Partition Processor (see TimerPartitionRouter
+// above) the same way SetJobRetries/ResolveIncident were extracted in the
+// prior gap-closing pass.
+func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, execID uuid.UUID, targetNodeID string) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
+	engineRepo := repository.NewEngineRepository(db, dispatcher)
+	auditService := NewAuditService(db)
+
+	tx, err := db.Beginx()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	if err := tx.Get(&fromNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err != nil {
 		return "", nil, fmt.Errorf("failed to load current node: %w", err)
 	}
 
-	// Cancel the user task
 	if err := tx.Select(&cancelledTaskIDs, `
 		UPDATE public.tasks
 		SET status = 'cancelled', updated_at = NOW()
@@ -212,12 +287,29 @@ func (s *TimerScheduler) resumeExecution(tx *sqlx.Tx, execID uuid.UUID, timer mo
 		return "", nil, fmt.Errorf("failed to cancel user task: %w", err)
 	}
 
-	// Update execution to move to the target node
-	if err := s.engineRepo.UpdateExecutionStatusAndNodeTx(tx, execID, "active", targetNodeID); err != nil {
+	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, execID, "active", targetNodeID); err != nil {
 		return "", nil, fmt.Errorf("failed to update execution: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return "", nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	log.Printf("Execution %s resumed after timer, moving to node %s (user task cancelled)", execID, targetNodeID)
+
+	exec, execErr := engineRepo.GetExecutionByID(execID)
+	var instanceID uuid.UUID
+	if execErr == nil && exec != nil {
+		instanceID = exec.ProcessInstanceID
+	}
+
+	for _, taskID := range cancelledTaskIDs {
+		LogAuditErr("task cancelled", auditService.LogTaskCancelled(taskID, instanceID, "boundary timer fired"))
+	}
+	LogAuditErr("execution moved", auditService.LogExecutionMoved(execID, instanceID, fromNodeID, targetNodeID, nil))
+	if p := eventlog.Global(); p != nil {
+		p.ExecutionMoved(instanceID.String(), execID.String(), fromNodeID, targetNodeID)
+	}
 
 	return fromNodeID, cancelledTaskIDs, nil
 }

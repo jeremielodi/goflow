@@ -28,7 +28,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 )
 
-// ValidateShape rejects every BPMN graph except the two shapes the
+// ValidateShape rejects every BPMN graph except the shapes the
 // partitioned engine supports so far:
 //   - Phase 1/3/4/5 (linear): one start event -> a chain of one or more
 //     external service tasks and/or business rule tasks (DMN
@@ -36,21 +36,26 @@ import (
 //     end event. Any service task in the chain may have at most one
 //     attached error boundary event (Phase 5), whose own single outgoing
 //     flow must target the chain's shared end event directly.
+//   - Phase 6 (timer-only linear): one start event -> exactly one
+//     intermediate timer event -> one end event, with no service/business-
+//     rule tasks at all. Kept separate from the task chain above rather
+//     than mixed in — not combined with Phase 3/4's chain generalizations,
+//     per this package's discipline of never combining two generalizations
+//     in one phase. See internal/service.TimerPartitionRouter for how a
+//     due timer on this shape gets routed through the Command Gateway.
 //   - Phase 2 (diamond): one start event -> one exclusive gateway with
 //     exactly 2 outgoing flows, each with an explicit non-empty condition,
 //     each targeting a distinct service task -> both tasks flow to one
 //     shared end event. Diamond branches stay service-task-only with no
-//     boundary events — not combined with Phase 4/5's extensions, per this
-//     package's discipline of never combining two generalizations in one
-//     phase.
+//     boundary events or timers.
 //
 // Called only when a process definition is flipped to the partitioned
 // write path (PATCH .../write-path) — this is an explicit scope fence, not
-// a silent gap: parallel/inclusive gateways, timers, multi-instance, and
-// message/signal correlation are simply not implemented by the
-// partitioned engine yet (see the design doc's "Explicit non-goals").
+// a silent gap: parallel/inclusive gateways, boundary timers, multi-
+// instance, and message/signal correlation are simply not implemented by
+// the partitioned engine yet (see the design doc's "Explicit non-goals").
 func ValidateShape(graph *engine.ProcessGraph) error {
-	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes, boundaryNodes []*engine.Node
+	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes, boundaryNodes, timerNodes []*engine.Node
 	for _, n := range graph.Nodes {
 		switch n.Type {
 		case engine.StartEventType:
@@ -65,6 +70,8 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 			gatewayNodes = append(gatewayNodes, n)
 		case engine.ErrorBoundaryEventType:
 			boundaryNodes = append(boundaryNodes, n)
+		case engine.IntermediateTimerEventType:
+			timerNodes = append(timerNodes, n)
 		default:
 			return unsupportedShapeErr(n.Type)
 		}
@@ -75,7 +82,7 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 	startNode := startNodes[0]
 
 	switch {
-	case len(gatewayNodes) == 0 && len(serviceTaskNodes)+len(businessRuleNodes) >= 1:
+	case len(gatewayNodes) == 0 && len(timerNodes) == 0 && len(serviceTaskNodes)+len(businessRuleNodes) >= 1:
 		if len(endNodes) != 1 {
 			return unsupportedShapeErr("")
 		}
@@ -86,7 +93,12 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 			return err
 		}
 		return validateBoundaryEvents(boundaryNodes, serviceTaskNodes, endNodes[0])
-	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0:
+	case len(gatewayNodes) == 0 && len(timerNodes) == 1 && len(serviceTaskNodes)+len(businessRuleNodes) == 0 && len(boundaryNodes) == 0:
+		if len(endNodes) != 1 {
+			return unsupportedShapeErr("")
+		}
+		return validateLinearShape(startNode, timerNodes, endNodes[0])
+	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0 && len(timerNodes) == 0:
 		if len(endNodes) != 1 {
 			return fmt.Errorf("the diamond shape requires both branches to converge on exactly one shared end event, found %d end events", len(endNodes))
 		}
@@ -212,7 +224,7 @@ func validateDiamondShape(startNode, gateway *engine.Node, taskNodes []*engine.N
 
 func unsupportedShapeErr(badType engine.NodeType) error {
 	if badType != "" {
-		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, errorBoundaryEvent, and endEvent", badType)
+		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, errorBoundaryEvent, intermediateTimerEvent, and endEvent", badType)
 	}
-	return fmt.Errorf("the partitioned write path only supports two shapes: (1) start -> a chain of one or more service/business-rule tasks (each optionally with one attached error boundary event) -> end, or (2) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
+	return fmt.Errorf("the partitioned write path only supports three shapes: (1) start -> a chain of one or more service/business-rule tasks (each optionally with one attached error boundary event) -> end, (2) start -> exactly one intermediate timer event -> end (no tasks), or (3) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
 }

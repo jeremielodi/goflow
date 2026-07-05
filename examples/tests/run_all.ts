@@ -119,6 +119,7 @@ async function main() {
     '29_partition_chain.test.ts',
     '30_partition_dmn.test.ts',
     '31_partition_failjob.test.ts',
+    '32_partition_timer.test.ts',
   ];
 
   const exitCodes: number[] = [];

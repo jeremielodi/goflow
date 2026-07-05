@@ -564,7 +564,18 @@ func (s *Server) ResolveIncident(ctx context.Context, req *pb.ResolveIncidentReq
 		return nil, status.Errorf(codes.NotFound, "incident key %d not found", req.IncidentKey)
 	}
 
-	if err := s.incidentRepo.Resolve(incidentID); err != nil {
+	// Gap-closing pass after Phase 5 (see
+	// architecture/event-sourced-kafka-design.md): incidents belonging to
+	// a partitioned-write-path instance resolve via the Command Gateway
+	// instead of a direct Postgres write.
+	if instanceID, writePath, lookupErr := partition.LookupIncidentOwner(s.db, incidentID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.ResolveIncident(instanceID, incidentID); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &pb.ResolveIncidentResponse{}, nil
+	}
+
+	if err := service.ResolveIncident(s.db, incidentID); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 

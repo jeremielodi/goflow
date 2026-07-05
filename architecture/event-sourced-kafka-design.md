@@ -518,6 +518,146 @@ above is the next-smallest closeable item if another "close a gap" phase
 is wanted; timers remain the one item needing a dedicated design pass
 before any phase attempts it.
 
+## Gap-closing pass: retry-setting and incident-resolution
+
+Shipped the same day, right after Phase 5, when the user asked to "fix
+remaining known gaps." Since that phrase covered two very different things
+— this small, well-understood gap and timers' genuine architectural risk —
+asked which to do via `AskUserQuestion`; the user chose both, this one
+first.
+
+`POST /engine-rest/job/:id/retries` (REST) and the gRPC `ResolveIncident`
+RPC had the identical ungated-bypass pattern `FailJob` had before Phase 5:
+no `partition.LookupJobOwner`/`LookupIncidentOwner` check before writing
+directly to Postgres. Closed exactly like every prior gate: extracted the
+inline controller/RPC logic into `internal/service/incident_service.go`
+(`SetJobRetries`, `ResolveIncident` — a new file, since no incident-focused
+service file existed yet), added two new commands
+(`SetJobRetriesCommand`, `ResolveIncidentCommand`) and a new
+unconditionally-published confirmation event (`JobRetriesSet` — unlike the
+already-existing `IncidentResolved`, which only fires when an open
+incident actually existed, `SetJobRetries` needed a signal that always
+fires so the Command Gateway's bridge always has something to wait on),
+and gated both call sites.
+
+**The one genuine simplification found here, not present in any
+Start/Complete/Fail handler**: neither operation ever triggers a follow-up
+`ExecuteExecution` walk — neither moves an execution's graph position at
+all, just flips `jobs`/`incidents` row state. That means **no
+redelivery-stranding case exists** for either new processor handler
+(`handleSetJobRetries`, `handleResolveIncident`) — a redelivered command is
+simply safe to re-apply as-is, no `status` check, no `resumeIfStranded`
+call, unlike every handler since Phase 1. The accumulated infrastructure
+(Command Gateway bridge pattern, `Waiter.Cancel()`-based retry loop) still
+applied unchanged; only the "what happens on redelivery" question got
+simpler, not harder, for these two.
+
+**Verification**: extended `examples/tests/31_partition_failjob.test.ts`
+with 2 more cases — `[F]` the REST retries endpoint resolving an incident
+and letting the job complete again, `[G]` gRPC `ResolveIncident` against a
+partitioned instance's incident using a real `zeebe-node` client (mirroring
+suite 24's existing legacy-path test for the same RPC). Full 30-suite
+Docker regression green on the first attempt.
+
+**Status after this pass**: every write-path-affecting endpoint
+(start, complete, fail, set-retries, resolve-incident) is now gated for
+partitioned instances. Timers are the one remaining item, and still need
+their own dedicated design pass — see the next section.
+
+## Phase 6 — timers, safely
+
+Shipped the same day, immediately after the gap-closing pass, when the
+user asked to fix *all* remaining known gaps — including the one flagged
+since Phase 3 as needing real design work, not a quick patch. Research
+(reading `internal/service/timer_scheduler.go` and
+`internal/runtime/executor_timer.go` in full) found the fix smaller and
+cleaner than originally feared, for two reasons:
+
+1. **Claiming and the dangerous write are already separate steps.**
+   `EngineRepository.ClaimDueTimers` (marking `is_triggered=true`) is its
+   own atomic statement that never touches `executions` — only
+   `resumeExecution` (called afterward) does. So claiming stays exactly as
+   it is today, globally, for every instance; the fix only gates what
+   happens *after* a timer is claimed. No need to replicate Kafka's
+   partition-hash function outside of Kafka at all — the race this session
+   worried about since Phase 3 turned out to be avoidable by construction,
+   not by hand-rolling partition-aware claiming.
+2. **Timers have no caller waiting for a synchronous response.**
+   Every other command in this series needed a produce-then-wait bridge
+   because an HTTP/gRPC caller was blocked on the result.
+   `TimerScheduler`'s background loop isn't — it produces a
+   `TimerFiredCommand` and moves on to the next due timer, with
+   confirmation happening asynchronously inside the Partition Processor.
+   No `Waiter` retry-loop needed for this command type, the only one in
+   the whole series without one.
+
+**The one real design problem, solved with dependency inversion**: the
+dangerous write lives in `internal/service` (`timer_scheduler.go`), but
+`internal/partition` (which needs to redirect it) already imports
+`internal/service` — so `internal/service` cannot import
+`internal/partition` back, the same constraint that shaped every prior
+phase's "callers branch themselves" design. Confirmed
+`timer_scheduler.go` had zero compile-time dependency on
+`internal/runtime`, only an injected `resumer` callback that fires *after*
+the dangerous write already happened — too late to intercept. Fixed with a
+`TimerPartitionRouter` interface defined *in* `internal/service` (where
+it's consumed), implemented *in* `internal/partition` (which is allowed to
+import `internal/service`), wired only in `main.go` — the standard Go
+pattern for a lower layer calling into a higher one without an import
+cycle, and the first time this whole effort needed it (every prior gate
+was a brand-new caller, never a restructure of existing legacy code).
+
+**Also confirmed safe to leave untouched**: cycle-timer rescheduling only
+touches `timer_jobs`, never `executions` — no race, so it runs
+unconditionally regardless of write path (extracted into
+`scheduleNextCycleIfNeeded`, called from both branches of `triggerTimer`).
+`resumeExecution`'s "cancel any `created` tasks" step — extracted into the
+new shared `service.ResumeTimerExecution`, reused by both the legacy path
+and the Partition Processor — is a no-op today for partitioned instances
+regardless, since no shape `ValidateShape` accepts yet includes user
+tasks.
+
+**Redelivery safety**: `handleTimerFired` mirrors every prior handler's
+pattern — `executeIntermediateTimer` sets `executions.status = 'waiting'`
+when creating the timer job (confirmed by reading the executor, the same
+convention `executeServiceTask` uses for jobs), so "status is still
+`'waiting'`" is the correct "safe to resume" signal for a redelivered
+command.
+
+**Known, pre-existing risk, not introduced or worsened here**: if
+producing a `TimerFiredCommand` fails after `ClaimDueTimers` already
+marked the row triggered, that timer is stranded forever — but this is the
+*exact same* risk the legacy path already has today (a `resumeExecution`
+failure after claiming was already silently logged-and-dropped, no retry,
+no dead-letter, confirmed by reading `processDueTimers`). Deliberately not
+fixed here, to keep the new path's failure behavior consistent with the
+old one rather than quietly stricter.
+
+**Scope, matching every prior phase's discipline**: exactly one new shape
+— `start -> intermediate timer event -> end`, no task at all, mirroring
+`examples/tests/bpmn/26_short_timer.bpmn`. Timers mixed with tasks, more
+than one timer in a chain, and boundary timers are all explicitly rejected
+this pass — validated with dedicated unit tests, not just implied by
+absence.
+
+**Verification**: 4 new `internal/partition/validate_test.go` cases (26
+total in the package now — local `go test` ran cleanly this time) plus
+`internal/service`'s existing test suite re-run clean after the
+`timer_scheduler.go` refactor. New e2e suite
+`examples/tests/32_partition_timer.test.ts` (4 cases). Given
+`timer_scheduler.go` is the first piece of *existing* legacy code
+restructured anywhere in this whole effort (every prior phase only ever
+added new call sites), the full regression was run **without**
+`--no-timers` for the first time since this work started — all 33 suites
+green, including suites 03/04/06's real timer/boundary-timer coverage on
+the unmodified legacy path.
+
+**Status after this pass**: every previously-identified gap is closed.
+Remaining scope is entirely about BPMN construct coverage the partitioned
+engine doesn't support yet (parallel/inclusive gateways, multi-instance,
+message/signal correlation, boundary timers, timers mixed with tasks) —
+no more known write-path bypass gaps.
+
 ## 1. Why this exists, and why not sooner
 
 The current engine (`internal/runtime`, `internal/repository`) treats a

@@ -1,6 +1,7 @@
 /**
- * Suite 31 — Phase 5 partitioned write path: job failure (FailJob)
- * (see architecture/event-sourced-kafka-design.md)
+ * Suite 31 — Phase 5 partitioned write path: job failure (FailJob) and,
+ * added in the same-day gap-closing follow-up, retry-setting/incident-
+ * resolution (see architecture/event-sourced-kafka-design.md).
  *
  * Phases 1-4 only gated the happy path (start, complete) through the
  * Command Gateway + Partition Processor. This suite closes a real,
@@ -13,8 +14,14 @@
  * boundary-trigger branch (architecturally free, like Phase 2/4's
  * gateway/DMN cases) is actually exercised by a real shape, not shipped
  * untested.
+ *
+ * Tests [F]/[G] close the identical gap for POST /engine-rest/job/:id/retries
+ * (REST) and the gRPC ResolveIncident RPC — flagged as a known, deferred
+ * gap when Phase 5 shipped, closed the same day after the user asked to
+ * fix all remaining known gaps.
  */
 import * as path from 'path';
+import { ZBClient } from 'zeebe-node';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
 
 const BOUNDARY_BPMN = path.join(__dirname, 'bpmn', '31_boundary_error_chain.bpmn');
@@ -43,6 +50,21 @@ async function findJob(topic: string, instanceId: string, timeoutMs = 15000): Pr
     await sleep(500);
   }
   throw new Error(`timed out waiting for a job on topic "${topic}" for instance ${instanceId}`);
+}
+
+function newZbClient(): ZBClient {
+  return new ZBClient('localhost:26500', { useTLS: false, retry: false, eagerConnection: false });
+}
+
+// The gRPC gateway hands back Zeebe-protocol int64 keys, not GoFlow's
+// internal UUIDs — resolve the UUID via REST by finding the most recently
+// started running instance of processKey (same trick suite 24 uses).
+async function findRunningInstanceUUID(processKey: string): Promise<string> {
+  const res = await client.api.get('/engine-rest/process-instance', { params: { processKey, status: 'running' } });
+  const running = (res.data as any[]) ?? [];
+  assert(running.length >= 1, `expected at least one running ${processKey} instance to resolve via REST`);
+  running.sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+  return running[0].id;
 }
 
 async function run() {
@@ -172,6 +194,107 @@ async function run() {
           await client.waitForProcessEnd(chainId, 15000);
           const chainHist = await client.api.get(`/engine-rest/history/process-instance/${chainId}`);
           assert(chainHist.data?.state === 'completed', `expected Phase 3's chain shape to still complete, got ${JSON.stringify(chainHist.data)}`);
+        },
+      },
+
+      {
+        name: '[F] POST /engine-rest/job/:id/retries on a partitioned job resolves the incident and lets the job complete again',
+        async fn() {
+          const singleDefId = await findDefinitionId('SingleTaskProcess');
+          await setWritePath(singleDefId, 'partitioned');
+
+          const inst = await client.startProcess('SingleTaskProcess', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          const job = await findJob('process-item', instanceId);
+          await client.api.post(`/engine-rest/external-task/${job.id}/failure`, {
+            workerId: client.workerId,
+            errorMessage: 'simulated failure for retries test',
+            errorCode: 'NO_SUCH_BOUNDARY',
+            retries: 0,
+            retryTimeout: 0,
+          });
+
+          let incidentId: string | null = null;
+          const deadline = Date.now() + 15000;
+          while (!incidentId && Date.now() < deadline) {
+            const res = await client.api.get('/engine-rest/incident', { params: { processInstanceId: instanceId } });
+            const incidents = (res.data as any[]) ?? [];
+            if (incidents.length > 0 && incidents[0].state === 'open') incidentId = incidents[0].id;
+            else await sleep(500);
+          }
+          assert(!!incidentId, 'expected an open incident before setting retries');
+
+          const res = await client.api.post(`/engine-rest/job/${job.id}/retries`, { retries: 1 });
+          assert(res.status === 200, `expected 200 setting retries on a partitioned job, got ${res.status}`);
+
+          let resolved = false;
+          const resolveDeadline = Date.now() + 15000;
+          while (!resolved && Date.now() < resolveDeadline) {
+            const r = await client.api.get(`/engine-rest/incident/${incidentId}`);
+            resolved = r.data?.state === 'resolved';
+            if (!resolved) await sleep(500);
+          }
+          assert(resolved, 'expected the incident to be resolved via the (now-gated) partitioned retries path');
+
+          const retriedJob = await findJob('process-item', instanceId);
+          await client.completeExternalTask(retriedJob.id, { done: true });
+          await client.waitForProcessEnd(instanceId, 15000);
+        },
+      },
+
+      {
+        name: '[G] gRPC ResolveIncident on a partitioned instance resolves via the Command Gateway',
+        async fn() {
+          const singleDefId = await findDefinitionId('SingleTaskProcess');
+          await setWritePath(singleDefId, 'partitioned');
+
+          const zbc = newZbClient();
+          try {
+            const created: any = await zbc.createProcessInstance({ bpmnProcessId: 'SingleTaskProcess', variables: {} });
+            const instanceUUID = await findRunningInstanceUUID('SingleTaskProcess');
+
+            let jobs: any[] = [];
+            const jobDeadline = Date.now() + 15000;
+            while (jobs.length === 0 && Date.now() < jobDeadline) {
+              jobs = await zbc.activateJobs({
+                type: 'process-item',
+                worker: 'suite-31-worker',
+                timeout: 30000,
+                maxJobsToActivate: 10,
+                requestTimeout: 3000,
+              } as any);
+              if (jobs.length === 0) await sleep(500);
+            }
+            const job = jobs.find((j: any) => j.processInstanceKey === created.processInstanceKey);
+            assert(!!job, 'expected to activate the job for the new partitioned instance over gRPC');
+
+            await zbc.failJob({ jobKey: job.key, retries: 0, errorMessage: 'grpc suite induced failure (partitioned)', retryBackOff: 0 });
+
+            let incidents: any[] = [];
+            const incidentDeadline = Date.now() + 15000;
+            while (incidents.length === 0 && Date.now() < incidentDeadline) {
+              const res = await client.api.get('/engine-rest/incident', { params: { processInstanceId: instanceUUID } });
+              incidents = (res.data as any[]) ?? [];
+              if (incidents.length === 0) await sleep(500);
+            }
+            assert(incidents.length >= 1, 'expected an open incident for the partitioned gRPC-failed job');
+            assert(typeof incidents[0].zeebeKey === 'number' || typeof incidents[0].zeebeKey === 'string',
+              `expected the REST incident response to include a zeebeKey, got ${JSON.stringify(incidents[0])}`);
+
+            await zbc.resolveIncident({ incidentKey: String(incidents[0].zeebeKey) });
+
+            let resolved = false;
+            const resolveDeadline = Date.now() + 15000;
+            while (!resolved && Date.now() < resolveDeadline) {
+              const r = await client.api.get(`/engine-rest/incident/${incidents[0].id}`);
+              resolved = r.data?.state === 'resolved';
+              if (!resolved) await sleep(500);
+            }
+            assert(resolved, 'expected the incident to be resolved via gRPC ResolveIncident on a partitioned instance');
+          } finally {
+            await zbc.close();
+          }
         },
       },
     ],

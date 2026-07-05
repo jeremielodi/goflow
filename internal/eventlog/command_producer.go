@@ -103,6 +103,42 @@ func (p *CommandProducer) FailJob(ctx context.Context, instanceID, jobID uuid.UU
 	return p.send(ctx, instanceID.String(), env)
 }
 
+func (p *CommandProducer) SetJobRetries(ctx context.Context, instanceID, jobID uuid.UUID, retries int32) error {
+	env := &pb.CommandEnvelope{
+		CommandId:         uuid.NewString(),
+		ProcessInstanceId: instanceID.String(),
+		Command: &pb.CommandEnvelope_SetJobRetries{SetJobRetries: &pb.SetJobRetriesCommand{
+			JobId:   jobID.String(),
+			Retries: retries,
+		}},
+	}
+	return p.send(ctx, instanceID.String(), env)
+}
+
+func (p *CommandProducer) ResolveIncident(ctx context.Context, instanceID, incidentID uuid.UUID) error {
+	env := &pb.CommandEnvelope{
+		CommandId:         uuid.NewString(),
+		ProcessInstanceId: instanceID.String(),
+		Command: &pb.CommandEnvelope_ResolveIncident{ResolveIncident: &pb.ResolveIncidentCommand{
+			IncidentId: incidentID.String(),
+		}},
+	}
+	return p.send(ctx, instanceID.String(), env)
+}
+
+func (p *CommandProducer) FireTimer(ctx context.Context, instanceID, timerID, execID uuid.UUID, targetNodeID string) error {
+	env := &pb.CommandEnvelope{
+		CommandId:         uuid.NewString(),
+		ProcessInstanceId: instanceID.String(),
+		Command: &pb.CommandEnvelope_TimerFired{TimerFired: &pb.TimerFiredCommand{
+			TimerId:      timerID.String(),
+			ExecutionId:  execID.String(),
+			TargetNodeId: targetNodeID,
+		}},
+	}
+	return p.send(ctx, instanceID.String(), env)
+}
+
 func (p *CommandProducer) send(ctx context.Context, key string, env *pb.CommandEnvelope) error {
 	data, err := proto.Marshal(env)
 	if err != nil {

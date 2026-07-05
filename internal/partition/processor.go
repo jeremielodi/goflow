@@ -151,6 +151,12 @@ func (p *Processor) handle(ctx context.Context, data []byte) error {
 		return p.handleCompleteJob(ctx, cmd.CompleteJob)
 	case *pb.CommandEnvelope_FailJob:
 		return p.handleFailJob(ctx, cmd.FailJob)
+	case *pb.CommandEnvelope_SetJobRetries:
+		return p.handleSetJobRetries(cmd.SetJobRetries)
+	case *pb.CommandEnvelope_ResolveIncident:
+		return p.handleResolveIncident(cmd.ResolveIncident)
+	case *pb.CommandEnvelope_TimerFired:
+		return p.handleTimerFired(ctx, cmd.TimerFired)
 	default:
 		log.Printf("partition processor: unknown command type for instance %s", env.ProcessInstanceId)
 		return nil
@@ -324,6 +330,75 @@ func (p *Processor) handleFailJob(ctx context.Context, cmd *pb.FailJobCommand) e
 	rt := runtime.NewRuntime(result.Graph, p.db, p.dispatcher)
 	if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
 		return fmt.Errorf("resume execution after boundary-triggered failure for job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// handleSetJobRetries and handleResolveIncident, unlike every handler
+// above, never trigger a follow-up ExecuteExecution walk — neither ever
+// moves an execution's graph position — so a redelivered command is
+// simply safe to re-apply as-is: no status check, no resumeIfStranded, no
+// stranding case at all.
+
+func (p *Processor) handleSetJobRetries(cmd *pb.SetJobRetriesCommand) error {
+	jobID, err := uuid.Parse(cmd.JobId)
+	if err != nil {
+		return fmt.Errorf("invalid job_id %q: %w", cmd.JobId, err)
+	}
+	if err := service.SetJobRetries(p.db, jobID, int(cmd.Retries)); err != nil {
+		return fmt.Errorf("set retries for job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+func (p *Processor) handleResolveIncident(cmd *pb.ResolveIncidentCommand) error {
+	incidentID, err := uuid.Parse(cmd.IncidentId)
+	if err != nil {
+		return fmt.Errorf("invalid incident_id %q: %w", cmd.IncidentId, err)
+	}
+	if err := service.ResolveIncident(p.db, incidentID); err != nil {
+		return fmt.Errorf("resolve incident %s: %w", incidentID, err)
+	}
+	return nil
+}
+
+// handleTimerFired resumes an execution that was parked waiting for a
+// timer — the Phase 6 counterpart of Start/Complete/Fail's redelivery
+// safety, but simpler: executeIntermediateTimer (internal/runtime/executor_timer.go)
+// sets executions.status = 'waiting' when it creates the timer job, the
+// exact same convention executeServiceTask uses for jobs, so "status is
+// still 'waiting'" is the correct "safe to resume" signal here too.
+func (p *Processor) handleTimerFired(ctx context.Context, cmd *pb.TimerFiredCommand) error {
+	execID, err := uuid.Parse(cmd.ExecutionId)
+	if err != nil {
+		return fmt.Errorf("invalid execution_id %q: %w", cmd.ExecutionId, err)
+	}
+
+	var row struct {
+		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
+		Status            string    `db:"status"`
+	}
+	if err := p.db.Get(&row, `SELECT process_instance_id, status FROM public.executions WHERE id = $1`, execID); err != nil {
+		return fmt.Errorf("check execution state for %s: %w", execID, err)
+	}
+	if row.Status != "waiting" {
+		// Already applied by a prior attempt at this exact command
+		// (redelivery after a commit-then-crash) — a safe no-op.
+		return nil
+	}
+
+	if _, _, err := service.ResumeTimerExecution(p.db, p.dispatcher, execID, cmd.TargetNodeId); err != nil {
+		return fmt.Errorf("resume timer execution %s: %w", execID, err)
+	}
+
+	engineRepo := repository.NewEngineRepository(p.db, p.dispatcher)
+	graph, err := engineRepo.GetProcessGraphByInstanceID(row.ProcessInstanceID)
+	if err != nil {
+		return fmt.Errorf("load graph to resume timer execution %s: %w", execID, err)
+	}
+	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
+	if err := rt.ExecuteExecution(ctx, execID); err != nil {
+		return fmt.Errorf("execute after timer fired for %s: %w", execID, err)
 	}
 	return nil
 }

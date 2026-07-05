@@ -5,9 +5,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/models"
+	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -159,41 +160,19 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"message": "retries must be > 0"})
 	}
 
-	tx, err := ctrl.db.Beginx()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to begin transaction"})
-	}
-	defer tx.Rollback()
-
-	// Reset job to pending with new retries
-	if _, err := tx.Exec(`
-		UPDATE public.jobs
-		SET status = 'pending', retries = $1, locked_by = NULL, locked_until = NULL, updated_at = NOW()
-		WHERE id = $2
-	`, body.Retries, jobID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to update job retries", "error": err.Error()})
-	}
-
-	// Fetch the open incident's identity (if any) before resolving it, so
-	// a Phase 0 shadow event can be published after commit — see below.
-	var incidentID, incidentInstanceID uuid.UUID
-	hasOpenIncident := tx.QueryRowx(`
-		SELECT id, process_instance_id FROM public.incidents WHERE job_id = $1 AND state = 'open' LIMIT 1
-	`, jobID).Scan(&incidentID, &incidentInstanceID) == nil
-
-	// Resolve any open incident for this job
-	if err := ctrl.incidentRepo.ResolveByJobID(tx, jobID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to resolve incident", "error": err.Error()})
-	}
-
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "failed to commit"})
-	}
-
-	if hasOpenIncident {
-		if p := eventlog.Global(); p != nil {
-			p.IncidentResolved(incidentInstanceID.String(), incidentID.String(), jobID.String())
+	// Gap-closing pass after Phase 5 (see
+	// architecture/event-sourced-kafka-design.md): jobs belonging to a
+	// partitioned-write-path instance set retries via the Command Gateway
+	// instead of a direct Postgres transaction.
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.SetJobRetries(instanceID, jobID, body.Retries); err != nil {
+			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 		}
+		return c.JSON(fiber.Map{"message": "retries set, incident resolved"})
+	}
+
+	if err := service.SetJobRetries(ctrl.db, jobID, body.Retries); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
 
 	return c.JSON(fiber.Map{"message": "retries set, incident resolved"})

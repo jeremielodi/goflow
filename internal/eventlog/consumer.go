@@ -336,6 +336,9 @@ func toRecentEvent(env *pb.Envelope) RecentEvent {
 	case *pb.Envelope_SignalBroadcast:
 		base.Type = "SignalBroadcast"
 		base.Detail = e.SignalBroadcast
+	case *pb.Envelope_JobRetriesSet:
+		base.Type = "JobRetriesSet"
+		base.Detail = e.JobRetriesSet
 	default:
 		base.Type = "Unknown"
 	}

@@ -45,6 +45,34 @@ message FailJobCommand {
   string error_code = 4;
 }
 
+// SetJobRetriesCommand / ResolveIncidentCommand (gap-closing pass after
+// Phase 5): unlike Start/Complete/Fail, neither of these ever needs a
+// follow-up ExecuteExecution walk (they never move an execution's graph
+// position), so the Partition Processor's handlers for them have no
+// redelivery-stranding case to guard against — a redelivered command just
+// re-applies the same idempotent UPDATE.
+message SetJobRetriesCommand {
+  string job_id = 1;
+  int32 retries = 2;
+}
+
+message ResolveIncidentCommand {
+  string incident_id = 1;
+}
+
+// TimerFiredCommand (Phase 6): unlike every command above, nothing waits
+// for a confirmation event after this is produced — TimerScheduler's
+// background poll loop isn't a caller blocked on a response, it just
+// produces this and moves on to the next due timer. target_node_id is
+// already resolved from the timer's payload before producing (see
+// service.ParseTimerTargetNode), so the Partition Processor doesn't need
+// to re-parse it.
+message TimerFiredCommand {
+  string timer_id = 1;
+  string execution_id = 2;
+  string target_node_id = 3;
+}
+
 message CommandEnvelope {
   string command_id = 1;
   string process_instance_id = 2;
@@ -53,5 +81,8 @@ message CommandEnvelope {
     StartProcessCommand start_process = 10;
     CompleteJobCommand complete_job = 11;
     FailJobCommand fail_job = 12;
+    SetJobRetriesCommand set_job_retries = 13;
+    ResolveIncidentCommand resolve_incident = 14;
+    TimerFiredCommand timer_fired = 15;
   }
 }

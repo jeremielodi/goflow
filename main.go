@@ -90,6 +90,7 @@ func main() {
 	// stay nil, and every process definition either already defaults to
 	// write_path='legacy' or was never flippable in the first place since
 	// PATCH .../write-path itself needs this running to be meaningful).
+	var timerRouter service.TimerPartitionRouter
 	if eventLogConsumer != nil {
 		brokers := strings.Split(util.DotEnvVariable("KAFKA_BROKERS"), ",")
 		const partitionCount = 12
@@ -105,6 +106,14 @@ func main() {
 		}
 		go processor.Run(context.Background())
 		log.Println("✅ Partition processor started (partitions:", partitionCount, ")")
+
+		// Phase 6 (see architecture/event-sourced-kafka-design.md): routes
+		// a due timer belonging to a partitioned-write-path instance
+		// through the Command Gateway instead of TimerScheduler's own
+		// direct resume write — see service.TimerPartitionRouter's doc
+		// comment for why this needs a dependency-inversion interface
+		// rather than a plain function call.
+		timerRouter = partition.NewTimerRouter(db)
 	}
 
 	// Create SSE listener for real-time events
@@ -223,7 +232,7 @@ func main() {
 	v2FlownodeInstanceCtrl := apiv2.NewFlownodeInstanceController(db)
 	v2VariableCtrl := apiv2.NewVariableController(db)
 
-	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
+	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher, timerRouter)
 	go timerScheduler.Start(context.Background())
 	defer timerScheduler.Stop()
 

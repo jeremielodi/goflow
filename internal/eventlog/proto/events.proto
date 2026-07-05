@@ -116,6 +116,16 @@ message SignalBroadcast {
   int32 resumed_count = 2;
 }
 
+// JobRetriesSet (Phase 5 gap-closing pass): published unconditionally by
+// service.SetJobRetries, unlike IncidentResolved (field 14) which only
+// fires when an open incident actually existed for the job — this is the
+// Command Gateway's reliable confirmation signal regardless of that.
+message JobRetriesSet {
+  string job_id = 1;
+  string process_instance_id = 2;
+  int32 retries = 3;
+}
+
 // Envelope is the single message type actually written to the Kafka/Redpanda
 // topic. process_instance_id is duplicated at this level (also present on
 // every inner event) so a consumer can route/partition without unwrapping
@@ -141,5 +151,6 @@ message Envelope {
     TimerTriggered timer_triggered = 22;
     MessageCorrelated message_correlated = 23;
     SignalBroadcast signal_broadcast = 24;
+    JobRetriesSet job_retries_set = 25;
   }
 }

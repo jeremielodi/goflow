@@ -170,6 +170,90 @@ func FailJob(instanceID, jobID uuid.UUID, retriesRemaining int, errorMessage, er
 	}
 }
 
+// SetJobRetries is the Command Gateway's bridge for resetting a job's
+// retries (and resolving any open incident for it) on a partitioned-
+// write-path instance.
+func SetJobRetries(instanceID, jobID uuid.UUID, retries int) error {
+	cmdProducer := eventlog.GlobalCommand()
+	consumer := eventlog.GlobalConsumer()
+	if cmdProducer == nil || consumer == nil {
+		return fmt.Errorf("partitioned write path is not configured on this instance")
+	}
+
+	// Waits on JobRetriesSet (correlated by job_id) — published
+	// unconditionally by service.SetJobRetries regardless of whether an
+	// open incident existed, unlike IncidentResolved.
+	waiter := consumer.Register(instanceID.String(), "JobRetriesSet")
+
+	produceCtx, cancel := context.WithTimeout(context.Background(), bridgeTimeout)
+	defer cancel()
+	if err := cmdProducer.SetJobRetries(produceCtx, instanceID, jobID, int32(retries)); err != nil {
+		waiter.Cancel()
+		return err
+	}
+
+	deadline := time.Now().Add(bridgeTimeout)
+	for {
+		next := consumer.Register(instanceID.String(), "JobRetriesSet")
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm retries were set: timed out waiting for job %s", jobID)
+		}
+		env, err := waiter.Await(context.Background(), remaining)
+		if err != nil {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm retries were set: %w", err)
+		}
+		if jr := env.GetJobRetriesSet(); jr != nil && jr.JobId == jobID.String() {
+			next.Cancel()
+			return nil
+		}
+		waiter = next
+	}
+}
+
+// ResolveIncident is the Command Gateway's bridge for resolving an
+// incident belonging to a partitioned-write-path instance.
+func ResolveIncident(instanceID, incidentID uuid.UUID) error {
+	cmdProducer := eventlog.GlobalCommand()
+	consumer := eventlog.GlobalConsumer()
+	if cmdProducer == nil || consumer == nil {
+		return fmt.Errorf("partitioned write path is not configured on this instance")
+	}
+
+	waiter := consumer.Register(instanceID.String(), "IncidentResolved")
+
+	produceCtx, cancel := context.WithTimeout(context.Background(), bridgeTimeout)
+	defer cancel()
+	if err := cmdProducer.ResolveIncident(produceCtx, instanceID, incidentID); err != nil {
+		waiter.Cancel()
+		return err
+	}
+
+	deadline := time.Now().Add(bridgeTimeout)
+	for {
+		next := consumer.Register(instanceID.String(), "IncidentResolved")
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm incident resolution: timed out waiting for incident %s", incidentID)
+		}
+		env, err := waiter.Await(context.Background(), remaining)
+		if err != nil {
+			next.Cancel()
+			return fmt.Errorf("partitioned engine did not confirm incident resolution: %w", err)
+		}
+		if ir := env.GetIncidentResolved(); ir != nil && ir.IncidentId == incidentID.String() {
+			next.Cancel()
+			return nil
+		}
+		waiter = next
+	}
+}
+
 // LookupJobOwner resolves which write path owns jobID, without importing
 // internal/service (see package doc). Both of this codebase's job-complete
 // call sites (internal/api's REST handler, internal/zeebegrpc's RPC) call
@@ -191,4 +275,40 @@ func LookupJobOwner(db *sqlx.DB, jobID uuid.UUID) (instanceID uuid.UUID, writePa
 		return uuid.Nil, "", err
 	}
 	return row.ProcessInstanceID, row.WritePath, nil
+}
+
+// LookupIncidentOwner resolves which write path owns incidentID, the
+// ResolveIncident-side counterpart of LookupJobOwner.
+func LookupIncidentOwner(db *sqlx.DB, incidentID uuid.UUID) (instanceID uuid.UUID, writePath string, err error) {
+	var row struct {
+		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
+		WritePath         string    `db:"write_path"`
+	}
+	err = db.Get(&row, `
+		SELECT i.process_instance_id, pd.write_path
+		FROM public.incidents i
+		JOIN public.process_instances pi ON pi.id = i.process_instance_id
+		JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
+		WHERE i.id = $1
+	`, incidentID)
+	if err != nil {
+		return uuid.Nil, "", err
+	}
+	return row.ProcessInstanceID, row.WritePath, nil
+}
+
+// LookupInstanceOwner resolves which write path owns instanceID directly
+// — used by TimerRouter (timer_router.go), which starts from a timer's
+// process_instance_id rather than a job or incident id.
+func LookupInstanceOwner(db *sqlx.DB, instanceID uuid.UUID) (writePath string, err error) {
+	err = db.Get(&writePath, `
+		SELECT pd.write_path
+		FROM public.process_instances pi
+		JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
+		WHERE pi.id = $1
+	`, instanceID)
+	if err != nil {
+		return "", err
+	}
+	return writePath, nil
 }

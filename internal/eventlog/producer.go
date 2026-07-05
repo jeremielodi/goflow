@@ -137,6 +137,8 @@ func envelopeEventType(env *pb.Envelope) string {
 		return "MessageCorrelated"
 	case *pb.Envelope_SignalBroadcast:
 		return "SignalBroadcast"
+	case *pb.Envelope_JobRetriesSet:
+		return "JobRetriesSet"
 	default:
 		return "Unknown"
 	}
@@ -291,6 +293,19 @@ func (p *Producer) SignalBroadcast(signalName string, resumedCount int32) {
 		Event: &pb.Envelope_SignalBroadcast{SignalBroadcast: &pb.SignalBroadcast{
 			SignalName:   signalName,
 			ResumedCount: resumedCount,
+		}},
+	})
+}
+
+// JobRetriesSet is published unconditionally by service.SetJobRetries,
+// unlike IncidentResolved which only fires when an open incident actually
+// existed for the job.
+func (p *Producer) JobRetriesSet(instanceID, jobID string, retries int32) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_JobRetriesSet{JobRetriesSet: &pb.JobRetriesSet{
+			JobId:             jobID,
+			ProcessInstanceId: instanceID,
+			Retries:           retries,
 		}},
 	})
 }

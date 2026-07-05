@@ -930,6 +930,66 @@ func (x *SignalBroadcast) GetResumedCount() int32 {
 	return 0
 }
 
+type JobRetriesSet struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	JobId             string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	ProcessInstanceId string                 `protobuf:"bytes,2,opt,name=process_instance_id,json=processInstanceId,proto3" json:"process_instance_id,omitempty"`
+	Retries           int32                  `protobuf:"varint,3,opt,name=retries,proto3" json:"retries,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *JobRetriesSet) Reset() {
+	*x = JobRetriesSet{}
+	mi := &file_events_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JobRetriesSet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JobRetriesSet) ProtoMessage() {}
+
+func (x *JobRetriesSet) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JobRetriesSet.ProtoReflect.Descriptor instead.
+func (*JobRetriesSet) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *JobRetriesSet) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *JobRetriesSet) GetProcessInstanceId() string {
+	if x != nil {
+		return x.ProcessInstanceId
+	}
+	return ""
+}
+
+func (x *JobRetriesSet) GetRetries() int32 {
+	if x != nil {
+		return x.Retries
+	}
+	return 0
+}
+
 type Envelope struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	EventId           string                 `protobuf:"bytes,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
@@ -952,6 +1012,7 @@ type Envelope struct {
 	//	*Envelope_TimerTriggered
 	//	*Envelope_MessageCorrelated
 	//	*Envelope_SignalBroadcast
+	//	*Envelope_JobRetriesSet
 	Event         isEnvelope_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -959,7 +1020,7 @@ type Envelope struct {
 
 func (x *Envelope) Reset() {
 	*x = Envelope{}
-	mi := &file_events_proto_msgTypes[15]
+	mi := &file_events_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -971,7 +1032,7 @@ func (x *Envelope) String() string {
 func (*Envelope) ProtoMessage() {}
 
 func (x *Envelope) ProtoReflect() protoreflect.Message {
-	mi := &file_events_proto_msgTypes[15]
+	mi := &file_events_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -984,7 +1045,7 @@ func (x *Envelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Envelope.ProtoReflect.Descriptor instead.
 func (*Envelope) Descriptor() ([]byte, []int) {
-	return file_events_proto_rawDescGZIP(), []int{15}
+	return file_events_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Envelope) GetEventId() string {
@@ -1150,6 +1211,15 @@ func (x *Envelope) GetSignalBroadcast() *SignalBroadcast {
 	return nil
 }
 
+func (x *Envelope) GetJobRetriesSet() *JobRetriesSet {
+	if x != nil {
+		if x, ok := x.Event.(*Envelope_JobRetriesSet); ok {
+			return x.JobRetriesSet
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Event interface {
 	isEnvelope_Event()
 }
@@ -1214,6 +1284,10 @@ type Envelope_SignalBroadcast struct {
 	SignalBroadcast *SignalBroadcast `protobuf:"bytes,24,opt,name=signal_broadcast,json=signalBroadcast,proto3,oneof"`
 }
 
+type Envelope_JobRetriesSet struct {
+	JobRetriesSet *JobRetriesSet `protobuf:"bytes,25,opt,name=job_retries_set,json=jobRetriesSet,proto3,oneof"`
+}
+
 func (*Envelope_ProcessStarted) isEnvelope_Event() {}
 
 func (*Envelope_JobCreated) isEnvelope_Event() {}
@@ -1243,6 +1317,8 @@ func (*Envelope_TimerTriggered) isEnvelope_Event() {}
 func (*Envelope_MessageCorrelated) isEnvelope_Event() {}
 
 func (*Envelope_SignalBroadcast) isEnvelope_Event() {}
+
+func (*Envelope_JobRetriesSet) isEnvelope_Event() {}
 
 var File_events_proto protoreflect.FileDescriptor
 
@@ -1316,8 +1392,11 @@ const file_events_proto_rawDesc = "" +
 	"\x0fSignalBroadcast\x12\x1f\n" +
 	"\vsignal_name\x18\x01 \x01(\tR\n" +
 	"signalName\x12#\n" +
-	"\rresumed_count\x18\x02 \x01(\x05R\fresumedCount\"\xb9\n" +
-	"\n" +
+	"\rresumed_count\x18\x02 \x01(\x05R\fresumedCount\"p\n" +
+	"\rJobRetriesSet\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12.\n" +
+	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12\x18\n" +
+	"\aretries\x18\x03 \x01(\x05R\aretries\"\x85\v\n" +
 	"\bEnvelope\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12.\n" +
 	"\x13process_instance_id\x18\x02 \x01(\tR\x11processInstanceId\x12;\n" +
@@ -1340,7 +1419,8 @@ const file_events_proto_rawDesc = "" +
 	"\x0egateway_joined\x18\x15 \x01(\v2 .eventlog_protocol.GatewayJoinedH\x00R\rgatewayJoined\x12L\n" +
 	"\x0ftimer_triggered\x18\x16 \x01(\v2!.eventlog_protocol.TimerTriggeredH\x00R\x0etimerTriggered\x12U\n" +
 	"\x12message_correlated\x18\x17 \x01(\v2$.eventlog_protocol.MessageCorrelatedH\x00R\x11messageCorrelated\x12O\n" +
-	"\x10signal_broadcast\x18\x18 \x01(\v2\".eventlog_protocol.SignalBroadcastH\x00R\x0fsignalBroadcastB\a\n" +
+	"\x10signal_broadcast\x18\x18 \x01(\v2\".eventlog_protocol.SignalBroadcastH\x00R\x0fsignalBroadcast\x12J\n" +
+	"\x0fjob_retries_set\x18\x19 \x01(\v2 .eventlog_protocol.JobRetriesSetH\x00R\rjobRetriesSetB\a\n" +
 	"\x05eventB4Z2github.com/jeremielodi/goflow/internal/eventlog/pbb\x06proto3"
 
 var (
@@ -1355,7 +1435,7 @@ func file_events_proto_rawDescGZIP() []byte {
 	return file_events_proto_rawDescData
 }
 
-var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_events_proto_goTypes = []any{
 	(*ProcessStarted)(nil),        // 0: eventlog_protocol.ProcessStarted
 	(*JobCreated)(nil),            // 1: eventlog_protocol.JobCreated
@@ -1372,11 +1452,12 @@ var file_events_proto_goTypes = []any{
 	(*TimerTriggered)(nil),        // 12: eventlog_protocol.TimerTriggered
 	(*MessageCorrelated)(nil),     // 13: eventlog_protocol.MessageCorrelated
 	(*SignalBroadcast)(nil),       // 14: eventlog_protocol.SignalBroadcast
-	(*Envelope)(nil),              // 15: eventlog_protocol.Envelope
-	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
+	(*JobRetriesSet)(nil),         // 15: eventlog_protocol.JobRetriesSet
+	(*Envelope)(nil),              // 16: eventlog_protocol.Envelope
+	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
 }
 var file_events_proto_depIdxs = []int32{
-	16, // 0: eventlog_protocol.Envelope.occurred_at:type_name -> google.protobuf.Timestamp
+	17, // 0: eventlog_protocol.Envelope.occurred_at:type_name -> google.protobuf.Timestamp
 	0,  // 1: eventlog_protocol.Envelope.process_started:type_name -> eventlog_protocol.ProcessStarted
 	1,  // 2: eventlog_protocol.Envelope.job_created:type_name -> eventlog_protocol.JobCreated
 	2,  // 3: eventlog_protocol.Envelope.job_completed:type_name -> eventlog_protocol.JobCompleted
@@ -1392,11 +1473,12 @@ var file_events_proto_depIdxs = []int32{
 	12, // 13: eventlog_protocol.Envelope.timer_triggered:type_name -> eventlog_protocol.TimerTriggered
 	13, // 14: eventlog_protocol.Envelope.message_correlated:type_name -> eventlog_protocol.MessageCorrelated
 	14, // 15: eventlog_protocol.Envelope.signal_broadcast:type_name -> eventlog_protocol.SignalBroadcast
-	16, // [16:16] is the sub-list for method output_type
-	16, // [16:16] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	15, // 16: eventlog_protocol.Envelope.job_retries_set:type_name -> eventlog_protocol.JobRetriesSet
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_events_proto_init() }
@@ -1404,7 +1486,7 @@ func file_events_proto_init() {
 	if File_events_proto != nil {
 		return
 	}
-	file_events_proto_msgTypes[15].OneofWrappers = []any{
+	file_events_proto_msgTypes[16].OneofWrappers = []any{
 		(*Envelope_ProcessStarted)(nil),
 		(*Envelope_JobCreated)(nil),
 		(*Envelope_JobCompleted)(nil),
@@ -1420,6 +1502,7 @@ func file_events_proto_init() {
 		(*Envelope_TimerTriggered)(nil),
 		(*Envelope_MessageCorrelated)(nil),
 		(*Envelope_SignalBroadcast)(nil),
+		(*Envelope_JobRetriesSet)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1427,7 +1510,7 @@ func file_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_events_proto_rawDesc), len(file_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

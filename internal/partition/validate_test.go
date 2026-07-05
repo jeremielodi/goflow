@@ -314,3 +314,55 @@ func TestValidateShape_Diamond_WithBoundaryEvent_Rejected(t *testing.T) {
 		t.Fatal("expected a diamond shape with any boundary event present to be rejected — diamond branches don't support boundary events")
 	}
 }
+
+func TestValidateShape_TimerOnly_Passes(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "timer", "")}},
+		&engine.Node{ID: "timer", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f2", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err != nil {
+		t.Fatalf("expected a start -> timer -> end shape to pass, got: %v", err)
+	}
+}
+
+func TestValidateShape_TimerMixedWithTask_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "timer", "")}},
+		&engine.Node{ID: "timer", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f2", "task", "")}},
+		&engine.Node{ID: "task", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a timer mixed with a service task to be rejected — timers are only supported in isolation this phase")
+	}
+}
+
+func TestValidateShape_TwoTimers_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "timer1", "")}},
+		&engine.Node{ID: "timer1", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f2", "timer2", "")}},
+		&engine.Node{ID: "timer2", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f3", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a chain of two timers to be rejected — at most one timer is supported this phase")
+	}
+}
+
+func TestValidateShape_Diamond_WithTimer_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "gw", "")}},
+		&engine.Node{ID: "gw", Type: engine.ExclusiveGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", `${branch == "a"}`),
+			flow("f3", "taskB", `${branch == "b"}`),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "end", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "end", "")}},
+		&engine.Node{ID: "timer", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a diamond shape with a timer node present to be rejected")
+	}
+}

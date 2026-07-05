@@ -217,6 +217,162 @@ func (x *FailJobCommand) GetErrorCode() string {
 	return ""
 }
 
+type SetJobRetriesCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Retries       int32                  `protobuf:"varint,2,opt,name=retries,proto3" json:"retries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetJobRetriesCommand) Reset() {
+	*x = SetJobRetriesCommand{}
+	mi := &file_commands_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetJobRetriesCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetJobRetriesCommand) ProtoMessage() {}
+
+func (x *SetJobRetriesCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_commands_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetJobRetriesCommand.ProtoReflect.Descriptor instead.
+func (*SetJobRetriesCommand) Descriptor() ([]byte, []int) {
+	return file_commands_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *SetJobRetriesCommand) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *SetJobRetriesCommand) GetRetries() int32 {
+	if x != nil {
+		return x.Retries
+	}
+	return 0
+}
+
+type ResolveIncidentCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	IncidentId    string                 `protobuf:"bytes,1,opt,name=incident_id,json=incidentId,proto3" json:"incident_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveIncidentCommand) Reset() {
+	*x = ResolveIncidentCommand{}
+	mi := &file_commands_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveIncidentCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveIncidentCommand) ProtoMessage() {}
+
+func (x *ResolveIncidentCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_commands_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveIncidentCommand.ProtoReflect.Descriptor instead.
+func (*ResolveIncidentCommand) Descriptor() ([]byte, []int) {
+	return file_commands_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ResolveIncidentCommand) GetIncidentId() string {
+	if x != nil {
+		return x.IncidentId
+	}
+	return ""
+}
+
+type TimerFiredCommand struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TimerId       string                 `protobuf:"bytes,1,opt,name=timer_id,json=timerId,proto3" json:"timer_id,omitempty"`
+	ExecutionId   string                 `protobuf:"bytes,2,opt,name=execution_id,json=executionId,proto3" json:"execution_id,omitempty"`
+	TargetNodeId  string                 `protobuf:"bytes,3,opt,name=target_node_id,json=targetNodeId,proto3" json:"target_node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TimerFiredCommand) Reset() {
+	*x = TimerFiredCommand{}
+	mi := &file_commands_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimerFiredCommand) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimerFiredCommand) ProtoMessage() {}
+
+func (x *TimerFiredCommand) ProtoReflect() protoreflect.Message {
+	mi := &file_commands_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimerFiredCommand.ProtoReflect.Descriptor instead.
+func (*TimerFiredCommand) Descriptor() ([]byte, []int) {
+	return file_commands_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *TimerFiredCommand) GetTimerId() string {
+	if x != nil {
+		return x.TimerId
+	}
+	return ""
+}
+
+func (x *TimerFiredCommand) GetExecutionId() string {
+	if x != nil {
+		return x.ExecutionId
+	}
+	return ""
+}
+
+func (x *TimerFiredCommand) GetTargetNodeId() string {
+	if x != nil {
+		return x.TargetNodeId
+	}
+	return ""
+}
+
 type CommandEnvelope struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
 	CommandId         string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
@@ -226,6 +382,9 @@ type CommandEnvelope struct {
 	//	*CommandEnvelope_StartProcess
 	//	*CommandEnvelope_CompleteJob
 	//	*CommandEnvelope_FailJob
+	//	*CommandEnvelope_SetJobRetries
+	//	*CommandEnvelope_ResolveIncident
+	//	*CommandEnvelope_TimerFired
 	Command       isCommandEnvelope_Command `protobuf_oneof:"command"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -233,7 +392,7 @@ type CommandEnvelope struct {
 
 func (x *CommandEnvelope) Reset() {
 	*x = CommandEnvelope{}
-	mi := &file_commands_proto_msgTypes[3]
+	mi := &file_commands_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -245,7 +404,7 @@ func (x *CommandEnvelope) String() string {
 func (*CommandEnvelope) ProtoMessage() {}
 
 func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_commands_proto_msgTypes[3]
+	mi := &file_commands_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -258,7 +417,7 @@ func (x *CommandEnvelope) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandEnvelope.ProtoReflect.Descriptor instead.
 func (*CommandEnvelope) Descriptor() ([]byte, []int) {
-	return file_commands_proto_rawDescGZIP(), []int{3}
+	return file_commands_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CommandEnvelope) GetCommandId() string {
@@ -309,6 +468,33 @@ func (x *CommandEnvelope) GetFailJob() *FailJobCommand {
 	return nil
 }
 
+func (x *CommandEnvelope) GetSetJobRetries() *SetJobRetriesCommand {
+	if x != nil {
+		if x, ok := x.Command.(*CommandEnvelope_SetJobRetries); ok {
+			return x.SetJobRetries
+		}
+	}
+	return nil
+}
+
+func (x *CommandEnvelope) GetResolveIncident() *ResolveIncidentCommand {
+	if x != nil {
+		if x, ok := x.Command.(*CommandEnvelope_ResolveIncident); ok {
+			return x.ResolveIncident
+		}
+	}
+	return nil
+}
+
+func (x *CommandEnvelope) GetTimerFired() *TimerFiredCommand {
+	if x != nil {
+		if x, ok := x.Command.(*CommandEnvelope_TimerFired); ok {
+			return x.TimerFired
+		}
+	}
+	return nil
+}
+
 type isCommandEnvelope_Command interface {
 	isCommandEnvelope_Command()
 }
@@ -325,11 +511,29 @@ type CommandEnvelope_FailJob struct {
 	FailJob *FailJobCommand `protobuf:"bytes,12,opt,name=fail_job,json=failJob,proto3,oneof"`
 }
 
+type CommandEnvelope_SetJobRetries struct {
+	SetJobRetries *SetJobRetriesCommand `protobuf:"bytes,13,opt,name=set_job_retries,json=setJobRetries,proto3,oneof"`
+}
+
+type CommandEnvelope_ResolveIncident struct {
+	ResolveIncident *ResolveIncidentCommand `protobuf:"bytes,14,opt,name=resolve_incident,json=resolveIncident,proto3,oneof"`
+}
+
+type CommandEnvelope_TimerFired struct {
+	TimerFired *TimerFiredCommand `protobuf:"bytes,15,opt,name=timer_fired,json=timerFired,proto3,oneof"`
+}
+
 func (*CommandEnvelope_StartProcess) isCommandEnvelope_Command() {}
 
 func (*CommandEnvelope_CompleteJob) isCommandEnvelope_Command() {}
 
 func (*CommandEnvelope_FailJob) isCommandEnvelope_Command() {}
+
+func (*CommandEnvelope_SetJobRetries) isCommandEnvelope_Command() {}
+
+func (*CommandEnvelope_ResolveIncident) isCommandEnvelope_Command() {}
+
+func (*CommandEnvelope_TimerFired) isCommandEnvelope_Command() {}
 
 var File_commands_proto protoreflect.FileDescriptor
 
@@ -350,7 +554,17 @@ const file_commands_proto_rawDesc = "" +
 	"\x11retries_remaining\x18\x02 \x01(\x05R\x10retriesRemaining\x12#\n" +
 	"\rerror_message\x18\x03 \x01(\tR\ferrorMessage\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x04 \x01(\tR\terrorCode\"\xc6\x02\n" +
+	"error_code\x18\x04 \x01(\tR\terrorCode\"G\n" +
+	"\x14SetJobRetriesCommand\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x18\n" +
+	"\aretries\x18\x02 \x01(\x05R\aretries\"9\n" +
+	"\x16ResolveIncidentCommand\x12\x1f\n" +
+	"\vincident_id\x18\x01 \x01(\tR\n" +
+	"incidentId\"w\n" +
+	"\x11TimerFiredCommand\x12\x19\n" +
+	"\btimer_id\x18\x01 \x01(\tR\atimerId\x12!\n" +
+	"\fexecution_id\x18\x02 \x01(\tR\vexecutionId\x12$\n" +
+	"\x0etarget_node_id\x18\x03 \x01(\tR\ftargetNodeId\"\xba\x04\n" +
 	"\x0fCommandEnvelope\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x12.\n" +
@@ -358,7 +572,11 @@ const file_commands_proto_rawDesc = "" +
 	"\rstart_process\x18\n" +
 	" \x01(\v2&.eventlog_protocol.StartProcessCommandH\x00R\fstartProcess\x12J\n" +
 	"\fcomplete_job\x18\v \x01(\v2%.eventlog_protocol.CompleteJobCommandH\x00R\vcompleteJob\x12>\n" +
-	"\bfail_job\x18\f \x01(\v2!.eventlog_protocol.FailJobCommandH\x00R\afailJobB\t\n" +
+	"\bfail_job\x18\f \x01(\v2!.eventlog_protocol.FailJobCommandH\x00R\afailJob\x12Q\n" +
+	"\x0fset_job_retries\x18\r \x01(\v2'.eventlog_protocol.SetJobRetriesCommandH\x00R\rsetJobRetries\x12V\n" +
+	"\x10resolve_incident\x18\x0e \x01(\v2).eventlog_protocol.ResolveIncidentCommandH\x00R\x0fresolveIncident\x12G\n" +
+	"\vtimer_fired\x18\x0f \x01(\v2$.eventlog_protocol.TimerFiredCommandH\x00R\n" +
+	"timerFiredB\t\n" +
 	"\acommandB4Z2github.com/jeremielodi/goflow/internal/eventlog/pbb\x06proto3"
 
 var (
@@ -373,22 +591,28 @@ func file_commands_proto_rawDescGZIP() []byte {
 	return file_commands_proto_rawDescData
 }
 
-var file_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_commands_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_commands_proto_goTypes = []any{
-	(*StartProcessCommand)(nil), // 0: eventlog_protocol.StartProcessCommand
-	(*CompleteJobCommand)(nil),  // 1: eventlog_protocol.CompleteJobCommand
-	(*FailJobCommand)(nil),      // 2: eventlog_protocol.FailJobCommand
-	(*CommandEnvelope)(nil),     // 3: eventlog_protocol.CommandEnvelope
+	(*StartProcessCommand)(nil),    // 0: eventlog_protocol.StartProcessCommand
+	(*CompleteJobCommand)(nil),     // 1: eventlog_protocol.CompleteJobCommand
+	(*FailJobCommand)(nil),         // 2: eventlog_protocol.FailJobCommand
+	(*SetJobRetriesCommand)(nil),   // 3: eventlog_protocol.SetJobRetriesCommand
+	(*ResolveIncidentCommand)(nil), // 4: eventlog_protocol.ResolveIncidentCommand
+	(*TimerFiredCommand)(nil),      // 5: eventlog_protocol.TimerFiredCommand
+	(*CommandEnvelope)(nil),        // 6: eventlog_protocol.CommandEnvelope
 }
 var file_commands_proto_depIdxs = []int32{
 	0, // 0: eventlog_protocol.CommandEnvelope.start_process:type_name -> eventlog_protocol.StartProcessCommand
 	1, // 1: eventlog_protocol.CommandEnvelope.complete_job:type_name -> eventlog_protocol.CompleteJobCommand
 	2, // 2: eventlog_protocol.CommandEnvelope.fail_job:type_name -> eventlog_protocol.FailJobCommand
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	3, // 3: eventlog_protocol.CommandEnvelope.set_job_retries:type_name -> eventlog_protocol.SetJobRetriesCommand
+	4, // 4: eventlog_protocol.CommandEnvelope.resolve_incident:type_name -> eventlog_protocol.ResolveIncidentCommand
+	5, // 5: eventlog_protocol.CommandEnvelope.timer_fired:type_name -> eventlog_protocol.TimerFiredCommand
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_commands_proto_init() }
@@ -396,10 +620,13 @@ func file_commands_proto_init() {
 	if File_commands_proto != nil {
 		return
 	}
-	file_commands_proto_msgTypes[3].OneofWrappers = []any{
+	file_commands_proto_msgTypes[6].OneofWrappers = []any{
 		(*CommandEnvelope_StartProcess)(nil),
 		(*CommandEnvelope_CompleteJob)(nil),
 		(*CommandEnvelope_FailJob)(nil),
+		(*CommandEnvelope_SetJobRetries)(nil),
+		(*CommandEnvelope_ResolveIncident)(nil),
+		(*CommandEnvelope_TimerFired)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -407,7 +634,7 @@ func file_commands_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_commands_proto_rawDesc), len(file_commands_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
