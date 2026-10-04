@@ -73,6 +73,16 @@ message TimerFiredCommand {
   string target_node_id = 3;
 }
 
+// TerminateCommand (gap-closing pass 2): carries its own
+// process_instance_id, same convention as StartProcessCommand, since the
+// Partition Processor's handler needs it directly rather than deriving it
+// via a job/incident join. Reuses service.TerminateProcessInstance
+// verbatim — see architecture/event-sourced-kafka-design.md.
+message TerminateCommand {
+  string process_instance_id = 1;
+  string reason = 2;
+}
+
 message CommandEnvelope {
   string command_id = 1;
   string process_instance_id = 2;
@@ -84,5 +94,6 @@ message CommandEnvelope {
     SetJobRetriesCommand set_job_retries = 13;
     ResolveIncidentCommand resolve_incident = 14;
     TimerFiredCommand timer_fired = 15;
+    TerminateCommand terminate = 16;
   }
 }

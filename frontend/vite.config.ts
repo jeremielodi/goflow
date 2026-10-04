@@ -10,6 +10,8 @@ export default defineConfig({
       '/engine-rest': { target: 'http://localhost:8080', changeOrigin: true },
       '/auth':        { target: 'http://localhost:8080', changeOrigin: true },
       '/users':       { target: 'http://localhost:8080', changeOrigin: true },
+      '/roles':       { target: 'http://localhost:8080', changeOrigin: true },
+      '/actions':     { target: 'http://localhost:8080', changeOrigin: true },
       '/events':      { target: 'http://localhost:8080', changeOrigin: true },
       '/v2':          { target: 'http://localhost:8080', changeOrigin: true },
       '/ws':          { target: 'ws://localhost:8080',   changeOrigin: true, ws: true },

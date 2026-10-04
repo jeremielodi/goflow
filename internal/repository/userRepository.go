@@ -136,15 +136,17 @@ func (r *UserRepository) List() ([]models.User, error) {
 	return users, err
 }
 
-// Delete removes a user by ID.
-func (r *UserRepository) Delete(id uuid.UUID) (sql.Result, error) {
-	// adapter.Delete would be nice, but fallback to Exec
-	return r.db.Exec(`DELETE FROM public.users WHERE id = $1`, id)
-}
-
-// DeleteWithTx removes a user by ID within a transaction.
-func (r *UserRepository) DeleteWithTx(tx *sqlx.Tx, id uuid.UUID) (sql.Result, error) {
-	return tx.Exec(`DELETE FROM public.users WHERE id = $1`, id)
+// Deactivate soft-deletes a user by flipping is_active to false rather than
+// removing the row — a hard DELETE would hit a FK violation for any user
+// that has ever deployed a BPMN, started a process instance, or appeared
+// in an audit log entry (deployments.deployed_by, process_instances.started_by,
+// and audit_logs.user_id all reference users.id with ON DELETE NO ACTION,
+// deliberately not cascaded, since deleting those rows would silently
+// destroy deployment/instance/audit history). is_active is already checked
+// at login time (see UserController.Login) — this reuses that existing
+// column instead of adding a new one.
+func (r *UserRepository) Deactivate(id uuid.UUID) (sql.Result, error) {
+	return r.db.Exec(`UPDATE public.users SET is_active = false, updated_at = NOW() WHERE id = $1`, id)
 }
 
 // ExistsByEmail checks if email already used.

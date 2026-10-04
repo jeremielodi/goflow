@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_ParallelConditionedFlow"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: Suite 34's negative fixture proving internal/partition.
+              ValidateShape rejects a parallel gateway fork flow carrying
+              an explicit condition — the parallel gateway forks
+              unconditionally (AND semantics, every branch runs); a
+              condition on one of its flows would be silently
+              meaningless at runtime (common.ResolveNext never evaluates
+              conditions for a parallel fork), so ValidateShape rejects it
+              outright rather than deploy a shape that would behave
+              differently than its own diagram implies.
+  -->
+
+  <bpmn:process id="ParallelConditionedFlow" name="Parallel Conditioned Flow" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Started">
+      <bpmn:outgoing>Flow_Start_Fork</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:parallelGateway id="fork" name="Fork">
+      <bpmn:incoming>Flow_Start_Fork</bpmn:incoming>
+      <bpmn:outgoing>Flow_Fork_A</bpmn:outgoing>
+      <bpmn:outgoing>Flow_Fork_B</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:serviceTask id="taskA" name="Branch A">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="parallel-branch-a" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Fork_A</bpmn:incoming>
+      <bpmn:outgoing>Flow_A_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="taskB" name="Branch B">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="parallel-branch-b" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_Fork_B</bpmn:incoming>
+      <bpmn:outgoing>Flow_B_Join</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:parallelGateway id="join" name="Join">
+      <bpmn:incoming>Flow_A_Join</bpmn:incoming>
+      <bpmn:incoming>Flow_B_Join</bpmn:incoming>
+      <bpmn:outgoing>Flow_Join_End</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <bpmn:endEvent id="end" name="Done">
+      <bpmn:incoming>Flow_Join_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Fork" sourceRef="start" targetRef="fork" />
+    <bpmn:sequenceFlow id="Flow_Fork_A" sourceRef="fork" targetRef="taskA">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${branch == "a"}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Fork_B" sourceRef="fork" targetRef="taskB" />
+    <bpmn:sequenceFlow id="Flow_A_Join" sourceRef="taskA" targetRef="join" />
+    <bpmn:sequenceFlow id="Flow_B_Join" sourceRef="taskB" targetRef="join" />
+    <bpmn:sequenceFlow id="Flow_Join_End" sourceRef="join" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_ParallelConditionedFlow">
+    <bpmndi:BPMNPlane id="BPMNPlane_ParallelConditionedFlow" bpmnElement="ParallelConditionedFlow">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="fork_di" bpmnElement="fork">
+        <dc:Bounds x="245" y="245" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="taskA_di" bpmnElement="taskA">
+        <dc:Bounds x="360" y="150" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="taskB_di" bpmnElement="taskB">
+        <dc:Bounds x="360" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="join_di" bpmnElement="join">
+        <dc:Bounds x="530" y="245" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="630" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Fork_di" bpmnElement="Flow_Start_Fork">
+        <di:waypoint x="188" y="270" /><di:waypoint x="245" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_A_di" bpmnElement="Flow_Fork_A">
+        <di:waypoint x="270" y="245" /><di:waypoint x="270" y="190" /><di:waypoint x="360" y="190" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Fork_B_di" bpmnElement="Flow_Fork_B">
+        <di:waypoint x="270" y="295" /><di:waypoint x="270" y="360" /><di:waypoint x="360" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_A_Join_di" bpmnElement="Flow_A_Join">
+        <di:waypoint x="460" y="190" /><di:waypoint x="555" y="190" /><di:waypoint x="555" y="245" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_B_Join_di" bpmnElement="Flow_B_Join">
+        <di:waypoint x="460" y="360" /><di:waypoint x="555" y="360" /><di:waypoint x="555" y="295" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Join_End_di" bpmnElement="Flow_Join_End">
+        <di:waypoint x="580" y="270" /><di:waypoint x="630" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

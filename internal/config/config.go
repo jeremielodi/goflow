@@ -16,16 +16,6 @@ type Config struct {
 	ServerPort   string
 	QueueWorkers int
 
-	// Redis configuration
-	RedisHost         string
-	RedisPort         string
-	RedisPassword     string
-	RedisDB           int
-	RedisPrefix       string
-	RedisPoolSize     int
-	RedisMinIdleConns int
-	RedisMaxRetries   int
-
 	// Queue configuration
 	QueueMaxRetries             int
 	QueueRetryBackoffBase       time.Duration
@@ -47,16 +37,6 @@ func LoadConfig() *Config {
 		ServerPort:   getEnv("SERVER_PORT", "8080"),
 		QueueWorkers: getEnvAsInt("QUEUE_WORKERS", 10),
 
-		// Redis configuration
-		RedisHost:         getEnv("REDIS_HOST", "localhost"),
-		RedisPort:         getEnv("REDIS_PORT", "6379"),
-		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
-		RedisDB:           getEnvAsInt("REDIS_DB", 0),
-		RedisPrefix:       getEnv("REDIS_PREFIX", "goflow:queue"),
-		RedisPoolSize:     getEnvAsInt("REDIS_POOL_SIZE", 10),
-		RedisMinIdleConns: getEnvAsInt("REDIS_MIN_IDLE_CONNS", 2),
-		RedisMaxRetries:   getEnvAsInt("REDIS_MAX_RETRIES", 3),
-
 		// Queue configuration
 		QueueMaxRetries:             getEnvAsInt("QUEUE_MAX_RETRIES", 3),
 		QueueRetryBackoffBase:       getEnvAsDuration("QUEUE_RETRY_BACKOFF_BASE", 1*time.Second),
@@ -65,11 +45,6 @@ func LoadConfig() *Config {
 		QueueStatsUpdateInterval:    getEnvAsDuration("QUEUE_STATS_UPDATE_INTERVAL", 30*time.Second),
 		QueueCleanupOlderThan:       getEnvAsDuration("QUEUE_CLEANUP_OLDER_THAN", 24*time.Hour),
 	}
-}
-
-// RedisAddr returns the full Redis address
-func (c *Config) RedisAddr() string {
-	return c.RedisHost + ":" + c.RedisPort
 }
 
 // Helper functions for environment variables
@@ -124,20 +99,6 @@ func getEnvAsFloat64(key string, defaultValue float64) float64 {
 		log.Printf("⚠️ Invalid float for %s: %s, using default %f", key, value, defaultValue)
 	}
 	return defaultValue
-}
-
-// GetRedisOptions returns a map of Redis options for convenience
-func (c *Config) GetRedisOptions() map[string]interface{} {
-	return map[string]interface{}{
-		"host":        c.RedisHost,
-		"port":        c.RedisPort,
-		"password":    c.RedisPassword,
-		"db":          c.RedisDB,
-		"prefix":      c.RedisPrefix,
-		"pool_size":   c.RedisPoolSize,
-		"min_idle":    c.RedisMinIdleConns,
-		"max_retries": c.RedisMaxRetries,
-	}
 }
 
 // GetQueueOptions returns a map of queue options for convenience

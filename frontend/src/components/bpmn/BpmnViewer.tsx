@@ -12,6 +12,12 @@ interface BpmnViewerProps {
    * *history*, not live state. A parallel gateway or multi-instance task
    * can have more than one entry here at once. */
   replayElementIds?: string[];
+  /** Aggregate, cross-instance live token counts — "how many currently
+   * running instances of this definition have a token sitting on this
+   * node right now" (see GET .../token-counts). Distinct from `activities`,
+   * which is scoped to a single instance. Used on the process-definition
+   * detail page, not the per-instance detail page. */
+  tokenCounts?: { elementId: string; count: number }[];
   className?: string;
 }
 
@@ -20,11 +26,13 @@ const TOKEN_ACTIVE    = '#3b82f6';   // blue-500
 const TOKEN_COMPLETED = '#22c55e';   // green-500
 const TOKEN_CANCELED  = '#f59e0b';   // amber-500
 const TOKEN_REPLAY     = '#8b5cf6';  // violet-500
+const TOKEN_AGGREGATE  = '#0891b2';  // cyan-600 — distinct from per-instance colors above
 
-export function BpmnViewer({ xml, activities = [], replayElementIds = [], className = '' }: BpmnViewerProps) {
+export function BpmnViewer({ xml, activities = [], replayElementIds = [], tokenCounts = [], className = '' }: BpmnViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewerRef    = useRef<InstanceType<typeof BpmnJS> | null>(null);
   const prevReplayElementsRef = useRef<Set<string>>(new Set());
+  const prevTokenCountElementsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -106,6 +114,60 @@ export function BpmnViewer({ xml, activities = [], replayElementIds = [], classN
     }
   }, [activities]);
 
+  // Aggregate live token-count badges — cross-instance, unlike the
+  // per-instance overlay above. Re-runs whenever the counts array changes
+  // (the caller typically polls GET .../token-counts on an interval).
+  const tokenCountsKey = tokenCounts.map(t => `${t.elementId}:${t.count}`).join(',');
+  useEffect(() => {
+    if (!viewerRef.current) return;
+
+    const overlays = viewerRef.current.get('overlays') as {
+      add(elementId: string, opts: object): void;
+      remove(filter: object): void;
+    };
+    const canvas = viewerRef.current.get('canvas') as {
+      addMarker(elementId: string, marker: string): void;
+      removeMarker(elementId: string, marker: string): void;
+    };
+    const elementRegistry = viewerRef.current.get('elementRegistry') as {
+      get(id: string): unknown;
+    };
+
+    overlays.remove({ type: 'agg-token' });
+    for (const elementId of prevTokenCountElementsRef.current) {
+      try { canvas.removeMarker(elementId, 'agg-token-active'); } catch { /* ignore */ }
+    }
+    prevTokenCountElementsRef.current = new Set();
+
+    for (const { elementId, count } of tokenCounts) {
+      if (!count || !elementRegistry.get(elementId)) continue;
+
+      try {
+        canvas.addMarker(elementId, 'agg-token-active');
+        prevTokenCountElementsRef.current.add(elementId);
+      } catch { /* ignore */ }
+
+      overlays.add(elementId, {
+        type: 'agg-token',
+        position: { bottom: -10, right: -10 },
+        html: `
+          <div style="
+            background:${TOKEN_AGGREGATE};color:#fff;
+            border-radius:9999px;min-width:20px;height:20px;padding:0 5px;
+            display:flex;align-items:center;justify-content:center;
+            font-size:11px;font-weight:700;
+            box-shadow:0 1px 3px rgba(0,0,0,.3);
+            pointer-events:none;
+          ">${count > 99 ? '99+' : count}</div>`,
+      });
+    }
+    // tokenCountsKey is the serialized/stable form of tokenCounts, used
+    // deliberately instead of the array itself to avoid re-running this
+    // effect on every render when the caller passes a new array reference
+    // with the same contents (e.g. a polling refetch that returns identical data).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenCountsKey]);
+
   // Highlight the current replay position(s) (see the "Replay" control in
   // InstanceDetail.tsx) with a marker distinct from the live-state overlay
   // above, so "where the token is now" and "where it was during replay
@@ -170,6 +232,10 @@ export function BpmnViewer({ xml, activities = [], replayElementIds = [], classN
         .replay-active .djs-visual > :is(rect,circle,polygon,path) {
           stroke: ${TOKEN_REPLAY} !important;
           stroke-width: 4px !important;
+        }
+        .agg-token-active .djs-visual > :is(rect,circle,polygon,path) {
+          stroke: ${TOKEN_AGGREGATE} !important;
+          stroke-width: 3px !important;
         }
         .replay-token-dot {
           width: 16px;

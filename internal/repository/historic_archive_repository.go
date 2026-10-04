@@ -153,17 +153,50 @@ func (r *HistoricArchiveRepository) InsertVariablesTx(tx *sqlx.Tx, instanceID uu
 }
 
 // CleanupOrphanExecutionStateTx removes any leftover rows in tables that
-// reference process_instances(id) with no ON DELETE clause — a leftover
+// reference process_instances(id) with no FK-driven cascade — a leftover
 // row in any of these would make DeleteLiveInstanceTx fail with an FK
-// violation. Safe: these are internal execution-state tables (gateway
-// join tracking, event subscriptions), not history data, so nothing of
+// violation (gateway_state) or simply be orphaned forever (the rest, whose
+// FK into process_instances was dropped entirely in Citus phase 2 — see
+// architecture/citus-distributed-storage-design.md — since Citus doesn't
+// allow a local table to hold an FK into a distributed one, and these
+// tables stay local while process_instances becomes distributed).
+// gateway_state itself IS part of the distributed colocation group, but
+// its FK has no ON DELETE clause (never did), so it still needs explicit
+// cleanup rather than relying on cascade. jobs/timer_jobs/audit_logs used
+// to rely on ON DELETE CASCADE before phase 2 dropped that FK; they're
+// listed here now for the same reason the other four already were. Safe:
+// none of this is history data (the historic_* copies were already made
+// earlier in the same transaction, see archive_service.go), so nothing of
 // value is lost.
 func (r *HistoricArchiveRepository) CleanupOrphanExecutionStateTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
-	for _, table := range []string{"gateway_state", "event_subprocesses", "event_subscriptions", "boundary_events"} {
+	for _, table := range []string{
+		"gateway_state", "event_subprocesses", "event_subscriptions", "boundary_events",
+		"jobs", "timer_jobs", "audit_logs",
+	} {
 		if _, err := tx.Exec(`DELETE FROM public.`+table+` WHERE process_instance_id = $1`, instanceID); err != nil {
 			return err
 		}
 	}
+
+	// multi_instance_children and execution_variables have no
+	// process_instance_id column at all — only reachable via executions,
+	// whose rows haven't been deleted yet at this point in the
+	// transaction (DeleteLiveInstanceTx, which triggers the
+	// process_instances -> executions cascade, runs after this).
+	if _, err := tx.Exec(`
+		DELETE FROM public.multi_instance_children
+		WHERE parent_execution_id IN (SELECT id FROM public.executions WHERE process_instance_id = $1)
+		   OR child_execution_id  IN (SELECT id FROM public.executions WHERE process_instance_id = $1)
+	`, instanceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM public.execution_variables
+		WHERE execution_id IN (SELECT id FROM public.executions WHERE process_instance_id = $1)
+	`, instanceID); err != nil {
+		return err
+	}
+
 	return nil
 }
 

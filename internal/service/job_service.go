@@ -167,8 +167,8 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 			if _, err = tx.Exec(`
         UPDATE public.executions
         SET current_element_id = $1, status = 'active', updated_at = NOW()
-        WHERE id = $2
-    `, activityID, parentExecID); err != nil {
+        WHERE process_instance_id = $2 AND id = $3
+    `, activityID, processInstanceID, parentExecID); err != nil {
 				log.Printf("Warning: failed to update parent: %v", err)
 			}
 
@@ -185,7 +185,7 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 			log.Printf("✅ All %d children completed", totalCount)
 
 			var parentNodeID string
-			tx.Get(&parentNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, parentExecID)
+			tx.Get(&parentNodeID, `SELECT current_element_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, processInstanceID, parentExecID)
 
 			graphJSON, err := externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID)
 			if err == nil {
@@ -197,8 +197,8 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 					if _, err = tx.Exec(`
 						UPDATE public.executions
 						SET current_element_id = $1, status = 'active', updated_at = NOW()
-						WHERE id = $2
-					`, nextNodeID, parentExecID); err != nil {
+						WHERE process_instance_id = $2 AND id = $3
+					`, nextNodeID, processInstanceID, parentExecID); err != nil {
 						log.Printf("Warning: failed to move parent: %v", err)
 					} else {
 						miParentMoved = true
@@ -234,7 +234,7 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 			if err := externalTaskRepo.CompleteProcessInstanceTx(tx, processInstanceID); err != nil {
 				return nil, err
 			}
-			if err := externalTaskRepo.CompleteExecutionTx(tx, executionID); err != nil {
+			if err := externalTaskRepo.CompleteExecutionTx(tx, processInstanceID, executionID); err != nil {
 				return nil, err
 			}
 			if err := tx.Commit(); err != nil {
@@ -268,7 +268,7 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		return nil, fmt.Errorf("node %s is not a service task or boundary event, type: %s", currentNode.ID, currentNode.Type)
 	}
 
-	if err := externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, executionID, nextNodeID); err != nil {
+	if err := externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, processInstanceID, executionID, nextNodeID); err != nil {
 		return nil, err
 	}
 
@@ -357,8 +357,8 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 							if _, execErr := tx.Exec(`
 								UPDATE public.executions
 								SET current_element_id = $1, status = 'active', updated_at = NOW()
-								WHERE id = $2
-							`, node.ID, jobCtx.ExecutionID); execErr == nil {
+								WHERE process_instance_id = $2 AND id = $3
+							`, node.ID, jobCtx.ProcessInstanceID, jobCtx.ExecutionID); execErr == nil {
 								if commitErr := tx.Commit(); commitErr == nil {
 									LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, errorMessage, 0))
 									LogAuditErr("execution moved", auditService.LogExecutionMoved(jobCtx.ExecutionID, jobCtx.ProcessInstanceID, jobCtx.CurrentElementID, node.ID, nil))

@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
-	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/eventlog"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -97,7 +97,7 @@ func (e *InclusiveGatewayExecutor) ExecuteFork(
 		}
 	}
 
-	if err = e.engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting"); err != nil {
+	if err = e.engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
 		return fmt.Errorf("failed to mark parent as waiting: %w", err)
 	}
 
@@ -134,7 +134,7 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 
 	var gatewayState models.GatewayState
 	err = tx.Get(&gatewayState, `
-		SELECT id, expected_incoming, received_incoming, status, joined_flows
+		SELECT id, process_instance_id, expected_incoming, received_incoming, status, joined_flows
 		FROM public.gateway_state
 		WHERE process_instance_id = $1 AND gateway_id = $2 AND status = 'waiting'
 		FOR UPDATE
@@ -161,10 +161,25 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 			JoinedFlows:       joinedFlowsJSON,
 		}
 
-		if err = e.engineRepo.CreateGatewayStateTx(tx, &gatewayState); err != nil {
+		created, err := e.engineRepo.CreateGatewayStateTx(tx, &gatewayState)
+		if err != nil {
 			return fmt.Errorf("failed to create gateway state: %w", err)
 		}
-	} else {
+		if !created {
+			// Lost the race to a concurrent branch — re-fetch the row it
+			// just created and fall through to the join-update path below.
+			isFirstJoin = false
+			if err := tx.Get(&gatewayState, `
+				SELECT id, process_instance_id, expected_incoming, received_incoming, status, joined_flows
+				FROM public.gateway_state
+				WHERE process_instance_id = $1 AND gateway_id = $2 AND status = 'waiting'
+				FOR UPDATE
+			`, exec.ProcessInstanceID, gatewayNode.ID); err != nil {
+				return fmt.Errorf("failed to re-fetch gateway state after losing create race: %w", err)
+			}
+		}
+	}
+	if !isFirstJoin {
 		var joinedFlows []string
 		json.Unmarshal(gatewayState.JoinedFlows, &joinedFlows)
 		if exec.PathID != nil {
@@ -176,15 +191,15 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 		if _, err = tx.Exec(`
 			UPDATE public.gateway_state
 			SET received_incoming = $1, joined_flows = $2
-			WHERE id = $3
-		`, newReceived, joinedFlowsJSON, gatewayState.ID); err != nil {
+			WHERE process_instance_id = $3 AND id = $4
+		`, newReceived, joinedFlowsJSON, gatewayState.ProcessInstanceID, gatewayState.ID); err != nil {
 			return fmt.Errorf("failed to update gateway state: %w", err)
 		}
 
 		gatewayState.ReceivedIncoming = newReceived
 	}
 
-	if err = e.engineRepo.CompleteChildExecutionTx(tx, exec.ID); err != nil {
+	if err = e.engineRepo.CompleteChildExecutionTx(tx, exec.ProcessInstanceID, exec.ID); err != nil {
 		return fmt.Errorf("failed to complete child execution: %w", err)
 	}
 
@@ -205,14 +220,14 @@ func (e *InclusiveGatewayExecutor) ExecuteJoin(
 		}
 
 		nextNodeID = gatewayNode.Outgoing[0].TargetRef
-		if err = e.engineRepo.UpdateExecutionStatusAndNodeTx(tx, *exec.ParentExecutionID, "active", nextNodeID); err != nil {
+		if err = e.engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, *exec.ParentExecutionID, "active", nextNodeID); err != nil {
 			return fmt.Errorf("failed to resume parent execution: %w", err)
 		}
 
 		if _, err = tx.Exec(`
 			UPDATE public.gateway_state SET status = 'completed', completed_at = NOW()
-			WHERE id = $1
-		`, gatewayState.ID); err != nil {
+			WHERE process_instance_id = $1 AND id = $2
+		`, gatewayState.ProcessInstanceID, gatewayState.ID); err != nil {
 			return fmt.Errorf("failed to complete gateway state: %w", err)
 		}
 

@@ -1,13 +1,14 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, GitBranch, Play, CheckSquare,
-  AlertTriangle, History, LogOut, Workflow, Users, Shield, BarChart3
+  AlertTriangle, History, LogOut, Workflow, Users, Shield, BarChart3, PenTool
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
 const navItems = [
   { to: '/',           icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/processes',  icon: GitBranch,        label: 'Definitions' },
+  { to: '/modeler',    icon: PenTool,          label: 'Modeler' },
   { to: '/instances',  icon: Play,             label: 'Instances' },
   { to: '/tasks',      icon: CheckSquare,      label: 'Tasks' },
   { to: '/incidents',  icon: AlertTriangle,    label: 'Incidents' },
@@ -46,7 +47,7 @@ function NavItems({ items }: { items: typeof navItems }) {
 
 export function Sidebar() {
   const { user, logout, hasAction } = useAuth();
-  const showAdmin = hasAction('CAN_MANGE_USER') || hasAction('CAN_EDIT_ROLE');
+  const showAdmin = hasAction('CAN_MANAGE_USER') || hasAction('CAN_EDIT_ROLE');
 
   return (
     <aside className="w-56 flex-shrink-0 bg-gray-900 flex flex-col h-screen sticky top-0">

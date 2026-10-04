@@ -70,8 +70,8 @@ func (r *Runtime) executeEventBasedGateway(ctx context.Context, engineRepo *repo
 
 	// Park the execution at the EBG node (waiting for first event)
 	_, err = tx.Exec(`
-		UPDATE executions SET status = 'waiting', updated_at = NOW() WHERE id = $1
-	`, exec.ID)
+		UPDATE executions SET status = 'waiting', updated_at = NOW() WHERE process_instance_id = $1 AND id = $2
+	`, exec.ProcessInstanceID, exec.ID)
 	if err != nil {
 		return fmt.Errorf("EBG: set waiting: %w", err)
 	}

@@ -29,10 +29,10 @@ func (r *Runtime) executeBoundaryTimerNode(ctx context.Context, engineRepo *repo
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ID, nextNodeID); err != nil {
+	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, nextNodeID); err != nil {
 		return "", fmt.Errorf("failed to update execution node: %w", err)
 	}
-	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "active"); err != nil {
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "active"); err != nil {
 		return "", fmt.Errorf("failed to update execution status: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -101,7 +101,7 @@ func (r *Runtime) executeIntermediateTimer(ctx context.Context, engineRepo *repo
 		return fmt.Errorf("failed to create timer: %w", err)
 	}
 
-	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting"); err != nil {
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}
 

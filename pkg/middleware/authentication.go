@@ -35,7 +35,6 @@ var PublicRoutes = []string{
 	"/drivers",
 	"/ws",
 	"/health",
-	"/token-history",
 }
 
 func WithinPublicRoutes(value string, urls []string) bool {

@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -125,8 +128,11 @@ func toHistoricTaskResponse(task repository.HistoricTask) HistoricTaskResponse {
 // (HistoricArchiveRepository, backed by `historic_tasks` — see
 // archive_service.go). Pagination is applied in Go after merging, since a
 // SQL UNION with correct LIMIT/OFFSET across two tables is meaningfully
-// more complex than this is worth for a first pass.
-func (hc *HistoricTaskController) findMergedHistoricTasks(query HistoricTaskQuery) ([]repository.HistoricTask, error) {
+// more complex than this is worth for a first pass. Also filters out any
+// task belonging to a process the caller lacks VIEW access to — every row
+// already carries ProcessDefinitionKey, so this is a direct
+// CanAccessProcess check, no extra instance lookup needed.
+func (hc *HistoricTaskController) findMergedHistoricTasks(c *fiber.Ctx, query HistoricTaskQuery) ([]repository.HistoricTask, error) {
 	liveRepo := repository.NewHistoricTaskRepository(hc.db)
 
 	liveTasks, err := liveRepo.FindHistoricTasks(query.toParams(0, 0)) // unpaginated
@@ -139,9 +145,23 @@ func (hc *HistoricTaskController) findMergedHistoricTasks(query HistoricTaskQuer
 	}
 
 	merged := append(liveTasks, historicTasks...)
+
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		visible := make([]repository.HistoricTask, 0, len(merged))
+		for _, t := range merged {
+			if allowed, _ := service.CanAccessProcess(hc.db, userID, t.ProcessDefinitionKey, "VIEW"); allowed {
+				visible = append(visible, t)
+			}
+		}
+		merged = visible
+	}
+
 	sort.Slice(merged, func(i, j int) bool {
 		return merged[i].CreatedAt.After(merged[j].CreatedAt)
 	})
+	if merged == nil {
+		merged = []repository.HistoricTask{}
+	}
 	return merged, nil
 }
 
@@ -155,7 +175,7 @@ func (hc *HistoricTaskController) GetHistoricTasks(c *fiber.Ctx) error {
 		})
 	}
 
-	merged, err := hc.findMergedHistoricTasks(query)
+	merged, err := hc.findMergedHistoricTasks(c, query)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -186,7 +206,7 @@ func (hc *HistoricTaskController) GetHistoricTasks(c *fiber.Ctx) error {
 // GetHistoricTask handles GET /engine-rest/history/task/:id
 func (hc *HistoricTaskController) GetHistoricTask(c *fiber.Ctx) error {
 	taskID := c.Params("id")
-	merged, err := hc.findMergedHistoricTasks(HistoricTaskQuery{TaskId: taskID})
+	merged, err := hc.findMergedHistoricTasks(c, HistoricTaskQuery{TaskId: taskID})
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"type":    "InternalError",
@@ -212,7 +232,7 @@ func (hc *HistoricTaskController) GetHistoricTaskCount(c *fiber.Ctx) error {
 		})
 	}
 
-	merged, err := hc.findMergedHistoricTasks(query)
+	merged, err := hc.findMergedHistoricTasks(c, query)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"type":    "InternalError",

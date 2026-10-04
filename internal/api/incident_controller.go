@@ -9,6 +9,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -26,6 +27,18 @@ func NewIncidentController(db *sqlx.DB) *IncidentController {
 		extTaskRepo:  repository.NewExternalTaskRepository(db),
 		zeebeKeys:    repository.NewZeebeKeyRepository(db),
 	}
+}
+
+// checkIncidentAccess verifies the caller has at least `level` access to
+// the process instance owning instanceID. Returns true (fail open) if
+// there's no authenticated user in context.
+func (ctrl *IncidentController) checkIncidentAccess(c *fiber.Ctx, instanceID uuid.UUID, level string) bool {
+	userID, err := uuid.Parse(common.GetUserUuid(c))
+	if err != nil {
+		return true
+	}
+	allowed, _ := service.CanAccessProcessInstance(ctrl.db, userID, instanceID, level)
+	return allowed
 }
 
 // withZeebeKey adds a zeebeKey field (assigned lazily via the same
@@ -77,13 +90,16 @@ func (ctrl *IncidentController) ListIncidents(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": "failed to list incidents", "error": err.Error()})
 	}
-	result := make([]map[string]interface{}, len(incidents))
+	result := make([]map[string]interface{}, 0, len(incidents))
 	for i := range incidents {
+		if !ctrl.checkIncidentAccess(c, incidents[i].ProcessInstanceID, "VIEW") {
+			continue
+		}
 		m, err := ctrl.withZeebeKey(&incidents[i])
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 		}
-		result[i] = m
+		result = append(result, m)
 	}
 	return c.JSON(result)
 }
@@ -101,6 +117,9 @@ func (ctrl *IncidentController) GetIncident(c *fiber.Ctx) error {
 	if inc == nil {
 		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
 	}
+	if !ctrl.checkIncidentAccess(c, inc.ProcessInstanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+	}
 	m, err := ctrl.withZeebeKey(inc)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
@@ -114,6 +133,16 @@ func (ctrl *IncidentController) DeleteIncident(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"message": "invalid incident id"})
 	}
+	inc, err := ctrl.incidentRepo.GetByID(id)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+	}
+	if inc == nil {
+		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+	}
+	if !ctrl.checkIncidentAccess(c, inc.ProcessInstanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+	}
 	if err := ctrl.incidentRepo.Delete(id); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
@@ -125,6 +154,9 @@ func (ctrl *IncidentController) GetByProcessInstance(c *fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"message": "invalid process instance id"})
+	}
+	if !ctrl.checkIncidentAccess(c, id, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{"message": "process instance not found"})
 	}
 	f := repository.IncidentFilter{ProcessInstanceID: &id}
 	incidents, err := ctrl.incidentRepo.List(f)
@@ -164,7 +196,11 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 	// architecture/event-sourced-kafka-design.md): jobs belonging to a
 	// partitioned-write-path instance set retries via the Command Gateway
 	// instead of a direct Postgres transaction.
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
+	instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID)
+	if lookupErr == nil && !ctrl.checkIncidentAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{"message": "job not found"})
+	}
+	if lookupErr == nil && writePath == "partitioned" {
 		if err := partition.SetJobRetries(instanceID, jobID, body.Retries); err != nil {
 			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 		}

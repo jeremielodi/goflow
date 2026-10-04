@@ -139,6 +139,16 @@ func envelopeEventType(env *pb.Envelope) string {
 		return "SignalBroadcast"
 	case *pb.Envelope_JobRetriesSet:
 		return "JobRetriesSet"
+	case *pb.Envelope_TaskCreated:
+		return "TaskCreated"
+	case *pb.Envelope_TaskClaimed:
+		return "TaskClaimed"
+	case *pb.Envelope_TaskUnclaimed:
+		return "TaskUnclaimed"
+	case *pb.Envelope_TaskCompleted:
+		return "TaskCompleted"
+	case *pb.Envelope_TaskCancelled:
+		return "TaskCancelled"
 	default:
 		return "Unknown"
 	}
@@ -306,6 +316,60 @@ func (p *Producer) JobRetriesSet(instanceID, jobID string, retries int32) {
 			JobId:             jobID,
 			ProcessInstanceId: instanceID,
 			Retries:           retries,
+		}},
+	})
+}
+
+// Task* mirrors internal/events.TaskEventDispatcher's 5 transitions
+// (created, claimed, unclaimed, completed, cancelled) — the only prior
+// observability for tasks, entirely separate from this Kafka event log.
+
+func (p *Producer) TaskCreated(instanceID, taskID, executionID, taskDefinitionKey, assignee string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TaskCreated{TaskCreated: &pb.TaskCreated{
+			TaskId:            taskID,
+			ProcessInstanceId: instanceID,
+			ExecutionId:       executionID,
+			TaskDefinitionKey: taskDefinitionKey,
+			Assignee:          assignee,
+		}},
+	})
+}
+
+func (p *Producer) TaskClaimed(instanceID, taskID, assignee string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TaskClaimed{TaskClaimed: &pb.TaskClaimed{
+			TaskId:            taskID,
+			ProcessInstanceId: instanceID,
+			Assignee:          assignee,
+		}},
+	})
+}
+
+func (p *Producer) TaskUnclaimed(instanceID, taskID string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TaskUnclaimed{TaskUnclaimed: &pb.TaskUnclaimed{
+			TaskId:            taskID,
+			ProcessInstanceId: instanceID,
+		}},
+	})
+}
+
+func (p *Producer) TaskCompleted(instanceID, taskID string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TaskCompleted{TaskCompleted: &pb.TaskCompleted{
+			TaskId:            taskID,
+			ProcessInstanceId: instanceID,
+		}},
+	})
+}
+
+func (p *Producer) TaskCancelled(instanceID, taskID, reason string) {
+	p.send(instanceID, &pb.Envelope{
+		Event: &pb.Envelope_TaskCancelled{TaskCancelled: &pb.TaskCancelled{
+			TaskId:            taskID,
+			ProcessInstanceId: instanceID,
+			Reason:            reason,
 		}},
 	})
 }

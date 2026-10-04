@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -13,6 +14,20 @@ import (
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
+
+// checkTaskAccess verifies the caller has at least `level` access to the
+// process instance owning instanceID (see service.CanAccessProcessInstance)
+// — tasks aren't a separate ACL surface, they inherit their owning
+// process's per-user grants. Returns true (fail open) if there's no
+// authenticated user in context.
+func (tc *TaskController) checkTaskAccess(c *fiber.Ctx, instanceID uuid.UUID, level string) bool {
+	userID, err := uuid.Parse(common.GetUserUuid(c))
+	if err != nil {
+		return true
+	}
+	allowed, _ := service.CanAccessProcessInstance(tc.db, userID, instanceID, level)
+	return allowed
+}
 
 type TaskController struct {
 	db           *sqlx.DB
@@ -68,13 +83,22 @@ func (tc *TaskController) GetTasks(c *fiber.Ctx) error {
 
 	// Resolve each task's linked form (if any) from its process graph, so
 	// the frontend can render a real form instead of a generic JSON blob.
+	// Also filter out tasks belonging to a process the caller lacks VIEW
+	// access to — mirrors ListDefinitions/ListHistoricProcessInstances'
+	// per-row filtering, since a task list can span many process keys.
 	engineRepo := repository.NewEngineRepository(tc.db, tc.dispatcher)
+	userID, userErr := uuid.Parse(common.GetUserUuid(c))
 	type taskWithFormKey struct {
 		models.Task
 		FormKey string `json:"formKey,omitempty"`
 	}
 	result := make([]taskWithFormKey, 0, len(tasks))
 	for _, t := range tasks {
+		if userErr == nil {
+			if allowed, _ := service.CanAccessProcessInstance(tc.db, userID, t.ProcessInstanceID, "VIEW"); !allowed {
+				continue
+			}
+		}
 		formKey := ""
 		if graph, err := engineRepo.GetProcessGraphByInstanceID(t.ProcessInstanceID); err == nil && graph != nil {
 			if n, ok := graph.Nodes[t.TaskDefinitionKey]; ok {
@@ -131,12 +155,19 @@ func (tc *TaskController) Claim(c *fiber.Ctx) error {
 		})
 	}
 
+	if !tc.checkTaskAccess(c, task.ProcessInstanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{"error": "task not found"})
+	}
+
 	_, err = repo.ClaimTask(taskId, assignee)
 
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 	service.LogAuditErr("task claimed", tc.auditService.LogTaskClaimed(taskId, task.ProcessInstanceID, assignee))
+	if p := eventlog.Global(); p != nil {
+		p.TaskClaimed(task.ProcessInstanceID.String(), taskId.String(), assignee)
+	}
 
 	return c.Status(200).JSON(fiber.Map{
 		"success": true,
@@ -166,74 +197,23 @@ func (tc *TaskController) UnClaim(c *fiber.Ctx) error {
 		})
 	}
 
+	if !tc.checkTaskAccess(c, task.ProcessInstanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{"error": "task not found"})
+	}
+
 	_, err = repo.UnClaimTask(taskId)
 
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
 	}
 	service.LogAuditErr("task unclaimed", tc.auditService.LogTaskUnclaimed(taskId, task.ProcessInstanceID))
+	if p := eventlog.Global(); p != nil {
+		p.TaskUnclaimed(task.ProcessInstanceID.String(), taskId.String())
+	}
 
 	return c.Status(200).JSON(fiber.Map{
 		"success": true,
 		"message": "task unclaimed successfully",
-	})
-}
-
-// CompleteTask handles task completion with event dispatch
-func (tc *TaskController) CompleteTask(c *fiber.Ctx) error {
-	id := c.Params("id")
-
-	taskId, err := uuid.Parse(id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	var req struct {
-		Variables map[string]interface{} `json:"variables"`
-	}
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"error":   "Invalid request body",
-			"message": err.Error(),
-		})
-	}
-
-	repo := repository.NewTaskRepository(tc.db, tc.dispatcher)
-
-	// Get task before completion
-	task, err := repo.FindTaskByID(taskId)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// Complete the task
-	err = repo.CompleteTask(taskId)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	// Update process variables if needed
-	if len(req.Variables) > 0 {
-		processInstanceRepo := repository.NewProcessInstanceRepository(tc.db)
-		existingVars, err := processInstanceRepo.GetVariables(task.ProcessInstanceID)
-		if err == nil {
-			for k, v := range req.Variables {
-				existingVars[k] = v
-			}
-			_ = processInstanceRepo.UpsertVariables(task.ProcessInstanceID, existingVars)
-		}
-		service.LogAuditErr("variables merged", tc.auditService.LogVariablesMerged(task.ProcessInstanceID, req.Variables, "taskComplete"))
-	}
-
-	var completedBy *uuid.UUID
-	if userID, err := getCurrentUserID(c); err == nil {
-		completedBy = &userID
-	}
-	service.LogAuditErr("task completed", tc.auditService.LogTaskCompleted(taskId, task.ProcessInstanceID, completedBy, req.Variables))
-
-	return c.Status(200).JSON(fiber.Map{
-		"success": true,
-		"message": "task completed successfully",
 	})
 }
 
@@ -253,70 +233,9 @@ func (tc *TaskController) GetTask(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
+	if !tc.checkTaskAccess(c, task.ProcessInstanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{"error": "task not found"})
+	}
+
 	return c.JSON(task)
-}
-
-// DeleteTask deletes a task
-func (tc *TaskController) DeleteTask(c *fiber.Ctx) error {
-	id := c.Params("id")
-
-	taskId, err := uuid.Parse(id)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	repo := repository.NewTaskRepository(tc.db, tc.dispatcher)
-	_, err = repo.DeleteTask(taskId)
-
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"success": false, "error": err.Error()})
-	}
-
-	return c.Status(200).JSON(fiber.Map{
-		"success": true,
-		"message": "task deleted successfully",
-	})
-}
-
-// GetTasksByProcessInstance returns all tasks for a process instance
-func (tc *TaskController) GetTasksByProcessInstance(c *fiber.Ctx) error {
-	instanceID, err := uuid.Parse(c.Params("instanceId"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid process instance ID"})
-	}
-
-	repo := repository.NewTaskRepository(tc.db, tc.dispatcher)
-	tasks, err := repo.FindTasksByProcessInstance(instanceID)
-
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(tasks)
-}
-
-// GetTasksByAssignee returns all tasks for an assignee
-func (tc *TaskController) GetTasksByAssignee(c *fiber.Ctx) error {
-	assignee := c.Params("assignee")
-	if assignee == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "Assignee required"})
-	}
-
-	status := c.Query("status")
-
-	repo := repository.NewTaskRepository(tc.db, tc.dispatcher)
-	var tasks []models.Task
-	var err error
-
-	if status != "" {
-		tasks, err = repo.FindTasksByAssignee(assignee, status)
-	} else {
-		tasks, err = repo.FindTasksByAssignee(assignee)
-	}
-
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	return c.JSON(tasks)
 }

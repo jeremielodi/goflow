@@ -7,6 +7,7 @@ export interface ProcessDefinition {
   createdAt: string;
   isActive?: boolean;
   tenantId?: string;
+  bpmnXml?: string;
 }
 
 // GET /engine-rest/process-instance(/:id) returns internal/models.ProcessInstance

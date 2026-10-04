@@ -110,20 +110,20 @@ func (r *EventSubscriptionRepository) CancelSiblingSubscriptions(executionID uui
 
 // ResumeExecution reactivates a waiting execution and advances it to targetElementID.
 // If targetElementID is empty, the execution stays at its current node.
-func ResumeWaitingExecution(db *sqlx.DB, executionID uuid.UUID, targetElementID string) error {
+func ResumeWaitingExecution(db *sqlx.DB, processInstanceID, executionID uuid.UUID, targetElementID string) error {
 	var err error
 	if targetElementID != "" {
 		_, err = db.Exec(`
 			UPDATE executions
 			SET current_element_id = $1, status = 'active', is_active = true, updated_at = NOW()
-			WHERE id = $2
-		`, targetElementID, executionID)
+			WHERE process_instance_id = $2 AND id = $3
+		`, targetElementID, processInstanceID, executionID)
 	} else {
 		_, err = db.Exec(`
 			UPDATE executions
 			SET status = 'active', is_active = true, updated_at = NOW()
-			WHERE id = $1
-		`, executionID)
+			WHERE process_instance_id = $1 AND id = $2
+		`, processInstanceID, executionID)
 	}
 	return err
 }

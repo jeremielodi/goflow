@@ -33,8 +33,25 @@ func TerminateProcessInstance(db *sqlx.DB, dispatcher *events.TaskEventDispatche
 	engineRepo := repository.NewEngineRepository(db, dispatcher)
 	auditService := NewAuditService(db)
 
-	if _, err := processInstanceRepo.FindByID(instanceID); err != nil {
+	instance, err := processInstanceRepo.FindByID(instanceID)
+	if err != nil {
 		return fmt.Errorf("%w: %s", ErrProcessInstanceNotFound, instanceID)
+	}
+	// Guard against a real race: an instance that completes normally right
+	// before (or concurrently with) an explicit terminate call would
+	// otherwise still be found here (its row isn't removed until
+	// ArchiveAndDeleteProcessInstance runs), and this function would both
+	// overwrite its correct 'completed' status with 'terminated' and write
+	// termination audit log rows AFTER the normal-completion path's own
+	// archive already ran and deleted everything for this instance —
+	// producing permanently orphaned audit_logs rows (found via direct
+	// testing while verifying Citus phase 2's dropped
+	// audit_logs.process_instance_id FK, which used to turn this exact
+	// race into a loud, non-orphaning FK-violation error instead — see
+	// architecture/citus-distributed-storage-design.md). Mirrors
+	// ArchiveAndDeleteProcessInstance's own existing status guard.
+	if instance.Status == "completed" || instance.Status == "terminated" {
+		return fmt.Errorf("%w: %s (already %s)", ErrProcessInstanceNotFound, instanceID, instance.Status)
 	}
 
 	// Add termination reason as a variable.

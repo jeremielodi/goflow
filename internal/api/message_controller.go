@@ -93,7 +93,7 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 
 	// Node the execution is currently parked at, for audit purposes.
 	var fromNode string
-	mc.db.QueryRow(`SELECT current_element_id FROM executions WHERE id = $1`, sub.ExecutionID).Scan(&fromNode)
+	mc.db.QueryRow(`SELECT current_element_id FROM executions WHERE process_instance_id = $1 AND id = $2`, sub.ProcessInstanceID, sub.ExecutionID).Scan(&fromNode)
 
 	// Determine target element (for regular catch event: next outgoing; stored in target_element_id for EBG)
 	targetElementID := ""
@@ -138,7 +138,7 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 	subRepo.Consume(sub.ID)
 
 	// Reactivate the execution and advance to target node
-	if err := repository.ResumeWaitingExecution(mc.db, sub.ExecutionID, targetElementID); err != nil {
+	if err := repository.ResumeWaitingExecution(mc.db, sub.ProcessInstanceID, sub.ExecutionID, targetElementID); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 	service.LogAuditErr("message correlated", mc.auditService.LogMessageCorrelated(sub.ProcessInstanceID, messageName))

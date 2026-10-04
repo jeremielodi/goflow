@@ -5,6 +5,9 @@
 @import "bpmn-js/dist/assets/diagram-js.css";
 @import "bpmn-js/dist/assets/bpmn-font/css/bpmn.css";
 
+/* the properties panel used by the BPMN Modeler page */
+@import "@bpmn-io/properties-panel/dist/assets/properties-panel.css";
+
 *,
 *::before,
 *::after {

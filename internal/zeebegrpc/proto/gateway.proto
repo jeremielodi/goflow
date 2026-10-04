@@ -8,15 +8,28 @@ option go_package = "github.com/jeremielodi/goflow/internal/zeebegrpc/pb";
 // Protocol (see https://github.com/camunda/camunda, module
 // zeebe/gateway-protocol). Implements the 6 RPCs that make up Zeebe's
 // core client loop (Topology, DeployResource, CreateProcessInstance,
-// ActivateJobs, CompleteJob, FailJob) plus 5 more that each reuse an
+// ActivateJobs, CompleteJob, FailJob) plus 7 more that each reuse an
 // existing GoFlow service/engine function with no new business logic
 // (PublishMessage, CancelProcessInstance, EvaluateDecision,
-// ResolveIncident, ModifyProcessInstance). Any other method a real Zeebe
-// client SDK calls (MigrateProcessInstance, ...) is not registered on
-// this server at all, so grpc-go returns a standard UNIMPLEMENTED
-// status automatically for that method path — the same experience a
-// real client gets calling an unsupported RPC against an
+// ResolveIncident, ModifyProcessInstance, UpdateJobRetries,
+// BroadcastSignal). Any other method a real Zeebe client SDK calls
+// (MigrateProcessInstance, SetVariables, ThrowError, DeleteResource,
+// CreateProcessInstanceWithResult, StreamActivatedJobs, ...) is not
+// registered on this server at all, so grpc-go returns a standard
+// UNIMPLEMENTED status automatically for that method path — the same
+// experience a real client gets calling an unsupported RPC against an
 // older/limited broker, no special-casing needed on our side.
+//
+// UpdateJobRetries maps onto internal/service.SetJobRetries — the exact
+// same function and partition.LookupJobOwner gating the existing PATCH
+// .../job/:id/retries REST endpoint already uses (see
+// internal/api/incident_controller.go's SetJobRetries handler for the
+// identical pattern this RPC mirrors). BroadcastSignal maps onto
+// internal/api.SignalController.Broadcast with no partition-gating check
+// needed at all: internal/partition.ValidateShape never allows a signal
+// catch event in any shape the partitioned write path supports, so a
+// partitioned instance can structurally never be one of Broadcast's
+// subscribers in the first place.
 //
 // ModifyProcessInstance note: real Zeebe's actual request also has a
 // dedicated `moveInstructions` field and richer activate/variable
@@ -58,6 +71,8 @@ service Gateway {
   rpc EvaluateDecision(EvaluateDecisionRequest) returns (EvaluateDecisionResponse);
   rpc ResolveIncident(ResolveIncidentRequest) returns (ResolveIncidentResponse);
   rpc ModifyProcessInstance(ModifyProcessInstanceRequest) returns (ModifyProcessInstanceResponse);
+  rpc UpdateJobRetries(UpdateJobRetriesRequest) returns (UpdateJobRetriesResponse);
+  rpc BroadcastSignal(BroadcastSignalRequest) returns (BroadcastSignalResponse);
 }
 
 // ── Topology ────────────────────────────────────────────────────────────
@@ -325,3 +340,27 @@ message TerminateInstruction {
 }
 
 message ModifyProcessInstanceResponse {}
+
+// ── UpdateJobRetries ────────────────────────────────────────────────────
+// Maps onto internal/service.SetJobRetries — see the file-level comment
+// above.
+
+message UpdateJobRetriesRequest {
+  int64 jobKey = 1;
+  int32 retries = 2;
+}
+
+message UpdateJobRetriesResponse {}
+
+// ── BroadcastSignal ─────────────────────────────────────────────────────
+// Maps onto internal/api.SignalController.Broadcast — see the file-level
+// comment above for why no partition-gating check is needed.
+
+message BroadcastSignalRequest {
+  string signalName = 1;
+  string variables = 2;
+}
+
+message BroadcastSignalResponse {
+  int64 key = 1;
+}

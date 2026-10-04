@@ -28,8 +28,8 @@ func (r *Runtime) executeSignalCatchEvent(ctx context.Context, engineRepo *repos
 	}
 
 	_, err = tx.Exec(`
-		UPDATE executions SET status = 'waiting', updated_at = NOW() WHERE id = $1
-	`, exec.ID)
+		UPDATE executions SET status = 'waiting', updated_at = NOW() WHERE process_instance_id = $1 AND id = $2
+	`, exec.ProcessInstanceID, exec.ID)
 	if err != nil {
 		return fmt.Errorf("signal catch: set waiting: %w", err)
 	}
@@ -54,7 +54,7 @@ func (r *Runtime) executeSignalBoundaryEvent(ctx context.Context, engineRepo *re
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
+	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 		return fmt.Errorf("signal boundary: update node: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

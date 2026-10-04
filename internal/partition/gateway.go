@@ -254,6 +254,36 @@ func ResolveIncident(instanceID, incidentID uuid.UUID) error {
 	}
 }
 
+// Terminate is the Command Gateway's bridge for terminating a partitioned-
+// write-path instance (gap-closing pass 2). Unlike CompleteJob/FailJob's
+// wait loop, a single Await suffices: ProcessTerminated is a terminal
+// event that fires exactly once ever per instance (already published
+// unconditionally at the end of service.TerminateProcessInstance, and
+// already wired into Consumer's waiter-notify switch — no new event type
+// needed), the same reasoning StartProcess's single Await on
+// ProcessStarted relies on.
+func Terminate(instanceID uuid.UUID, reason string) error {
+	cmdProducer := eventlog.GlobalCommand()
+	consumer := eventlog.GlobalConsumer()
+	if cmdProducer == nil || consumer == nil {
+		return fmt.Errorf("partitioned write path is not configured on this instance")
+	}
+
+	waiter := consumer.Register(instanceID.String(), "ProcessTerminated")
+
+	produceCtx, cancel := context.WithTimeout(context.Background(), bridgeTimeout)
+	defer cancel()
+	if err := cmdProducer.Terminate(produceCtx, instanceID, reason); err != nil {
+		waiter.Cancel()
+		return err
+	}
+
+	if _, err := waiter.Await(context.Background(), bridgeTimeout); err != nil {
+		return fmt.Errorf("partitioned engine did not confirm termination: %w", err)
+	}
+	return nil
+}
+
 // LookupJobOwner resolves which write path owns jobID, without importing
 // internal/service (see package doc). Both of this codebase's job-complete
 // call sites (internal/api's REST handler, internal/zeebegrpc's RPC) call

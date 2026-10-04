@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  id="Definitions_GrpcSignalProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn"
+  exporter="Camunda Modeler"
+  exporterVersion="5.46.1">
+
+  <!--
+    SCENARIO: A minimal process parked at a signal intermediate catch event
+              from the moment it starts, used to verify gRPC's
+              BroadcastSignal RPC against a real, unmodified Zeebe client
+              SDK — see internal/zeebegrpc.
+  -->
+
+  <bpmn:signal id="sig_grpc_test" name="GrpcTestSignal"/>
+
+  <bpmn:process id="GrpcSignalProcess" name="gRPC Signal Process" isExecutable="true">
+
+    <bpmn:startEvent id="start" name="Started">
+      <bpmn:outgoing>Flow_Start_Wait</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:intermediateCatchEvent id="waitForSignal" name="Wait for Signal">
+      <bpmn:incoming>Flow_Start_Wait</bpmn:incoming>
+      <bpmn:outgoing>Flow_Wait_End</bpmn:outgoing>
+      <bpmn:signalEventDefinition id="sed_grpc_test" signalRef="sig_grpc_test"/>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:endEvent id="end" name="Done">
+      <bpmn:incoming>Flow_Wait_End</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_Start_Wait" sourceRef="start" targetRef="waitForSignal" />
+    <bpmn:sequenceFlow id="Flow_Wait_End" sourceRef="waitForSignal" targetRef="end" />
+
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_GrpcSignalProcess">
+    <bpmndi:BPMNPlane id="BPMNPlane_GrpcSignalProcess" bpmnElement="GrpcSignalProcess">
+      <bpmndi:BPMNShape id="start_di" bpmnElement="start">
+        <dc:Bounds x="152" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="waitForSignal_di" bpmnElement="waitForSignal">
+        <dc:Bounds x="240" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="end_di" bpmnElement="end">
+        <dc:Bounds x="330" y="252" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_Start_Wait_di" bpmnElement="Flow_Start_Wait">
+        <di:waypoint x="188" y="270" /><di:waypoint x="240" y="270" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_Wait_End_di" bpmnElement="Flow_Wait_End">
+        <di:waypoint x="276" y="270" /><di:waypoint x="330" y="270" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

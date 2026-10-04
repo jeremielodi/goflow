@@ -57,7 +57,7 @@ func (r *Runtime) ModifyInstance(ctx context.Context, instanceID uuid.UUID, move
 				return newExecutionIDs, fmt.Errorf("failed to begin transaction: %w", err)
 			}
 
-			if err := engineRepo.CompleteExecutionTx(tx, exec.ID); err != nil {
+			if err := engineRepo.CompleteExecutionTx(tx, exec.ProcessInstanceID, exec.ID); err != nil {
 				tx.Rollback()
 				return newExecutionIDs, fmt.Errorf("failed to cancel source execution: %w", err)
 			}

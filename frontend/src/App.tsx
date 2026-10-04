@@ -5,6 +5,8 @@ import { Layout } from './components/layout/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ProcessDefinitions from './pages/ProcessDefinitions';
+import ProcessDefinitionDetail from './pages/ProcessDefinitionDetail';
+import Modeler from './pages/Modeler';
 import ProcessInstances from './pages/ProcessInstances';
 import InstanceDetail from './pages/InstanceDetail';
 import Tasks from './pages/Tasks';
@@ -53,6 +55,8 @@ export default function App() {
             >
               <Route path="/"              element={<Dashboard />} />
               <Route path="/processes"     element={<ProcessDefinitions />} />
+              <Route path="/processes/:id" element={<ProcessDefinitionDetail />} />
+              <Route path="/modeler"       element={<Modeler />} />
               <Route path="/instances"     element={<ProcessInstances />} />
               <Route path="/instances/:id" element={<InstanceDetail />} />
               <Route path="/tasks"         element={<Tasks />} />

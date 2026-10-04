@@ -393,6 +393,20 @@ func (hc *HistoryController) ListHistoricActivityInstances(c *fiber.Ctx) error {
 		}
 	}
 
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
+		visible := resp[:0]
+		for _, r := range resp {
+			instID, err := uuid.Parse(r.ProcessInstanceID)
+			if err != nil {
+				continue
+			}
+			if allowed, _ := service.CanAccessProcessInstance(hc.db, userID, instID, "VIEW"); allowed {
+				visible = append(visible, r)
+			}
+		}
+		resp = visible
+	}
+
 	return c.JSON(resp)
 }
 

@@ -16,6 +16,32 @@ export const getDefinition = async (id: string): Promise<ProcessDefinition> => {
   return res.data;
 };
 
+export interface TokenCount {
+  elementId: string;
+  count: number;
+}
+
+// Live per-node active-token counts across every currently running instance
+// of a process key — a snapshot ("where are running instances sitting right
+// now"), not a historical heatmap of everywhere instances have ever been.
+export const getActiveTokenCounts = async (key: string): Promise<TokenCount[]> => {
+  const res = await apiClient.get(`/engine-rest/process-definition/key/${key}/token-counts`);
+  return res.data;
+};
+
+export interface InstancePosition {
+  processInstanceId: string;
+  elementId: string;
+}
+
+// Per-instance breakdown of getActiveTokenCounts — one row per (instance,
+// active token) pair, so an instance with several concurrent tokens
+// (parallel gateway, multi-instance) has several entries.
+export const getInstancePositions = async (key: string): Promise<InstancePosition[]> => {
+  const res = await apiClient.get(`/engine-rest/process-definition/key/${key}/instance-positions`);
+  return res.data;
+};
+
 export const deployBpmn = async (file: File, name?: string): Promise<void> => {
   const form = new FormData();
   form.append('file', file);

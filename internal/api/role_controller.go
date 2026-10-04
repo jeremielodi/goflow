@@ -141,12 +141,32 @@ func (rc *RoleController) UpdateRole(c *fiber.Ctx) error {
 }
 
 // DeleteRole handles DELETE /roles/:id
+// Unlike DeleteUser, a hard DELETE here can't hit an FK-violation crash —
+// user_roles.roles_id and role_actions.roles_id both cascade — but it
+// would silently strip every assigned user's permissions with zero
+// warning. Rejecting the delete while the role is still in use surfaces
+// that impact instead of hiding it behind a cascade.
 func (rc *RoleController) DeleteRole(c *fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error":   "Invalid role ID",
 			"message": err.Error(),
+		})
+	}
+
+	users, err := rc.roleRepo.GetUsersByRole(id)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to check role usage",
+			"message": err.Error(),
+		})
+	}
+	if len(users) > 0 {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error":   "Role in use",
+			"message": "This role is still assigned to one or more users — remove those assignments before deleting it",
+			"count":   len(users),
 		})
 	}
 

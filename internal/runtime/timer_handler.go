@@ -82,7 +82,7 @@ func (t *TimerHandler) HandleIntermediateTimerEvent(
 	}
 
 	// Update execution to waiting state
-	err = t.engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+	err = t.engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting")
 	if err != nil {
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}

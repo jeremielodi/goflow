@@ -83,7 +83,7 @@ func ResolveIncident(db *sqlx.DB, incidentID uuid.UUID) error {
 		return fmt.Errorf("incident %s not found", incidentID)
 	}
 
-	if err := incidentRepo.Resolve(incidentID); err != nil {
+	if err := incidentRepo.Resolve(inc.ProcessInstanceID, incidentID); err != nil {
 		return fmt.Errorf("failed to resolve incident: %w", err)
 	}
 

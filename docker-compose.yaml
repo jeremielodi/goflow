@@ -1,5 +1,4 @@
 # docker-compose.yaml
-version: '3.8'
 
 services:
   # PostgreSQL
@@ -17,24 +16,6 @@ services:
       - ./database:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U goflow"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - goflow-network
-    restart: unless-stopped
-
-  # Redis (for caching)
-  redis:
-    image: redis:7-alpine
-    container_name: goflow-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -79,8 +60,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
       redpanda:
         condition: service_healthy
     environment:
@@ -94,16 +73,6 @@ services:
       # Event log (Phase 0 shadow mode — see internal/eventlog)
       KAFKA_BROKERS: redpanda:9092
 
-      # Redis
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: ""
-      REDIS_DB: 0
-      REDIS_PREFIX: goflow:queue
-      REDIS_POOL_SIZE: 50
-      REDIS_MIN_IDLE_CONNS: 10
-      REDIS_MAX_RETRIES: 3
-      
       # Queue Settings
       QUEUE_MAX_RETRIES: 3
       QUEUE_RETRY_BACKOFF_BASE: 1s
@@ -113,21 +82,23 @@ services:
       QUEUE_CLEANUP_OLDER_THAN: 24h
       
       # Server
+      # Port d'écoute DANS le conteneur : reste 8080 (nginx proxifie vers
+      # goflow:8080). Le port exposé sur l'hôte vient de SERVER_PORT (.env).
       SERVER_PORT: 8080
       QUEUE_WORKERS: 10
       
       # JWT (must match variable name used in code)
       goflow_secret_key: goflow_dev_secret_change_in_production
 
-      # Super User
-      SUPER_USER_NAME: admin
-      SUPER_USER_EMAIL: admin@goflow.com
-      SUPER_USER_PASSWORD: admin123
+      # Super User (valeurs lues depuis .env)
+      SUPER_USER_NAME: ${SUPER_USER_NAME:-admin}
+      SUPER_USER_EMAIL: ${SUPER_USER_EMAIL:-admin@goflow.com}
+      SUPER_USER_PASSWORD: ${SUPER_USER_PASSWORD:-admin123}
       
       # Other
       GOFLOW_ENV: production
     ports:
-      - "8080:8080"
+      - "${SERVER_PORT:-8080}:8080"
       - "26500:26500" # gRPC gateway (Zeebe protocol subset — see internal/zeebegrpc)
     volumes:
       - ./migrations:/app/migrations
@@ -148,24 +119,10 @@ services:
       dockerfile: Dockerfile
     container_name: goflow-frontend
     ports:
-      - "3000:80"
+      - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       goflow:
         condition: service_healthy
-    networks:
-      - goflow-network
-    restart: unless-stopped
-
-  # Optional: Redis Commander for Redis management
-  redis-commander:
-    image: rediscommander/redis-commander:latest
-    container_name: goflow-redis-commander
-    environment:
-      REDIS_HOSTS: local:redis:6379
-    ports:
-      - "8081:8081"
-    depends_on:
-      - redis
     networks:
       - goflow-network
     restart: unless-stopped
@@ -176,5 +133,4 @@ networks:
 
 volumes:
   postgres_data:
-  redis_data:
   redpanda_data:

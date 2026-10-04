@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/api"
 	apiv2 "github.com/jeremielodi/goflow/internal/api/v2"
+	"github.com/jeremielodi/goflow/internal/citus"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
@@ -52,6 +53,26 @@ func main() {
 	db, err := database.NewPostgres(util)
 	if err != nil {
 		log.Fatalln("Postgres: ", err)
+	}
+
+	// Optional Citus-backed distributed-storage deployment (see
+	// architecture/citus-distributed-storage-design.md and
+	// docker-compose.citus.yml) — Phase 1 (reference tables) + Phase 2
+	// (the per-instance colocation group). If CITUS_ENABLED isn't set (the
+	// default, plain-Postgres path), this is a complete no-op.
+	if util.DotEnvVariable("CITUS_ENABLED") == "true" {
+		workersEnv := util.DotEnvVariable("CITUS_WORKERS")
+		var workers []string
+		if workersEnv != "" {
+			workers = strings.Split(workersEnv, ",")
+		}
+		if err := citus.EnsureReferenceTables(db, workers); err != nil {
+			log.Fatalln("citus: failed to ensure reference tables: ", err)
+		}
+		if err := citus.EnsureDistributedTables(db); err != nil {
+			log.Fatalln("citus: failed to ensure distributed tables: ", err)
+		}
+		log.Println("✅ Citus reference + distributed tables ensured (workers:", workersEnv, ")")
 	}
 
 	// Cross-instance job wake-ups: a dedicated LISTEN connection means a job
@@ -282,39 +303,44 @@ func main() {
 	roleCtrl := api.NewRoleController(db)
 	actionCtrl := api.NewActionController(db)
 
-	// Role routes (protected with permissions)
+	// Role routes (protected with permissions). Read routes require either
+	// admin permission (CAN_EDIT_ROLE or CAN_MANAGE_USER) rather than being
+	// open to any authenticated caller — these expose the permission
+	// system's own structure (which roles exist, who can do what).
+	adminRead := middleware.RequireAnyPermission(db, "CAN_EDIT_ROLE", "CAN_MANAGE_USER")
 	app.Post("/roles", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.CreateRole)
-	app.Get("/roles", roleCtrl.ListRoles)
-	app.Get("/roles/:id", roleCtrl.GetRole)
+	app.Get("/roles", adminRead, roleCtrl.ListRoles)
+	app.Get("/roles/:id", adminRead, roleCtrl.GetRole)
 	app.Put("/roles/:id", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.UpdateRole)
 	app.Delete("/roles/:id", permissions(db, "CAN_EDIT_ROLE"), roleCtrl.DeleteRole)
 
 	// User role assignment
-	app.Post("/users/:userId/roles/:roleId", permissions(db, "CAN_MANGE_USER"), roleCtrl.AssignRoleToUser)
-	app.Delete("/users/:userId/roles/:roleId", permissions(db, "CAN_MANGE_USER"), roleCtrl.RemoveRoleFromUser)
-	app.Get("/users/:userId/roles", roleCtrl.GetUserRoles)
+	app.Post("/users/:userId/roles/:roleId", permissions(db, "CAN_MANAGE_USER"), roleCtrl.AssignRoleToUser)
+	app.Delete("/users/:userId/roles/:roleId", permissions(db, "CAN_MANAGE_USER"), roleCtrl.RemoveRoleFromUser)
+	app.Get("/users/:userId/roles", adminRead, roleCtrl.GetUserRoles)
 
 	// Action routes
 	app.Get("/actions", actionCtrl.ListActions)
 	app.Post("/roles/:roleId/actions/:actionId", permissions(db, "CAN_EDIT_ROLE"), actionCtrl.AssignActionToRole)
 	app.Delete("/roles/:roleId/actions/:actionId", permissions(db, "CAN_EDIT_ROLE"), actionCtrl.RemoveActionFromRole)
-	app.Get("/roles/:roleId/actions", actionCtrl.GetRoleActions)
+	app.Get("/roles/:roleId/actions", adminRead, actionCtrl.GetRoleActions)
 
 	// ============================================================
 	// USER ROUTES
 	// ============================================================
 
-	app.Post("/users", permissions(db, "CAN_MANGE_USER"), userController.CreateUser)
+	app.Post("/users", permissions(db, "CAN_MANAGE_USER"), userController.CreateUser)
 	app.Post("/auth/login", userController.Login)
 	app.Post("/auth/refresh", userController.RefreshToken)
 	app.Post("/auth/logout", userController.Logout)
-	app.Get("/users", permissions(db, "CAN_MANGE_USER"), userController.ListUsers)
+	app.Get("/users", permissions(db, "CAN_MANAGE_USER"), userController.ListUsers)
 	app.Get("/users/me", userController.GetCurrentUser)
 	app.Get("/users/:id", userController.GetUser)
 	app.Get("/users/email/:email", userController.GetUserByEmail)
 	app.Put("/users/:id", userController.UpdateUser)
 	app.Put("/users/:id/password", userController.UpdatePassword)
-	app.Delete("/users/:id", permissions(db, "CAN_MANGE_USER"), userController.DeleteUser)
+	app.Put("/users/:id/reset-password", permissions(db, "CAN_RESET_PASSWORD"), userController.AdminResetPassword)
+	app.Delete("/users/:id", permissions(db, "CAN_MANAGE_USER"), userController.DeleteUser)
 
 	// Access control routes
 	app.Get("/users/:id/access/:resource", userController.CheckAccess)
@@ -346,6 +372,14 @@ func main() {
 	app.Get("/engine-rest/process-definition/key/:key/permissions", processPermissionCtrl.ListPermissions)
 	app.Post("/engine-rest/process-definition/key/:key/permissions", processPermissionCtrl.GrantPermission)
 	app.Delete("/engine-rest/process-definition/key/:key/permissions/:id", processPermissionCtrl.RevokePermission)
+
+	// Live per-node active-token counts across every running instance of a
+	// key — powers the diagram overlay on the frontend's definition detail page.
+	app.Get("/engine-rest/process-definition/key/:key/token-counts", processDefinitionCtrl.GetActiveTokenCounts)
+	// Per-instance breakdown of the same snapshot — powers the "current
+	// node" column on the frontend's instance list, without needing the
+	// full replay view.
+	app.Get("/engine-rest/process-definition/key/:key/instance-positions", processDefinitionCtrl.GetInstancePositions)
 
 	// Camunda 7 compatible
 	app.Get("/engine-rest/engine", func(c *fiber.Ctx) error {
@@ -495,9 +529,6 @@ func main() {
 	app.Post("/engine-rest/process-instance/:id/end", processInstanceCtrl.EndProcess)
 	app.Get("/engine-rest/process-instance/:id/state", processInstanceCtrl.GetProcessState)
 	app.Post("/engine-rest/process-instance/:id/stop", processInstanceCtrl.StopProcessWithReason)
-
-	// Historic process instance
-	app.Get("/engine-rest/history/process-instance/:id", processInstanceCtrl.GetHistoricProcessInstance)
 
 	// Process instance queries
 	app.Get("/engine-rest/process-instance/:id", processInstanceCtrl.GetProcessInstance)

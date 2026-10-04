@@ -28,33 +28,66 @@ func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicC
 	result := []TopicJobs{}
 
 	for _, topic := range topics {
-		// First, select pending jobs
+		// First, select and lock pending jobs — jobs alone, no join. Citus
+		// phase 2 (see architecture/citus-distributed-storage-design.md)
+		// made executions a distributed table; a FOR UPDATE query can't
+		// join a distributed table unless it's routable to a single shard,
+		// so the previous single query (jobs JOIN executions ... FOR
+		// UPDATE) stopped working the moment executions was distributed —
+		// found only by actually running the full regression against a
+		// real Citus-backed stack. jobs itself stays local and
+		// undistributed either way (see the design doc for why), so
+		// locking it alone here is unaffected by any of this.
 		var jobs []LockedJob
 
-		selectQuery := `
-			SELECT 
-				j.id, 
-				j.payload, 
-				j.retries, 
+		lockQuery := `
+			SELECT
+				j.id,
+				j.payload,
+				j.retries,
 				j.execution_id,
 				j.process_instance_id,
-				e.current_element_id,
 				j.status
 			FROM public.jobs j
-			JOIN public.executions e ON e.id = j.execution_id
-			WHERE j.job_type = $1 
+			WHERE j.job_type = $1
 			  AND j.status = 'pending'
 			  AND (j.locked_by IS NULL OR j.locked_until < NOW())
 			LIMIT $2
 			FOR UPDATE SKIP LOCKED
 		`
 
-		err := tx.Select(&jobs, selectQuery, topic.TopicName, maxTasks)
+		err := tx.Select(&jobs, lockQuery, topic.TopicName, maxTasks)
 		if err != nil {
 			return nil, err
 		}
 
 		if len(jobs) > 0 {
+			// Fetch current_element_id for the now-locked jobs' executions
+			// as a separate, unlocked query — a plain multi-shard SELECT
+			// against a distributed table is fine, only FOR UPDATE isn't.
+			elemPlaceholders := make([]string, len(jobs))
+			elemArgs := make([]interface{}, len(jobs))
+			for i, job := range jobs {
+				elemPlaceholders[i] = fmt.Sprintf("$%d", i+1)
+				elemArgs[i] = job.ExecutionID
+			}
+			var elements []struct {
+				ID               uuid.UUID `db:"id"`
+				CurrentElementID string    `db:"current_element_id"`
+			}
+			elemQuery := fmt.Sprintf(`
+				SELECT id, current_element_id FROM public.executions WHERE id IN (%s)
+			`, strings.Join(elemPlaceholders, ", "))
+			if err := tx.Select(&elements, elemQuery, elemArgs...); err != nil {
+				return nil, err
+			}
+			elemByID := make(map[uuid.UUID]string, len(elements))
+			for _, e := range elements {
+				elemByID[e.ID] = e.CurrentElementID
+			}
+			for i := range jobs {
+				jobs[i].CurrentElementID = elemByID[jobs[i].ExecutionID]
+			}
 			// Lock the jobs using adapter pattern
 			lockedUntil := time.Now().Add(time.Duration(topic.LockDuration) * time.Millisecond)
 
@@ -212,33 +245,27 @@ func (r *ExternalTaskRepository) CompleteProcessInstanceTx(tx *sqlx.Tx, instance
 	return err
 }
 
-// CompleteExecution marks an execution as completed
-func (r *ExternalTaskRepository) CompleteExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "status", Value: "completed"},
-			{Key: "is_active", Value: false},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+// CompleteExecution marks an execution as completed. Uses direct SQL rather
+// than the DataBaseAdapter.Update helper (which only supports a single
+// WHERE condition) — process_instance_id is needed alongside id for
+// single-shard Citus routing.
+func (r *ExternalTaskRepository) CompleteExecutionTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID) error {
+	_, err := r.db.Exec(`
+		UPDATE public.executions
+		SET status = 'completed', is_active = false, updated_at = NOW()
+		WHERE process_instance_id = $1 AND id = $2
+	`, processInstanceID, execID)
 	return err
 }
 
-// UpdateExecutionCurrentNode updates the current node of an execution
-func (r *ExternalTaskRepository) UpdateExecutionCurrentNodeTx(tx *sqlx.Tx, execID uuid.UUID, nextNodeID string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.executions",
-		[]database.QueryParameter{
-			{Key: "current_element_id", Value: nextNodeID},
-			{Key: "status", Value: "active"},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: execID},
-	)
+// UpdateExecutionCurrentNode updates the current node of an execution. Same
+// direct-SQL reasoning as CompleteExecutionTx above.
+func (r *ExternalTaskRepository) UpdateExecutionCurrentNodeTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID, nextNodeID string) error {
+	_, err := r.db.Exec(`
+		UPDATE public.executions
+		SET current_element_id = $1, status = 'active', updated_at = NOW()
+		WHERE process_instance_id = $2 AND id = $3
+	`, nextNodeID, processInstanceID, execID)
 	return err
 }
 

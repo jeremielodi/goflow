@@ -30,6 +30,8 @@ const (
 	Gateway_EvaluateDecision_FullMethodName      = "/gateway_protocol.Gateway/EvaluateDecision"
 	Gateway_ResolveIncident_FullMethodName       = "/gateway_protocol.Gateway/ResolveIncident"
 	Gateway_ModifyProcessInstance_FullMethodName = "/gateway_protocol.Gateway/ModifyProcessInstance"
+	Gateway_UpdateJobRetries_FullMethodName      = "/gateway_protocol.Gateway/UpdateJobRetries"
+	Gateway_BroadcastSignal_FullMethodName       = "/gateway_protocol.Gateway/BroadcastSignal"
 )
 
 // GatewayClient is the client API for Gateway service.
@@ -47,6 +49,8 @@ type GatewayClient interface {
 	EvaluateDecision(ctx context.Context, in *EvaluateDecisionRequest, opts ...grpc.CallOption) (*EvaluateDecisionResponse, error)
 	ResolveIncident(ctx context.Context, in *ResolveIncidentRequest, opts ...grpc.CallOption) (*ResolveIncidentResponse, error)
 	ModifyProcessInstance(ctx context.Context, in *ModifyProcessInstanceRequest, opts ...grpc.CallOption) (*ModifyProcessInstanceResponse, error)
+	UpdateJobRetries(ctx context.Context, in *UpdateJobRetriesRequest, opts ...grpc.CallOption) (*UpdateJobRetriesResponse, error)
+	BroadcastSignal(ctx context.Context, in *BroadcastSignalRequest, opts ...grpc.CallOption) (*BroadcastSignalResponse, error)
 }
 
 type gatewayClient struct {
@@ -176,6 +180,26 @@ func (c *gatewayClient) ModifyProcessInstance(ctx context.Context, in *ModifyPro
 	return out, nil
 }
 
+func (c *gatewayClient) UpdateJobRetries(ctx context.Context, in *UpdateJobRetriesRequest, opts ...grpc.CallOption) (*UpdateJobRetriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateJobRetriesResponse)
+	err := c.cc.Invoke(ctx, Gateway_UpdateJobRetries_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) BroadcastSignal(ctx context.Context, in *BroadcastSignalRequest, opts ...grpc.CallOption) (*BroadcastSignalResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BroadcastSignalResponse)
+	err := c.cc.Invoke(ctx, Gateway_BroadcastSignal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GatewayServer is the server API for Gateway service.
 // All implementations must embed UnimplementedGatewayServer
 // for forward compatibility.
@@ -191,6 +215,8 @@ type GatewayServer interface {
 	EvaluateDecision(context.Context, *EvaluateDecisionRequest) (*EvaluateDecisionResponse, error)
 	ResolveIncident(context.Context, *ResolveIncidentRequest) (*ResolveIncidentResponse, error)
 	ModifyProcessInstance(context.Context, *ModifyProcessInstanceRequest) (*ModifyProcessInstanceResponse, error)
+	UpdateJobRetries(context.Context, *UpdateJobRetriesRequest) (*UpdateJobRetriesResponse, error)
+	BroadcastSignal(context.Context, *BroadcastSignalRequest) (*BroadcastSignalResponse, error)
 	mustEmbedUnimplementedGatewayServer()
 }
 
@@ -233,6 +259,12 @@ func (UnimplementedGatewayServer) ResolveIncident(context.Context, *ResolveIncid
 }
 func (UnimplementedGatewayServer) ModifyProcessInstance(context.Context, *ModifyProcessInstanceRequest) (*ModifyProcessInstanceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ModifyProcessInstance not implemented")
+}
+func (UnimplementedGatewayServer) UpdateJobRetries(context.Context, *UpdateJobRetriesRequest) (*UpdateJobRetriesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateJobRetries not implemented")
+}
+func (UnimplementedGatewayServer) BroadcastSignal(context.Context, *BroadcastSignalRequest) (*BroadcastSignalResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BroadcastSignal not implemented")
 }
 func (UnimplementedGatewayServer) mustEmbedUnimplementedGatewayServer() {}
 func (UnimplementedGatewayServer) testEmbeddedByValue()                 {}
@@ -446,6 +478,42 @@ func _Gateway_ModifyProcessInstance_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Gateway_UpdateJobRetries_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateJobRetriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).UpdateJobRetries(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_UpdateJobRetries_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).UpdateJobRetries(ctx, req.(*UpdateJobRetriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_BroadcastSignal_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BroadcastSignalRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).BroadcastSignal(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_BroadcastSignal_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).BroadcastSignal(ctx, req.(*BroadcastSignalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Gateway_ServiceDesc is the grpc.ServiceDesc for Gateway service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -492,6 +560,14 @@ var Gateway_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ModifyProcessInstance",
 			Handler:    _Gateway_ModifyProcessInstance_Handler,
+		},
+		{
+			MethodName: "UpdateJobRetries",
+			Handler:    _Gateway_UpdateJobRetries_Handler,
+		},
+		{
+			MethodName: "BroadcastSignal",
+			Handler:    _Gateway_BroadcastSignal_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -89,69 +89,6 @@ func ParseTimerCycle(cycleStr string) (*TimerCycle, error) {
 	}, nil
 }
 
-func (r *Runtime) createChildExecutions(ctx context.Context, parentExecID uuid.UUID, node *engine.Node, totalCount int) error {
-	tx, err := r.DB.Beginx()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Get process instance ID
-	var processInstanceID uuid.UUID
-	err = tx.Get(&processInstanceID, `SELECT process_instance_id FROM public.executions WHERE id = $1`, parentExecID)
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < totalCount; i++ {
-		childExecID := uuid.New()
-
-		// Child points to the SAME task node (the multi-instance task)
-		_, err = tx.Exec(`
-            INSERT INTO public.executions 
-            (id, process_instance_id, current_element_id, status, is_active, parent_execution_id, created_at, updated_at)
-            VALUES ($1, $2, $3, 'active', true, $4, NOW(), NOW())
-        `, childExecID, processInstanceID, node.ID, parentExecID)
-		if err != nil {
-			return err
-		}
-
-		// Track child relationship
-		_, err = tx.Exec(`
-            INSERT INTO public.multi_instance_children 
-            (parent_execution_id, child_execution_id, loop_index, element_value, status, created_at)
-            VALUES ($1, $2, $3, $4, 'active', NOW())
-        `, parentExecID, childExecID, i, fmt.Sprintf("%d", i+1))
-		if err != nil {
-			return err
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-
-	// Execute all children in parallel
-	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
-	for i := 0; i < totalCount; i++ {
-		var childExecID uuid.UUID
-		r.DB.Get(&childExecID, `
-            SELECT child_execution_id FROM public.multi_instance_children 
-            WHERE parent_execution_id = $1 AND loop_index = $2
-        `, parentExecID, i)
-
-		go func(idx int, execID uuid.UUID) {
-			log.Printf("🚀 Starting child execution %d", idx+1)
-			if err := rt.ExecuteExecution(context.Background(), execID); err != nil {
-				log.Printf("❌ Child execution %d failed: %v", idx+1, err)
-			}
-		}(i, childExecID)
-	}
-
-	log.Printf("🔄 Created %d child executions for multi-instance task %s", totalCount, node.ID)
-	return nil
-}
-
 // internal/runtime/runtime.go
 
 func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *repository.Execution, node *engine.Node, miExec *models.MultiInstanceExecution, variables map[string]interface{}) error {
@@ -179,10 +116,10 @@ func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *reposi
 
 		// Mark multi-instance as completed
 		_, err = tx.Exec(`
-            UPDATE public.multi_instance_executions 
+            UPDATE public.multi_instance_executions
             SET status = 'completed', completed_count = $1, updated_at = NOW()
-            WHERE id = $2
-        `, completedCount, miExec.ID)
+            WHERE process_instance_id = $2 AND id = $3
+        `, completedCount, miExec.ProcessInstanceID, miExec.ID)
 		if err != nil {
 			return err
 		}
@@ -196,7 +133,7 @@ func (r *Runtime) checkMultiInstanceCompletion(ctx context.Context, exec *reposi
 		log.Printf("✅ Multi-instance task %s completed, moving parent to %s", node.ID, nextNodeID)
 
 		// Update parent execution to active and move to next node
-		err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", nextNodeID)
+		err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, exec.ID, "active", nextNodeID)
 		if err != nil {
 			return err
 		}
@@ -254,7 +191,7 @@ func (r *Runtime) handleMultiInstanceParent(ctx context.Context, exec *repositor
 	}
 
 	// Set parent to waiting
-	err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+	err = engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting")
 	if err != nil {
 		return err
 	}
@@ -491,10 +428,10 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 	}
 
 	_, err = tx.Exec(`
-        UPDATE public.executions 
-        SET status = 'completed', is_active = false, updated_at = NOW() 
-        WHERE id = $1
-    `, childExecID)
+        UPDATE public.executions
+        SET status = 'completed', is_active = false, updated_at = NOW()
+        WHERE process_instance_id = $1 AND id = $2
+    `, miExec.ProcessInstanceID, childExecID)
 	if err != nil {
 		return fmt.Errorf("failed to complete child execution: %w", err)
 	}
@@ -510,10 +447,10 @@ func (r *Runtime) OnMultiInstanceChildCompleted(ctx context.Context, childExecID
 	}
 
 	_, err = tx.Exec(`
-        UPDATE public.multi_instance_executions 
-        SET completed_count = $1, updated_at = NOW() 
-        WHERE id = $2
-    `, completedCount, miExec.ID)
+        UPDATE public.multi_instance_executions
+        SET completed_count = $1, updated_at = NOW()
+        WHERE process_instance_id = $2 AND id = $3
+    `, completedCount, miExec.ProcessInstanceID, miExec.ID)
 	if err != nil {
 		return fmt.Errorf("failed to update progress: %w", err)
 	}
@@ -570,10 +507,10 @@ func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.U
 	defer tx.Rollback()
 
 	_, err = tx.Exec(`
-		UPDATE public.multi_instance_executions 
-		SET status = 'completed', completed_count = total_count, updated_at = NOW() 
-		WHERE id = $1
-	`, miExec.ID)
+		UPDATE public.multi_instance_executions
+		SET status = 'completed', completed_count = total_count, updated_at = NOW()
+		WHERE process_instance_id = $1 AND id = $2
+	`, miExec.ProcessInstanceID, miExec.ID)
 	if err != nil {
 		return err
 	}
@@ -585,10 +522,10 @@ func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.U
 
 	// CRITICAL FIX: Also set is_active = true so GetActiveExecution finds it
 	_, err = tx.Exec(`
-		UPDATE public.executions 
-		SET status = 'active', is_active = true, current_element_id = $1, updated_at = NOW() 
-		WHERE id = $2
-	`, nextNodeID, parentExecID)
+		UPDATE public.executions
+		SET status = 'active', is_active = true, current_element_id = $1, updated_at = NOW()
+		WHERE process_instance_id = $2 AND id = $3
+	`, nextNodeID, miExec.ProcessInstanceID, parentExecID)
 	if err != nil {
 		return err
 	}

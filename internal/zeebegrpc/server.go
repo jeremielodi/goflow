@@ -500,7 +500,18 @@ func (s *Server) CancelProcessInstance(ctx context.Context, req *pb.CancelProces
 		return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
 	}
 
-	if err := service.TerminateProcessInstance(s.db, s.dispatcher, instanceID, "cancelled via gRPC CancelProcessInstance"); err != nil {
+	reason := "cancelled via gRPC CancelProcessInstance"
+
+	// Gap-closing pass 2: route partitioned-write-path instances through
+	// the Command Gateway instead of a direct Postgres write.
+	if writePath, lookupErr := partition.LookupInstanceOwner(s.db, instanceID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.Terminate(instanceID, reason); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &pb.CancelProcessInstanceResponse{}, nil
+	}
+
+	if err := service.TerminateProcessInstance(s.db, s.dispatcher, instanceID, reason); err != nil {
 		if errors.Is(err, service.ErrProcessInstanceNotFound) {
 			return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
 		}
@@ -607,6 +618,18 @@ func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProces
 		return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
 	}
 
+	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
+	// modification moves an execution's graph position directly, the same
+	// class of bypass every other write path is already gated against.
+	// Unlike Terminate, this isn't implemented through the Command Gateway
+	// — arbitrary token moves don't fit any of ValidateShape's narrow
+	// accepted shapes — so partitioned instances are explicitly rejected
+	// instead, consistent with this RPC's existing single-token-only scope
+	// limit below.
+	if writePath, lookupErr := partition.LookupInstanceOwner(s.db, instanceID); lookupErr == nil && writePath == "partitioned" {
+		return nil, status.Error(codes.FailedPrecondition, "process instance modification is not supported for partitioned-write-path instances")
+	}
+
 	inst, err := s.processInstanceRepo.FindByID(instanceID)
 	if err != nil || inst == nil {
 		return nil, status.Errorf(codes.NotFound, "process instance not found")
@@ -639,4 +662,66 @@ func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProces
 	}
 
 	return &pb.ModifyProcessInstanceResponse{}, nil
+}
+
+// ── UpdateJobRetries ────────────────────────────────────────────────────
+// Mirrors internal/api/incident_controller.go's SetJobRetries REST
+// handler exactly: same function, same partition.LookupJobOwner gate.
+
+func (s *Server) UpdateJobRetries(ctx context.Context, req *pb.UpdateJobRetriesRequest) (*pb.UpdateJobRetriesResponse, error) {
+	if req.Retries <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "retries must be positive")
+	}
+	jobID, err := s.zeebeKeys.ResolveKey("job", req.JobKey)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "job key %d not found", req.JobKey)
+	}
+
+	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.SetJobRetries(instanceID, jobID, int(req.Retries)); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &pb.UpdateJobRetriesResponse{}, nil
+	}
+
+	if err := service.SetJobRetries(s.db, jobID, int(req.Retries)); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.UpdateJobRetriesResponse{}, nil
+}
+
+// ── BroadcastSignal ─────────────────────────────────────────────────────
+// Mirrors internal/api/signal_controller.go's Broadcast — no partition-
+// gating check needed (see the file-level comment in gateway.proto): a
+// partitioned instance can never be one of Broadcast's subscribers,
+// since ValidateShape never allows a signal catch event in any shape the
+// partitioned write path supports.
+
+func (s *Server) BroadcastSignal(ctx context.Context, req *pb.BroadcastSignalRequest) (*pb.BroadcastSignalResponse, error) {
+	if req.SignalName == "" {
+		return nil, status.Error(codes.InvalidArgument, "signalName is required")
+	}
+	var vars map[string]interface{}
+	if req.Variables != "" {
+		if err := json.Unmarshal([]byte(req.Variables), &vars); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid variables JSON: %v", err)
+		}
+	}
+
+	signalCtrl := api.NewSignalController(s.db, s.dispatcher)
+	if _, _, err := signalCtrl.Broadcast(req.SignalName, vars); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	// Zeebe assigns every broadcast signal a key; GoFlow has no signal
+	// entity to key off, so mint a fresh one via the same zeebe_keys table
+	// PublishMessage already uses for the same reason — nothing ever needs
+	// to resolve it back.
+	key, err := s.zeebeKeys.GetOrAssignKey("signal", uuid.New())
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.BroadcastSignalResponse{Key: key}, nil
 }

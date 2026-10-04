@@ -60,24 +60,6 @@ func NewEngineRepository(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *E
 	return &EngineRepository{db: db, dispatcher: dispatcher}
 }
 
-// GetActiveExecutionWithTx retrieves an active execution within a transaction
-func (r *EngineRepository) GetActiveExecutionWithTx(tx *sqlx.Tx, execID uuid.UUID) (*Execution, error) {
-	var exec Execution
-	query := `
-		SELECT id, process_instance_id, current_element_id, status, is_active, parent_execution_id, path_id, created_at, updated_at
-		FROM public.executions
-		WHERE id = $1 AND is_active = true
-	`
-	err := tx.Get(&exec, query, execID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &exec, nil
-}
-
 // GetActiveExecution retrieves an active execution by ID
 func (r *EngineRepository) GetActiveExecution(ctx context.Context, execID uuid.UUID) (*Execution, error) {
 	var exec Execution
@@ -157,14 +139,33 @@ func (r *EngineRepository) GetProcessVariables(instanceID uuid.UUID) (map[string
 	return variables, nil
 }
 
-func (r *EngineRepository) CreateGatewayStateTx(tx *sqlx.Tx, state *models.GatewayState) error {
-	_, err := tx.Exec(`
+// CreateGatewayStateTx inserts a new gateway_state row, returning created =
+// false (no error) if a concurrent branch already created one for this
+// (process_instance_id, gateway_id) pair first. That race is real and
+// pre-existing — the caller's own "does a waiting gateway_state already
+// exist" check and this insert aren't atomic — just narrow enough on a
+// single low-latency Postgres to have never been observed in practice
+// until Citus's added coordinator/worker network hop widened it enough to
+// reproduce reliably (found via Citus phase 2 testing, see
+// architecture/citus-distributed-storage-design.md). Callers must treat
+// created = false as "join the row a concurrent branch just created",
+// not an error.
+func (r *EngineRepository) CreateGatewayStateTx(tx *sqlx.Tx, state *models.GatewayState) (created bool, err error) {
+	res, err := tx.Exec(`
 		INSERT INTO public.gateway_state
 		(id, process_instance_id, gateway_id, expected_incoming, received_incoming, joined_flows, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (process_instance_id, gateway_id) DO NOTHING
 	`, state.ID, state.ProcessInstanceID, state.GatewayID,
 		state.ExpectedIncoming, state.ReceivedIncoming, state.JoinedFlows, state.Status)
-	return err
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 // CreateTimerJobTx creates a new timer job within a transaction
@@ -272,17 +273,6 @@ func (r *EngineRepository) CompleteMultiInstanceChildTx(tx *sqlx.Tx, childExecut
 	return err
 }
 
-func (r *EngineRepository) UpdateMultiInstanceProgressTx(tx *sqlx.Tx, miExecID uuid.UUID, completedCount int) error {
-	_, err := tx.Exec(`
-        UPDATE public.multi_instance_executions 
-        SET completed_count = $1, 
-            nr_of_completed_instances = $1, 
-            updated_at = NOW() 
-        WHERE id = $2
-    `, completedCount, miExecID)
-	return err
-}
-
 // GetMultiInstanceExecution retrieves a multi-instance execution by execution ID
 func (r *EngineRepository) GetMultiInstanceExecution(executionID uuid.UUID) (*models.MultiInstanceExecution, error) {
 	var miExec models.MultiInstanceExecution
@@ -305,16 +295,6 @@ func (r *EngineRepository) GetMultiInstanceExecutionByParentId(parentExecID uuid
 	var mi models.MultiInstanceExecution
 	err := r.db.Get(&mi, `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`, parentExecID)
 	return &mi, err
-}
-
-// CompleteMultiInstance marks the multi-instance execution as completed
-func (r *EngineRepository) CompleteMultiInstanceTx(tx *sqlx.Tx, miExecID uuid.UUID) error {
-	_, err := tx.Exec(`
-        UPDATE public.multi_instance_executions 
-        SET status = 'completed', updated_at = NOW() 
-        WHERE id = $1
-    `, miExecID)
-	return err
 }
 
 // GetDueTimersByInstance retrieves due timers for a specific process instance
@@ -423,52 +403,6 @@ func (r *EngineRepository) CompleteUserTaskByExecutionTx(tx *sqlx.Tx, executionI
 	return err
 }
 
-// UpdateGatewayJoin updates the join count for a gateway
-func (r *EngineRepository) UpdateGatewayJoinTx(tx *sqlx.Tx, gatewayID uuid.UUID, flowID string) error {
-	var currentState models.GatewayState
-
-	// Get current state with lock
-	err := tx.Get(&currentState, `
-		SELECT id, expected_incoming, received_incoming, joined_flows, status
-		FROM public.gateway_state
-		WHERE id = $1 AND status = 'waiting'
-		FOR UPDATE
-	`, gatewayID)
-	if err != nil {
-		return err
-	}
-
-	newReceived := currentState.ReceivedIncoming + 1
-
-	// Update joined flows
-	var joinedFlows []string
-	json.Unmarshal(currentState.JoinedFlows, &joinedFlows)
-	joinedFlows = append(joinedFlows, flowID)
-	joinedFlowsJSON, _ := json.Marshal(joinedFlows)
-
-	// Check if all flows have joined
-	if newReceived == currentState.ExpectedIncoming {
-		// Gateway is complete
-		_, err = tx.Exec(`
-			UPDATE public.gateway_state
-			SET received_incoming = $1, 
-				joined_flows = $2, 
-				status = 'completed',
-				completed_at = NOW()
-			WHERE id = $3
-		`, newReceived, joinedFlowsJSON, gatewayID)
-	} else {
-		// Still waiting for more flows
-		_, err = tx.Exec(`
-			UPDATE public.gateway_state
-			SET received_incoming = $1, joined_flows = $2
-			WHERE id = $3
-		`, newReceived, joinedFlowsJSON, gatewayID)
-	}
-
-	return err
-}
-
 // GetChildExecutions gets all child executions for a parent
 func (r *EngineRepository) GetChildExecutions(parentExecID uuid.UUID) ([]Execution, error) {
 	var executions []Execution
@@ -481,42 +415,42 @@ func (r *EngineRepository) GetChildExecutions(parentExecID uuid.UUID) ([]Executi
 }
 
 // CompleteChildExecution marks a child execution as completed
-func (r *EngineRepository) CompleteChildExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
+func (r *EngineRepository) CompleteChildExecutionTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE id = $1
-	`, execID)
+		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE process_instance_id = $1 AND id = $2
+	`, processInstanceID, execID)
 	return err
 }
 
 // UpdateExecutionNode updates the current node of an execution
-func (r *EngineRepository) UpdateExecutionNodeTx(tx *sqlx.Tx, execID uuid.UUID, nodeID string) error {
+func (r *EngineRepository) UpdateExecutionNodeTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID, nodeID string) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions SET current_element_id = $1, updated_at = NOW() WHERE id = $2
-	`, nodeID, execID)
+		UPDATE public.executions SET current_element_id = $1, updated_at = NOW() WHERE process_instance_id = $2 AND id = $3
+	`, nodeID, processInstanceID, execID)
 	return err
 }
 
 // UpdateExecutionStatus updates the status of an execution
-func (r *EngineRepository) UpdateExecutionStatusTx(tx *sqlx.Tx, execID uuid.UUID, status string) error {
+func (r *EngineRepository) UpdateExecutionStatusTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID, status string) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions SET status = $1, updated_at = NOW() WHERE id = $2
-	`, status, execID)
+		UPDATE public.executions SET status = $1, updated_at = NOW() WHERE process_instance_id = $2 AND id = $3
+	`, status, processInstanceID, execID)
 	return err
 }
 
 // UpdateExecutionStatusAndNode updates both status and current node
-func (r *EngineRepository) UpdateExecutionStatusAndNodeTx(tx *sqlx.Tx, execID uuid.UUID, status, nodeID string) error {
+func (r *EngineRepository) UpdateExecutionStatusAndNodeTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID, status, nodeID string) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions SET status = $1, current_element_id = $2, updated_at = NOW() WHERE id = $3
-	`, status, nodeID, execID)
+		UPDATE public.executions SET status = $1, current_element_id = $2, updated_at = NOW() WHERE process_instance_id = $3 AND id = $4
+	`, status, nodeID, processInstanceID, execID)
 	return err
 }
 
 // CompleteExecution marks an execution as completed
-func (r *EngineRepository) CompleteExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
+func (r *EngineRepository) CompleteExecutionTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID) error {
 	_, err := tx.Exec(`
-		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE id = $1
-	`, execID)
+		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW() WHERE process_instance_id = $1 AND id = $2
+	`, processInstanceID, execID)
 	return err
 }
 
@@ -736,15 +670,6 @@ func (r *EngineRepository) GetNodeByID(graph *engine.ProcessGraph, nodeID string
 	return node, nil
 }
 
-// GetProcessInstanceIDByExecutionID retrieves the process instance ID for an execution
-func (r *EngineRepository) GetProcessInstanceIDByExecutionID(execID uuid.UUID) (uuid.UUID, error) {
-	var instanceID uuid.UUID
-	err := r.db.Get(&instanceID, `
-		SELECT process_instance_id FROM public.executions WHERE id = $1
-	`, execID)
-	return instanceID, err
-}
-
 func (r *EngineRepository) CreateExecutionTx2(tx *sqlx.Tx, execID, processInstanceID uuid.UUID, currentElementID string, createdAt time.Time) error {
 	query := `
         INSERT INTO public.executions 
@@ -939,67 +864,6 @@ func (r *EngineRepository) SetProcessVariableTx(tx *sqlx.Tx, instanceID uuid.UUI
 			uuid.New(), instanceID, newData)
 	}
 	return err
-}
-
-// ============================================================
-// TASK METHODS
-// ============================================================
-
-// GetTaskByID retrieves a task by ID
-func (r *EngineRepository) GetTaskByID(taskID uuid.UUID) (*UserTask, error) {
-	var task UserTask
-	query := `
-		SELECT id, process_instance_id, execution_id, task_definition_key, task_name, 
-		       assignee, candidate_group, status, created_at, completed_at
-		FROM public.tasks
-		WHERE id = $1
-	`
-	err := r.db.Get(&task, query, taskID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &task, nil
-}
-
-// CompleteTask marks a task as completed
-func (r *EngineRepository) CompleteTask(taskID uuid.UUID, variables map[string]interface{}) error {
-	tx, err := r.db.Beginx()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Get task to find process instance
-	var task UserTask
-	err = tx.Get(&task, `SELECT id, process_instance_id, execution_id, task_definition_key FROM public.tasks WHERE id = $1`, taskID)
-	if err != nil {
-		return err
-	}
-
-	// Update variables if any
-	if len(variables) > 0 {
-		err = r.MergeProcessVariablesTx(tx, task.ProcessInstanceID, variables)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Mark task as completed
-	_, err = tx.Exec(`UPDATE public.tasks SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, taskID)
-	if err != nil {
-		return err
-	}
-
-	// Get execution and update it
-	_, err = tx.Exec(`UPDATE public.executions SET status = 'active', updated_at = NOW() WHERE id = $1`, task.ExecutionID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
 }
 
 // ============================================================

@@ -74,7 +74,7 @@ func (r *Runtime) executeBusinessRuleTask(ctx context.Context, engineRepo *repos
 	if err != nil {
 		return "", err
 	}
-	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
+	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(); err != nil {

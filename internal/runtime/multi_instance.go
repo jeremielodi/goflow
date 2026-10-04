@@ -110,48 +110,6 @@ func (h *MultiInstanceHandler) InitializeMultiInstance(
 	return err
 }
 
-// CreateChildExecution creates a child execution for a specific loop iteration
-// internal/runtime/multi_instance.go
-
-func (h *MultiInstanceHandler) CreateChildExecution(
-	tx *sqlx.Tx,
-	parentExecutionID uuid.UUID,
-	loopIndex int,
-	elementValue string,
-	taskNodeID string, // This should be the service task node ID
-) (uuid.UUID, error) {
-	childExecID := uuid.New()
-
-	// Get the process instance ID from parent execution
-	var processInstanceID uuid.UUID
-	err := tx.Get(&processInstanceID, `SELECT process_instance_id FROM public.executions WHERE id = $1`, parentExecutionID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	// ✅ Create child execution with the task node as current element
-	_, err = tx.Exec(`
-        INSERT INTO public.executions 
-        (id, process_instance_id, current_element_id, status, is_active, parent_execution_id, created_at, updated_at)
-        VALUES ($1, $2, $3, 'active', true, $4, NOW(), NOW())
-    `, childExecID, processInstanceID, taskNodeID, parentExecutionID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	// Record child relationship
-	_, err = tx.Exec(`
-        INSERT INTO public.multi_instance_children 
-        (parent_execution_id, child_execution_id, loop_index, element_value, status, created_at)
-        VALUES ($1, $2, $3, $4, 'active', NOW())
-    `, parentExecutionID, childExecID, loopIndex, elementValue)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	return childExecID, nil
-}
-
 // SetProcessVariable sets a variable in the process instance
 func (h *MultiInstanceHandler) SetProcessVariable(tx *sqlx.Tx, processInstanceID uuid.UUID, key string, value interface{}) error {
 	// Get existing variables
@@ -182,26 +140,12 @@ func (h *MultiInstanceHandler) SetProcessVariable(tx *sqlx.Tx, processInstanceID
 	return err
 }
 
-// UpdateLoopCounter updates the loop counter for sequential execution
-func (h *MultiInstanceHandler) UpdateLoopCounter(tx *sqlx.Tx, miExecID uuid.UUID, loopCounter int) error {
-	_, err := tx.Exec(`UPDATE public.multi_instance_executions SET loop_counter = $1, updated_at = NOW() WHERE id = $2`, loopCounter, miExecID)
-	return err
-}
-
 // GetCompletedChildrenCount returns the number of completed child executions
 func (h *MultiInstanceHandler) GetCompletedChildrenCount(parentExecutionID uuid.UUID) (int, error) {
 	var count int
 	err := h.db.Get(&count, `SELECT COUNT(*) FROM public.multi_instance_children WHERE parent_execution_id = $1 AND status = 'completed'`, parentExecutionID)
 	return count, err
 }
-
-// CompleteMultiInstance marks the multi-instance as completed
-func (h *MultiInstanceHandler) CompleteMultiInstance(tx *sqlx.Tx, miExecID uuid.UUID) error {
-	_, err := tx.Exec(`UPDATE public.multi_instance_executions SET status = 'completed', updated_at = NOW() WHERE id = $1`, miExecID)
-	return err
-}
-
-// internal/runtime/multi_instance.go
 
 // GetOutputCollection retrieves the output collection variable
 func (h *MultiInstanceHandler) GetOutputCollection(collectionName string, variables map[string]interface{}) ([]interface{}, error) {

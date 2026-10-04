@@ -6,12 +6,15 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
 type AuditController struct {
+	db          *sqlx.DB
 	auditRepo   *repository.AuditRepository
 	taskRepo    *repository.TaskRepository
 	archiveRepo *repository.HistoricArchiveRepository
@@ -19,10 +22,23 @@ type AuditController struct {
 
 func NewAuditController(db *sqlx.DB) *AuditController {
 	return &AuditController{
+		db:          db,
 		auditRepo:   repository.NewAuditRepository(db),
 		taskRepo:    repository.NewTaskRepository(db, nil),
 		archiveRepo: repository.NewHistoricArchiveRepository(db),
 	}
+}
+
+// checkAuditAccess verifies the caller has at least `level` access to the
+// process instance owning instanceID. Returns true (fail open) if there's
+// no authenticated user in context.
+func (c *AuditController) checkAuditAccess(ctx *fiber.Ctx, instanceID uuid.UUID, level string) bool {
+	userID, err := uuid.Parse(common.GetUserUuid(ctx))
+	if err != nil {
+		return true
+	}
+	allowed, _ := service.CanAccessProcessInstance(c.db, userID, instanceID, level)
+	return allowed
 }
 
 // GetProcessAuditLogs retrieves audit logs for a process instance
@@ -32,6 +48,13 @@ func (c *AuditController) GetProcessAuditLogs(ctx *fiber.Ctx) error {
 		return ctx.Status(400).JSON(fiber.Map{
 			"title":   "Validation Error",
 			"message": "Invalid process instance ID",
+		})
+	}
+
+	if !c.checkAuditAccess(ctx, processID, "VIEW") {
+		return ctx.Status(404).JSON(fiber.Map{
+			"title":   "Not Found",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -69,6 +92,13 @@ func (c *AuditController) GetTokenHistory(ctx *fiber.Ctx) error {
 		return ctx.Status(400).JSON(fiber.Map{
 			"title":   "Validation Error",
 			"message": "Invalid process instance ID",
+		})
+	}
+
+	if !c.checkAuditAccess(ctx, processID, "VIEW") {
+		return ctx.Status(404).JSON(fiber.Map{
+			"title":   "Not Found",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -139,6 +169,15 @@ func (c *AuditController) GetTaskAuditLogs(ctx *fiber.Ctx) error {
 		})
 	}
 
+	if task, terr := c.taskRepo.FindTaskByID(taskID); terr == nil {
+		if !c.checkAuditAccess(ctx, task.ProcessInstanceID, "VIEW") {
+			return ctx.Status(404).JSON(fiber.Map{
+				"title":   "Not Found",
+				"message": "task not found",
+			})
+		}
+	}
+
 	logs, err := c.auditRepo.GetTaskAuditLogs(taskID)
 	if err != nil {
 		return ctx.Status(500).JSON(fiber.Map{
@@ -176,6 +215,27 @@ func (c *AuditController) GetAuditLogsByDateRange(ctx *fiber.Ctx) error {
 			"message": "Failed to fetch audit logs",
 			"error":   err.Error(),
 		})
+	}
+
+	// Filter out process-scoped entries the caller lacks VIEW access to.
+	// Pure user-action entries (ProcessInstanceID == nil — e.g. login,
+	// user management) aren't process-scoped, so they pass through
+	// unfiltered; there's no per-process ACL to check for them.
+	if userID, parseErr := uuid.Parse(common.GetUserUuid(ctx)); parseErr == nil {
+		visible := make([]models.AuditLog, 0, len(logs))
+		for _, l := range logs {
+			if l.ProcessInstanceID == nil {
+				visible = append(visible, l)
+				continue
+			}
+			if allowed, _ := service.CanAccessProcessInstance(c.db, userID, *l.ProcessInstanceID, "VIEW"); allowed {
+				visible = append(visible, l)
+			}
+		}
+		logs = visible
+	}
+	if logs == nil {
+		logs = []models.AuditLog{}
 	}
 
 	return ctx.JSON(fiber.Map{

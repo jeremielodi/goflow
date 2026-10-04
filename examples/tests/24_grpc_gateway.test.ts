@@ -24,6 +24,14 @@
  *      the existing REST API.
  *   G) EvaluateDecision evaluates a deployed DMN table directly, outside
  *      of any process instance (reuses suite 17's approvalDecision.dmn).
+ *   H) ResolveIncident resolves an incident discovered via its REST-
+ *      exposed zeebeKey.
+ *   I) ModifyProcessInstance moves the active token to a different element.
+ *   J) UpdateJobRetries resets a job's retries after they were exhausted,
+ *      proving the RPC's write is durable (the job becomes completable
+ *      again) rather than just returning success.
+ *   K) BroadcastSignal resumes an instance parked at a signal catch event
+ *      (a new minimal fixture, 24_grpc_signal_process.bpmn).
  */
 import * as path from 'path';
 import { ZBClient } from 'zeebe-node';
@@ -32,6 +40,7 @@ import { GoFlowClient, runSuite, assert, sleep } from './client';
 const BPMN = path.join(__dirname, 'bpmn', '24_grpc_process.bpmn');
 const ORDER_BPMN = path.join(__dirname, 'bpmn', '10_order_notification.bpmn');
 const DMN = path.join(__dirname, 'bpmn', '17_approval_decision.dmn');
+const SIGNAL_BPMN = path.join(__dirname, 'bpmn', '24_grpc_signal_process.bpmn');
 const restClient = new GoFlowClient();
 
 function newZbClient(): ZBClient {
@@ -274,6 +283,73 @@ async function run() {
           await restClient.waitForProcessEnd(instanceUUID, 10000);
           const inst = await restClient.getProcessInstance(instanceUUID);
           assert(inst !== null && inst.status === 'completed', `expected the instance to complete after moving to "end", got ${inst?.status}`);
+        },
+      },
+
+      {
+        name: '[J] UpdateJobRetries resets a job\'s retries, allowing it to be completed instead of incidenting',
+        async fn() {
+          const created: any = await zbc.createProcessInstance({ bpmnProcessId: 'GrpcProcess', variables: {} });
+          const instanceUUID = await findRunningInstanceUUID('GrpcProcess');
+
+          let jobs: any[] = [];
+          const deadline = Date.now() + 15000;
+          while (jobs.length === 0 && Date.now() < deadline) {
+            jobs = await zbc.activateJobs({
+              type: 'grpc_review',
+              worker: 'suite-24-worker',
+              timeout: 30000,
+              maxJobsToActivate: 10,
+              requestTimeout: 3000,
+            } as any);
+            if (jobs.length === 0) await sleep(500);
+          }
+          const job = jobs.find(j => j.processInstanceKey === created.processInstanceKey);
+          assert(!!job, 'expected to activate the job for the new instance');
+
+          // Exhaust retries to zero (would otherwise incident), then reset
+          // them via UpdateJobRetries so a later completion succeeds
+          // instead — proves the RPC's write is actually durable, not just
+          // that the call returns 200.
+          await zbc.failJob({ jobKey: job.key, retries: 0, errorMessage: 'grpc suite induced failure (for retry reset)', retryBackOff: 0 });
+          await zbc.updateJobRetries({ jobKey: job.key, retries: 3 });
+
+          let refetched: any[] = [];
+          const refetchDeadline = Date.now() + 10000;
+          while (refetched.length === 0 && Date.now() < refetchDeadline) {
+            refetched = await zbc.activateJobs({
+              type: 'grpc_review',
+              worker: 'suite-24-worker',
+              timeout: 30000,
+              maxJobsToActivate: 10,
+              requestTimeout: 3000,
+            } as any);
+            if (refetched.length === 0) await sleep(500);
+          }
+          const resetJob = refetched.find(j => j.processInstanceKey === created.processInstanceKey);
+          assert(!!resetJob, 'expected the job to be fetchable again after UpdateJobRetries reset its retries');
+
+          await zbc.completeJob({ jobKey: resetJob.key, variables: { reviewed: true } });
+          await restClient.waitForProcessEnd(instanceUUID, 10000);
+          const inst = await restClient.getProcessInstance(instanceUUID);
+          assert(inst !== null && inst.status === 'completed', `expected the instance to complete after the retry reset, got ${inst?.status}`);
+        },
+      },
+
+      {
+        name: '[K] BroadcastSignal resumes an instance parked at a signal catch event',
+        async fn() {
+          await zbc.deployResource({ processFilename: SIGNAL_BPMN });
+          await zbc.createProcessInstance({ bpmnProcessId: 'GrpcSignalProcess', variables: {} });
+          const instanceUUID = await findRunningInstanceUUID('GrpcSignalProcess');
+          await sleep(500);
+
+          const res: any = await zbc.broadcastSignal({ signalName: 'GrpcTestSignal', variables: {} });
+          assert(!!res.key, 'expected a signal key in the BroadcastSignal response');
+
+          await restClient.waitForProcessEnd(instanceUUID, 10000);
+          const inst = await restClient.getProcessInstance(instanceUUID);
+          assert(inst !== null && inst.status === 'completed', `expected the instance to complete after BroadcastSignal, got ${inst?.status}`);
         },
       },
 

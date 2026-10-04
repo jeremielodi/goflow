@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ShieldPlus, Trash2, Settings } from 'lucide-react';
+import { ShieldPlus, Trash2, Settings, Pencil } from 'lucide-react';
 import {
   listRoles, createRole, updateRole, deleteRole,
   listActions, getRoleActions, assignActionToRole, removeActionFromRole,
@@ -13,6 +13,7 @@ export default function AdminRoles() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newLabel, setNewLabel] = useState('');
   const [manageRole, setManageRole] = useState<Role | null>(null);
+  const [editRole, setEditRole] = useState<Role | null>(null);
 
   const { data: roles = [], isLoading } = useQuery({ queryKey: ['admin-roles'], queryFn: listRoles });
 
@@ -28,6 +29,9 @@ export default function AdminRoles() {
   const deleteMut = useMutation({
     mutationFn: deleteRole,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-roles'] }),
+    onError: (err: any) => {
+      alert(err.response?.data?.message ?? 'Failed to delete role.');
+    },
   });
 
   return (
@@ -66,6 +70,9 @@ export default function AdminRoles() {
                       <Button variant="secondary" size="sm" onClick={() => setManageRole(r)}>
                         <Settings className="w-3.5 h-3.5" /> Actions
                       </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setEditRole(r)}>
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
                       <Button
                         variant="ghost" size="sm"
                         onClick={() => { if (confirm(`Delete role ${r.label}?`)) deleteMut.mutate(r.id); }}
@@ -85,7 +92,7 @@ export default function AdminRoles() {
         <div className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1.5">Label</label>
-            <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} />
+            <Input value={newLabel} onChange={e => setNewLabel(e.target.value)} data-testid="new-role-label" />
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
@@ -100,7 +107,50 @@ export default function AdminRoles() {
       {manageRole && (
         <ManageActionsModal role={manageRole} onClose={() => setManageRole(null)} />
       )}
+
+      {editRole && (
+        <EditRoleModal role={editRole} onClose={() => setEditRole(null)} />
+      )}
     </div>
+  );
+}
+
+function EditRoleModal({ role, onClose }: { role: Role; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [label, setLabel] = useState(role.label);
+  const [isDefault, setIsDefault] = useState(role.is_default === 1);
+
+  const updateMut = useMutation({
+    mutationFn: () => updateRole(role.id, label, isDefault ? 1 : 0),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-roles'] });
+      onClose();
+    },
+  });
+
+  return (
+    <Modal open onClose={onClose} title={`Edit Role: ${role.label}`}>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1.5">Label</label>
+          <Input value={label} onChange={e => setLabel(e.target.value)} />
+        </div>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={isDefault} onChange={e => setIsDefault(e.target.checked)} />
+          Default role (assigned automatically to new users)
+        </label>
+        {updateMut.isError && (
+          <p className="text-sm text-red-600">Update failed. Try again.</p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => updateMut.mutate()} disabled={!label || updateMut.isPending}>
+            {updateMut.isPending && <Spinner className="w-4 h-4 text-white" />}
+            Save
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -117,6 +117,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "current_element_id", Value: nextID},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "id", Value: *task.ExecutionID},
 	})
 
@@ -125,6 +126,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "completed"},
 		{Key: "completed_at", Value: time.Now()},
 	}, []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "id", Value: task.ID},
 	})
 
@@ -145,6 +147,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		{Key: "status", Value: "active"},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "id", Value: task.ExecutionID},
 	})
 
@@ -176,6 +179,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	}
 	LogAuditErr("execution moved", s.auditService.LogExecutionMoved(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey, nextID, currentVars))
 	if p := eventlog.Global(); p != nil {
+		p.TaskCompleted(task.ProcessInstanceID.String(), task.ID.String())
 		p.ExecutionMoved(task.ProcessInstanceID.String(), task.ExecutionID.String(), task.TaskDefinitionKey, nextID)
 	}
 
@@ -230,6 +234,7 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 		{Key: "status", Value: "completed"},
 		{Key: "completed_at", Value: time.Now()},
 	}, []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "id", Value: task.ID},
 	})
 
@@ -259,6 +264,7 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 		{Key: "is_active", Value: false},
 		{Key: "updated_at", Value: time.Now()},
 	}, []database.QueryParameter{
+		{Key: "process_instance_id", Value: task.ProcessInstanceID},
 		{Key: "id", Value: *task.ExecutionID},
 	})
 
@@ -289,6 +295,7 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 	LogAuditErr("execution completed", s.auditService.LogExecutionCompleted(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey))
 	LogAuditErr("process completed", s.auditService.LogProcessCompleted(task.ProcessInstanceID, currentVars))
 	if p := eventlog.Global(); p != nil {
+		p.TaskCompleted(task.ProcessInstanceID.String(), task.ID.String())
 		p.ExecutionCompleted(task.ProcessInstanceID.String(), task.ExecutionID.String(), task.TaskDefinitionKey)
 		p.ProcessCompleted(task.ProcessInstanceID.String())
 	}

@@ -21,7 +21,12 @@ import "google/protobuf/timestamp.proto";
 // transition already instrumented by internal/service/audit_service.go's
 // generic Log* methods (execution movement, gateway fork/join, timers,
 // message/signal correlation) — mirroring those same call sites rather than
-// inventing new per-BPMN-element event logic.
+// inventing new per-BPMN-element event logic. JobRetriesSet (field 25) closes
+// a gap-closing pass. Task* (fields 26-30) close a later-found systematic
+// gap: user-task lifecycle had zero coverage here despite job lifecycle
+// being fully instrumented — see internal/eventlog/producer.go's Task*
+// methods and their call sites in internal/repository/task_repository.go /
+// internal/runtime/executor_user_task.go.
 
 message ProcessStarted {
   string process_instance_id = 1;
@@ -126,6 +131,44 @@ message JobRetriesSet {
   int32 retries = 3;
 }
 
+// Task* (fields 26-30): user-task lifecycle, closing a gap where every
+// job transition already had a domain event but no task transition did —
+// the only observability for tasks was the older, SSE/WebSocket/webhook-
+// oriented internal/events.TaskEventDispatcher, entirely separate from
+// this Kafka event log. Field shapes mirror that dispatcher's
+// TaskEvent/TaskEventType exactly (same 5 transitions: created, claimed,
+// unclaimed, completed, cancelled), not reinvented.
+
+message TaskCreated {
+  string task_id = 1;
+  string process_instance_id = 2;
+  string execution_id = 3;
+  string task_definition_key = 4;
+  string assignee = 5;
+}
+
+message TaskClaimed {
+  string task_id = 1;
+  string process_instance_id = 2;
+  string assignee = 3;
+}
+
+message TaskUnclaimed {
+  string task_id = 1;
+  string process_instance_id = 2;
+}
+
+message TaskCompleted {
+  string task_id = 1;
+  string process_instance_id = 2;
+}
+
+message TaskCancelled {
+  string task_id = 1;
+  string process_instance_id = 2;
+  string reason = 3;
+}
+
 // Envelope is the single message type actually written to the Kafka/Redpanda
 // topic. process_instance_id is duplicated at this level (also present on
 // every inner event) so a consumer can route/partition without unwrapping
@@ -152,5 +195,10 @@ message Envelope {
     MessageCorrelated message_correlated = 23;
     SignalBroadcast signal_broadcast = 24;
     JobRetriesSet job_retries_set = 25;
+    TaskCreated task_created = 26;
+    TaskClaimed task_claimed = 27;
+    TaskUnclaimed task_unclaimed = 28;
+    TaskCompleted task_completed = 29;
+    TaskCancelled task_cancelled = 30;
   }
 }

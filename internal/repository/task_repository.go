@@ -251,7 +251,6 @@ func (r *TaskRepository) FindTasksByProcessInstance(instanceID uuid.UUID) ([]mod
 
 // ClaimTask assigns a task to a user and updates status to 'claimed'.
 func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Result, error) {
-	adapter := database.NewDabaseAdapter(r.db)
 	now := time.Now()
 
 	// Get task before update for event
@@ -260,14 +259,14 @@ func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Resul
 		return nil, err
 	}
 
-	result, err := adapter.Update("public.tasks", []database.QueryParameter{
-		{Key: "assignee", Value: assignee},
-		{Key: "status", Value: "claimed"},
-		{Key: "claimed_at", Value: now},
-	}, database.QueryParameter{
-		Key:   "id",
-		Value: taskID,
-	})
+	// Direct SQL rather than the DataBaseAdapter.Update helper (which only
+	// supports a single WHERE condition) — process_instance_id is needed
+	// alongside id for single-shard Citus routing.
+	result, err := r.db.Exec(`
+		UPDATE public.tasks
+		SET assignee = $1, status = 'claimed', claimed_at = $2
+		WHERE process_instance_id = $3 AND id = $4
+	`, assignee, now, taskBefore.ProcessInstanceID, taskID)
 
 	if err != nil {
 		return result, err
@@ -283,22 +282,20 @@ func (r *TaskRepository) ClaimTask(taskID uuid.UUID, assignee string) (sql.Resul
 
 // UnClaimTask removes assignee from a task and resets status to 'created'.
 func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
-	adapter := database.NewDabaseAdapter(r.db)
-
 	// Get task before update for event
 	taskBefore, err := r.FindTaskByID(taskID)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := adapter.Update("public.tasks", []database.QueryParameter{
-		{Key: "assignee", Value: nil},
-		{Key: "status", Value: "created"},
-		{Key: "claimed_at", Value: nil},
-	}, database.QueryParameter{
-		Key:   "id",
-		Value: taskID,
-	})
+	// Direct SQL rather than the DataBaseAdapter.Update helper (which only
+	// supports a single WHERE condition) — process_instance_id is needed
+	// alongside id for single-shard Citus routing.
+	result, err := r.db.Exec(`
+		UPDATE public.tasks
+		SET assignee = NULL, status = 'created', claimed_at = NULL
+		WHERE process_instance_id = $1 AND id = $2
+	`, taskBefore.ProcessInstanceID, taskID)
 
 	if err != nil {
 		return result, err
@@ -310,180 +307,22 @@ func (r *TaskRepository) UnClaimTask(taskID uuid.UUID) (sql.Result, error) {
 }
 
 // UpdateTaskFormData merges new form data into the existing JSONB.
-func (r *TaskRepository) UpdateTaskFormData(taskID uuid.UUID, formData map[string]interface{}) (sql.Result, error) {
+func (r *TaskRepository) UpdateTaskFormData(processInstanceID, taskID uuid.UUID, formData map[string]interface{}) (sql.Result, error) {
 	newJSON, _ := json.Marshal(formData)
 	_, err := r.db.Exec(`
 		UPDATE public.tasks
 		SET form_data = COALESCE(form_data, '{}'::jsonb) || $1::jsonb
-		WHERE id = $2
-	`, newJSON, taskID)
+		WHERE process_instance_id = $2 AND id = $3
+	`, newJSON, processInstanceID, taskID)
 	if err != nil {
 		return nil, err
 	}
 	return sql.Result(nil), nil
 }
 
-// UpdateTaskStatus updates task status.
-func (r *TaskRepository) UpdateTaskStatus(taskID uuid.UUID, status string, claimedAt, completedAt *time.Time) (sql.Result, error) {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	// Get task before update for event
-	taskBefore, err := r.FindTaskByID(taskID)
-	if err != nil {
-		return nil, err
-	}
-
-	params := []database.QueryParameter{
-		{Key: "status", Value: status},
-	}
-	if claimedAt != nil {
-		params = append(params, database.QueryParameter{Key: "claimed_at", Value: *claimedAt})
-	}
-	if completedAt != nil {
-		params = append(params, database.QueryParameter{Key: "completed_at", Value: *completedAt})
-	}
-
-	result, err := adapter.Update("public.tasks", params, database.QueryParameter{Key: "id", Value: taskID})
-
-	if err != nil {
-		return result, err
-	}
-
-	// Determine event type based on new status
-	var eventType events.TaskEventType
-	switch status {
-	case "completed":
-		eventType = events.TaskCompleted
-	case "cancelled":
-		eventType = events.TaskCancelled
-	case "failed":
-		eventType = events.TaskFailed
-	default:
-		// Don't dispatch for other status changes
-		return result, nil
-	}
-
-	r.dispatchTaskEvent(taskID, &taskBefore, eventType, map[string]interface{}{
-		"new_status": status,
-	})
-
-	return result, nil
-}
-
-// CompleteTask marks a task as completed.
-func (r *TaskRepository) CompleteTask(taskID uuid.UUID) error {
-	// Get task before update for event
-	taskBefore, err := r.FindTaskByID(taskID)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.Exec(`
-		UPDATE public.tasks
-		SET status = 'completed', completed_at = $1, updated_at = $1
-		WHERE id = $2
-	`, time.Now(), taskID)
-
-	if err != nil {
-		return err
-	}
-
-	// Dispatch TaskCompleted event
-	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCompleted, nil)
-
-	return nil
-}
-
-// FailTask marks a task as failed.
-func (r *TaskRepository) FailTask(taskID uuid.UUID, reason string) error {
-	// Get task before update for event
-	taskBefore, err := r.FindTaskByID(taskID)
-	if err != nil {
-		return err
-	}
-
-	_, err = r.db.Exec(`
-		UPDATE public.tasks
-		SET status = 'failed', updated_at = $1
-		WHERE id = $2
-	`, time.Now(), taskID)
-
-	if err != nil {
-		return err
-	}
-
-	// Dispatch TaskFailed event
-	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskFailed, map[string]interface{}{
-		"reason": reason,
-	})
-
-	return nil
-}
-
-// ============================================================
-// DELETE
-// ============================================================
-
-// DeleteTask permanently removes a task (e.g., for cancellation).
-func (r *TaskRepository) DeleteTask(taskID uuid.UUID) (sql.Result, error) {
-	// Get task before delete for event
-	taskBefore, err := r.FindTaskByID(taskID)
-	if err != nil {
-		return nil, err
-	}
-
-	result, err := r.db.Exec(`DELETE FROM public.tasks WHERE id = $1`, taskID)
-
-	if err != nil {
-		return result, err
-	}
-
-	// Dispatch TaskCancelled event
-	r.dispatchTaskEvent(taskID, &taskBefore, events.TaskCancelled, map[string]interface{}{
-		"reason": "deleted",
-	})
-
-	return result, nil
-}
-
 // ============================================================
 // HELPERS
 // ============================================================
-
-// GetProcessInstanceID returns the process instance ID for a task.
-func (r *TaskRepository) GetProcessInstanceID(taskID uuid.UUID) (uuid.UUID, error) {
-	var instanceID uuid.UUID
-	err := r.db.Get(&instanceID, `
-        SELECT process_instance_id FROM public.tasks WHERE id = $1
-    `, taskID)
-	return instanceID, err
-}
-
-// GetExecutionID returns the execution ID for a task.
-func (r *TaskRepository) GetExecutionID(taskID uuid.UUID) (uuid.UUID, error) {
-	var execID uuid.UUID
-	err := r.db.Get(&execID, `
-        SELECT execution_id FROM public.tasks WHERE id = $1
-    `, taskID)
-	return execID, err
-}
-
-// UpdateTaskStatusTx updates task status inside an existing transaction.
-func (r *TaskRepository) UpdateTaskStatusTx(tx *sqlx.Tx, taskID uuid.UUID, status string, claimedAt, completedAt *time.Time) (sql.Result, error) {
-	query := `UPDATE public.tasks SET status = $1`
-	args := []interface{}{status}
-	if claimedAt != nil {
-		query += `, claimed_at = $2`
-		args = append(args, *claimedAt)
-	}
-	if completedAt != nil {
-		query += `, completed_at = $3`
-		args = append(args, *completedAt)
-	}
-	query += ` WHERE id = $4`
-	args = append(args, taskID)
-	return tx.Exec(query, args...)
-}
 
 // CancelOpenTasksByProcessInstanceTx cancels every open (created/claimed)
 // task belonging to a process instance — used when the whole instance is
@@ -498,16 +337,6 @@ func (r *TaskRepository) CancelOpenTasksByProcessInstanceTx(tx *sqlx.Tx, instanc
 		RETURNING id
 	`, instanceID)
 	return cancelledTaskIDs, err
-}
-
-// CompleteTaskTx completes a task within a transaction.
-func (r *TaskRepository) CompleteTaskTx(tx *sqlx.Tx, taskID uuid.UUID) error {
-	_, err := tx.Exec(`
-		UPDATE public.tasks
-		SET status = 'completed', completed_at = $1, updated_at = $1
-		WHERE id = $2
-	`, time.Now(), taskID)
-	return err
 }
 
 // ============================================================

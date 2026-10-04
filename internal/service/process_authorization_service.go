@@ -37,3 +37,26 @@ func CanAccessProcess(db *sqlx.DB, userID uuid.UUID, processKey, level string) (
 	actionRepo := repository.NewActionRepository(db)
 	return actionRepo.UserHasPermission(userID, "CAN_MANAGE_DEPLOY_PROCESS")
 }
+
+// CanAccessProcessInstance is CanAccessProcess for callers that only have a
+// process_instance_id, not the process_key directly (task/incident/audit
+// endpoints, mostly) — resolves the owning process_key (checking the live
+// table first, then the historic archive) and delegates. Returns true
+// (fail open) if the instance can't be resolved at all, matching
+// ProcessInstanceController.checkInstanceAccess's reasoning: the caller's
+// own not-found handling already covers that case, this only needs to say
+// no when a real, resolvable instance exists and the caller lacks the
+// grant for it.
+func CanAccessProcessInstance(db *sqlx.DB, userID, instanceID uuid.UUID, level string) (bool, error) {
+	instRepo := repository.NewProcessInstanceRepository(db)
+	processKey := ""
+	if inst, err := instRepo.FindByID(instanceID); err == nil && inst != nil {
+		processKey = inst.ProcessKey
+	} else if hist, err := instRepo.FindHistoricByID(instanceID); err == nil && hist != nil {
+		processKey = hist.ProcessKey
+	}
+	if processKey == "" {
+		return true, nil
+	}
+	return CanAccessProcess(db, userID, processKey, level)
+}

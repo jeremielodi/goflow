@@ -18,8 +18,8 @@ in-memory debug ring buffer and folds a subset of events into read-model
 tables — see below — proving the pipe is durable, ordered per instance,
 well-formed, and genuinely capable of reconstructing state.
 
-**Wired events, full coverage** (see `internal/eventlog/proto/events.proto`
-for exact shapes) — 15 total, mirroring every generic transition already
+**Wired events** (see `internal/eventlog/proto/events.proto` for exact
+shapes) — 21 total, mirroring every generic transition already
 instrumented by `internal/service/audit_service.go`'s `Log*` methods rather
 than inventing new per-BPMN-element event logic:
 - Core lifecycle (shipped first): `ProcessStarted`, `JobCreated`,
@@ -36,7 +36,26 @@ than inventing new per-BPMN-element event logic:
   `internal/api/signal_controller.go`). `SignalBroadcast` has no owning
   instance (a broadcast spans zero or more instances) and publishes with an
   empty partition key.
-- ~30 call sites total wired, all following the identical
+- `JobRetriesSet` (Phase 5 gap-closing pass).
+- **`TaskCreated`/`TaskClaimed`/`TaskUnclaimed`/`TaskCompleted`/
+  `TaskCancelled`** (added 2026-07-05, closing a real, previously-unnoticed
+  systematic gap: job lifecycle was fully instrumented here but *user-task*
+  lifecycle had zero coverage at all — not a missing call site, the proto
+  schema itself had no `Task*` message type. The only prior task
+  observability was the older, entirely separate
+  `internal/events.TaskEventDispatcher` (SSE/WebSocket/webhook push), which
+  never touches this Kafka event log. Field shapes mirror that dispatcher's
+  5 transitions exactly. `TaskCreated`/`TaskClaimed`/`TaskUnclaimed`/
+  `TaskCancelled` publish from `internal/api/task_controller.go` (the
+  layer these repository mutators are called from — publishing inside
+  `internal/repository/task_repository.go` itself isn't possible, that
+  package can't import `internal/eventlog` without an import cycle, since
+  `eventlog.Consumer` already imports `internal/repository` for its own
+  projection writes); `TaskCompleted` publishes from
+  `internal/service/task_service.go`'s two real completion paths (the
+  `TaskRepository.CompleteTask` method it does NOT go through is dead code,
+  never registered as a route).
+- ~35 call sites total wired, all following the identical
   `if p := eventlog.Global(); p != nil { p.X(...) }` idiom placed
   immediately after the corresponding existing audit call.
 
@@ -652,11 +671,146 @@ added new call sites), the full regression was run **without**
 green, including suites 03/04/06's real timer/boundary-timer coverage on
 the unmodified legacy path.
 
-**Status after this pass**: every previously-identified gap is closed.
-Remaining scope is entirely about BPMN construct coverage the partitioned
-engine doesn't support yet (parallel/inclusive gateways, multi-instance,
-message/signal correlation, boundary timers, timers mixed with tasks) —
-no more known write-path bypass gaps.
+**Status after this pass**: every previously-identified gap is closed. See
+the next section, though — auditing again afterward found two more.
+
+## Gap-closing pass 2: Terminate/Cancel and Modify
+
+Asked "is there another phase to cover? any gap or bug?" after Phase 6
+shipped. Rather than re-reading the deferred-features list, audited the
+codebase directly for any remaining direct-Postgres write skipping the
+`LookupJobOwner`/`LookupIncidentOwner`/`LookupInstanceOwner` gate every
+other write path already has. Found two real, previously-unflagged ones —
+not BPMN construct coverage this time, but the same "bypasses partition
+ownership" class of bug as everything above, on operations that apply to
+*any* process instance regardless of shape (unlike message/signal/gateway
+constructs, which can never reach a partitioned instance because
+`ValidateShape` already rejects those definitions at flip-time):
+
+1. **`service.TerminateProcessInstance`**, shared by REST `DELETE
+   /process-instance/:id` and gRPC `CancelProcessInstance` — wrote
+   directly to `executions`/`jobs`/`timer_jobs` with zero write-path
+   check. A partitioned instance could be terminated out from under the
+   Partition Processor at any time, racing its writes.
+2. **`ModifyProcessInstance`** (REST v2 and gRPC) — called
+   `runtime.ModifyInstance` directly, moving an execution's graph
+   position. Same bypass.
+
+**Terminate**: closed the same way as every prior gate — new
+`TerminateCommand`, a Partition Processor handler that reuses
+`service.TerminateProcessInstance` verbatim (it's already a single
+self-contained operation: transaction + cascade cleanup + archive, not
+something to reimplement), gated both call sites via the existing
+`partition.LookupInstanceOwner`. The Command Gateway's `Terminate` waits on
+the **existing** `ProcessTerminated` event (already published
+unconditionally at the end of `TerminateProcessInstance`, already wired
+into `Consumer`'s waiter-notify switch since Phase 0 shadow mode — no new
+event type needed) with a single `Await`, not a retry loop: unlike
+`JobCompleted`/`JobFailed` (which can fire repeatedly for different jobs on
+the same instance), `ProcessTerminated` fires exactly once ever per
+instance, the same reasoning `StartProcess`'s single `Await` on
+`ProcessStarted` already relies on. Redelivery safety is keyed off "does
+the row still exist" rather than a status check — a prior attempt's
+success already archived-and-deleted the instance's live rows, so a second
+`FindByID` genuinely returns `service.ErrProcessInstanceNotFound`, treated
+as a safe no-op.
+
+**Modify — rejected outright for partitioned instances, not implemented
+through Kafka**: `ModifyProcessInstance` supports arbitrary source/target
+element pairs and multi-token moves — routing that through the Command
+Gateway would mean either restricting it to the narrow validated shapes
+(what does "move a token" even mean inside a processor handler that
+assumes today's fixed shapes?) or a much bigger effort disproportionate to
+how rarely this operation is used. The gRPC handler already scopes itself
+down for unrelated reasons ("exactly one activateInstruction... multi-token
+modification is not supported over gRPC"), so an explicit scope rejection
+for partitioned instances is consistent with precedent, not a new kind of
+limitation. Both call sites now check `partition.LookupInstanceOwner`
+first and return a clear error (REST: 422 `MODIFICATION_FAILED`; gRPC:
+`codes.FailedPrecondition`) instead of calling `runtime.ModifyInstance` —
+no new proto/command/processor code needed for this half of the pass.
+
+**Verification**: new e2e suite
+`examples/tests/33_partition_terminate_modify.test.ts` (5 cases: REST
+terminate, gRPC cancel, REST v2 modify rejected, gRPC modify rejected,
+legacy terminate regression). First full run surfaced 2 failures, both
+test bugs rather than implementation bugs (checked expected instance state
+against `'running'` instead of the actual `'active'` value the history
+endpoint uses; the gRPC `ModifyProcessInstance` call omitted zeebe-node's
+required `variableInstructions: []` field, crashing client-side before the
+request even reached the server) — fixed both, then two full Docker
+regressions green (32 suites, `--no-timers`; nothing in this pass touches
+timer code, unlike Phase 6).
+
+**Status after this pass**: every instance-level operation (start,
+complete, fail, set-retries, resolve-incident, timers, terminate) is now
+gated for partitioned instances; modification is explicitly out of scope
+rather than silently unsafe. Remaining scope is entirely about BPMN
+construct coverage the partitioned engine doesn't support yet
+(parallel/inclusive gateways, multi-instance, message/signal correlation,
+boundary timers, timers mixed with tasks, and modification if ever
+prioritized) — no more known write-path bypass gaps.
+
+## Phase 7 — parallel gateway (AND fork/join)
+
+Second of 5 items from a user-directed sequential list ("fix all of them,
+one at a time" — see `architecture/citus-distributed-storage-design.md`
+section 6 for item 1). Presented via `AskUserQuestion` as one of three
+candidate next shapes (the others: user tasks in the linear chain, which
+would need a brand-new Kafka command type since no "complete a user task"
+command exists yet; boundary timer events on chain tasks, which risks
+combining two prior phases' concerns in one). Parallel gateway was chosen
+as lowest-risk: it mirrors Phase 2's diamond shape but forks
+unconditionally to every branch (AND) instead of picking one via a
+condition (XOR).
+
+**Turned out to be architecturally free, same as Phase 4** — zero changes
+to `gateway.go` or `processor.go`. The reasoning: `runtime.ExecuteExecution`
+already handles both the fork (creating N child executions and walking
+each to its first job, all inside one call) and the join (counting arrived
+branches via `gateway_state`, resuming the parent once the last one
+arrives) generically, regardless of who's calling it — this is the exact
+same shared code the legacy/Citus paths use, including the
+`ParallelGatewayExecutor` join-counting logic fixed for a real bug the same
+day (see `architecture/citus-distributed-storage-design.md` section 6).
+`handleStartProcess`'s `rt.ExecuteExecution` walk reaches the fork and
+creates+advances every branch in one shot; each branch's own job
+completion goes through the already-generic `handleCompleteJob` →
+`rt.ExecuteExecution(result.ExecutionID)` call, which resolves to that one
+child and, on the last arrival, drives the join and resumes the parent —
+no new command type, no new redelivery logic, since the existing
+"status == 'active' means the walk hasn't resumed yet" contract is
+per-execution, not shape-specific.
+
+**The one real question this raised — sibling-branch concurrency — turned
+out to be a non-issue given how Kafka partitioning already works here**:
+every command for one process instance hashes to the same Kafka partition
+and is processed strictly serially by that partition's single owning
+goroutine. Two sibling branches' job completions are never actually
+concurrent at the write layer, even if their underlying jobs complete at
+the same wall-clock moment — the exact class of race the legacy/Citus path
+needs `FOR UPDATE` locking to guard against simply can't happen on the
+partitioned path.
+
+**Only change needed**: `internal/partition/validate.go` — a new
+`validateParallelShape` (structurally similar to `validateDiamondShape`)
+recognizing start → fork parallelGateway (N≥2 unconditional outgoing
+flows) → N distinct service tasks → join parallelGateway → shared end
+event. Rejects a conditioned fork flow (AND semantics, a condition would
+be silently ignored at runtime), business rule tasks or boundary
+events/timers in a branch (same restriction as the diamond, not combining
+generalizations), and any branch that skips the join.
+
+**Verification**: 8 new unit tests in `validate_test.go` (2 passing shapes,
+6 rejections). New e2e suite `examples/tests/34_partition_parallel.test.ts`
+(5 cases: flip-to-partitioned, reject-conditioned-flow, both-branches-run,
+join-works-regardless-of-completion-order, Phase 1/2 regression check).
+Full 33-suite regression green on both a fresh plain stack and a fresh
+Citus-backed stack. One flaky failure observed on the very first run
+immediately after a container restart (`timed out after 5s waiting for
+ProcessStarted` — a Kafka consumer-group rebalance-lag artifact of this
+host, not a code bug; passed cleanly on immediate retry and on both full
+regressions afterward).
 
 ## 1. Why this exists, and why not sooner
 

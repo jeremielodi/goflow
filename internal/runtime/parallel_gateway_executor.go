@@ -84,7 +84,7 @@ func (p *ParallelGatewayExecutor) ExecuteFork(
 	}
 
 	// Mark parent execution as waiting (it will be resumed after all children complete)
-	err = p.engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+	err = p.engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting")
 	if err != nil {
 		return fmt.Errorf("failed to update parent execution: %w", err)
 	}
@@ -123,7 +123,7 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 	// Find the gateway state
 	var gatewayState models.GatewayState
 	err = tx.Get(&gatewayState, `
-        SELECT id, expected_incoming, received_incoming, status, joined_flows
+        SELECT id, process_instance_id, expected_incoming, received_incoming, status, joined_flows
         FROM public.gateway_state
         WHERE process_instance_id = $1 AND gateway_id = $2 AND status = 'waiting'
         FOR UPDATE
@@ -153,11 +153,25 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 			JoinedFlows:       joinedFlowsJSON,
 		}
 
-		err = p.engineRepo.CreateGatewayStateTx(tx, &gatewayState)
+		created, err := p.engineRepo.CreateGatewayStateTx(tx, &gatewayState)
 		if err != nil {
 			return fmt.Errorf("failed to create gateway state: %w", err)
 		}
-	} else {
+		if !created {
+			// Lost the race to a concurrent branch — re-fetch the row it
+			// just created and fall through to the join-update path below.
+			isFirstJoin = false
+			if err := tx.Get(&gatewayState, `
+				SELECT id, process_instance_id, expected_incoming, received_incoming, status, joined_flows
+				FROM public.gateway_state
+				WHERE process_instance_id = $1 AND gateway_id = $2 AND status = 'waiting'
+				FOR UPDATE
+			`, exec.ProcessInstanceID, gatewayNode.ID); err != nil {
+				return fmt.Errorf("failed to re-fetch gateway state after losing create race: %w", err)
+			}
+		}
+	}
+	if !isFirstJoin {
 		// Update existing gateway state
 		var joinedFlows []string
 		json.Unmarshal(gatewayState.JoinedFlows, &joinedFlows)
@@ -169,8 +183,8 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 		_, err = tx.Exec(`
             UPDATE public.gateway_state
             SET received_incoming = $1, joined_flows = $2
-            WHERE id = $3
-        `, newReceived, joinedFlowsJSON, gatewayState.ID)
+            WHERE process_instance_id = $3 AND id = $4
+        `, newReceived, joinedFlowsJSON, gatewayState.ProcessInstanceID, gatewayState.ID)
 		if err != nil {
 			return fmt.Errorf("failed to update gateway state: %w", err)
 		}
@@ -179,7 +193,7 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 	}
 
 	// Mark current child execution as completed
-	err = p.engineRepo.CompleteChildExecutionTx(tx, exec.ID)
+	err = p.engineRepo.CompleteChildExecutionTx(tx, exec.ProcessInstanceID, exec.ID)
 	if err != nil {
 		return fmt.Errorf("failed to complete child execution: %w", err)
 	}
@@ -205,7 +219,7 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 
 		// Reactivate parent execution and move to next node
 		nextNodeID := p.getNextNodeAfterGateway(gatewayNode)
-		err = p.engineRepo.UpdateExecutionStatusAndNodeTx(tx, *parentExecID, "active", nextNodeID)
+		err = p.engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, *parentExecID, "active", nextNodeID)
 		if err != nil {
 			return fmt.Errorf("failed to resume parent execution: %w", err)
 		}
@@ -214,8 +228,8 @@ func (p *ParallelGatewayExecutor) ExecuteJoin(
 		_, err = tx.Exec(`
             UPDATE public.gateway_state
             SET status = 'completed', completed_at = NOW()
-            WHERE id = $1
-        `, gatewayState.ID)
+            WHERE process_instance_id = $1 AND id = $2
+        `, gatewayState.ProcessInstanceID, gatewayState.ID)
 		if err != nil {
 			return fmt.Errorf("failed to complete gateway: %w", err)
 		}
@@ -306,7 +320,7 @@ func (p *ParallelGatewayExecutor) ResumeParentExecution(
 	}
 	defer tx.Rollback()
 
-	err = p.engineRepo.UpdateExecutionStatusAndNodeTx(tx, parentExecID, "active", nextNodeID)
+	err = p.engineRepo.UpdateExecutionStatusAndNodeTx(tx, processInstanceID, parentExecID, "active", nextNodeID)
 	if err != nil {
 		return fmt.Errorf("failed to update execution: %w", err)
 	}

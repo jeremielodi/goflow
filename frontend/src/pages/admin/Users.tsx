@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { UserPlus, Trash2, Pencil } from 'lucide-react';
 import {
-  listUsers, createUser, updateUser, deleteUser,
+  listUsers, createUser, updateUser, deleteUser, resetUserPassword,
   listRoles, getUserRoles, assignRoleToUser, removeRoleFromUser,
 } from '../../api/admin';
 import type { AdminUser } from '../../api/admin';
@@ -66,7 +66,8 @@ export default function AdminUsers() {
                       </Button>
                       <Button
                         variant="ghost" size="sm"
-                        onClick={() => { if (confirm(`Delete user ${u.email}?`)) deleteMut.mutate(u.id); }}
+                        title="Deactivate user"
+                        onClick={() => { if (confirm(`Deactivate ${u.email}? They will no longer be able to log in, but their history is preserved.`)) deleteMut.mutate(u.id); }}
                       >
                         <Trash2 className="w-3.5 h-3.5 text-red-500" />
                       </Button>
@@ -121,11 +122,11 @@ function CreateUserModal({ open, onClose, roles }: {
       <div className="space-y-3">
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1.5">Email</label>
-          <Input type="email" value={email} onChange={e => setEmail(e.target.value)} />
+          <Input type="email" value={email} onChange={e => setEmail(e.target.value)} data-testid="new-user-email" />
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1.5">Password</label>
-          <Input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+          <Input type="password" value={password} onChange={e => setPassword(e.target.value)} data-testid="new-user-password" />
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-700 mb-1.5">Full Name</label>
@@ -166,6 +167,12 @@ function EditUserModal({ user, roles, onClose }: {
   const [email, setEmail] = useState(user.email);
   const [fullName, setFullName] = useState(user.full_name ?? '');
   const [isActive, setIsActive] = useState(user.is_active);
+  const [newPassword, setNewPassword] = useState('');
+
+  const resetPasswordMut = useMutation({
+    mutationFn: () => resetUserPassword(user.id, newPassword),
+    onSuccess: () => setNewPassword(''),
+  });
 
   const { data: currentRoles = [] } = useQuery({
     queryKey: ['admin-user-roles', user.id],
@@ -221,6 +228,33 @@ function EditUserModal({ user, roles, onClose }: {
             ))}
           </div>
         </div>
+
+        <div className="pt-2 border-t border-gray-100">
+          <label className="block text-xs font-medium text-gray-700 mb-1.5">Reset Password</label>
+          <div className="flex items-center gap-2">
+            <Input
+              type="password"
+              placeholder="New password"
+              value={newPassword}
+              onChange={e => { setNewPassword(e.target.value); resetPasswordMut.reset(); }}
+            />
+            <Button
+              variant="secondary" size="sm"
+              onClick={() => resetPasswordMut.mutate()}
+              disabled={newPassword.length < 6 || resetPasswordMut.isPending}
+            >
+              {resetPasswordMut.isPending && <Spinner className="w-4 h-4" />}
+              Reset
+            </Button>
+          </div>
+          {resetPasswordMut.isSuccess && <p className="text-xs text-green-600 mt-1">Password reset.</p>}
+          {resetPasswordMut.isError && (
+            <p className="text-xs text-red-500 mt-1">
+              {(resetPasswordMut.error as any)?.response?.data?.message ?? 'Failed to reset password.'}
+            </p>
+          )}
+        </div>
+
         <div className="flex justify-end gap-2 pt-2">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
           <Button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}>

@@ -139,6 +139,18 @@ func (p *CommandProducer) FireTimer(ctx context.Context, instanceID, timerID, ex
 	return p.send(ctx, instanceID.String(), env)
 }
 
+func (p *CommandProducer) Terminate(ctx context.Context, instanceID uuid.UUID, reason string) error {
+	env := &pb.CommandEnvelope{
+		CommandId:         uuid.NewString(),
+		ProcessInstanceId: instanceID.String(),
+		Command: &pb.CommandEnvelope_Terminate{Terminate: &pb.TerminateCommand{
+			ProcessInstanceId: instanceID.String(),
+			Reason:            reason,
+		}},
+	}
+	return p.send(ctx, instanceID.String(), env)
+}
+
 func (p *CommandProducer) send(ctx context.Context, key string, env *pb.CommandEnvelope) error {
 	data, err := proto.Marshal(env)
 	if err != nil {

@@ -72,7 +72,7 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 	for _, sub := range subs {
 		// Node the execution is currently parked at, for audit purposes.
 		var currentNodeID string
-		sc.db.QueryRow(`SELECT current_element_id FROM executions WHERE id = $1`, sub.ExecutionID).Scan(&currentNodeID)
+		sc.db.QueryRow(`SELECT current_element_id FROM executions WHERE process_instance_id = $1 AND id = $2`, sub.ProcessInstanceID, sub.ExecutionID).Scan(&currentNodeID)
 
 		// Determine target element
 		targetElementID := ""
@@ -111,7 +111,7 @@ func (sc *SignalController) Broadcast(name string, variables map[string]interfac
 
 		subRepo.Consume(sub.ID)
 
-		if err := repository.ResumeWaitingExecution(sc.db, sub.ExecutionID, targetElementID); err != nil {
+		if err := repository.ResumeWaitingExecution(sc.db, sub.ProcessInstanceID, sub.ExecutionID, targetElementID); err != nil {
 			errs = append(errs, fmt.Sprintf("exec %s: %v", sub.ExecutionID, err))
 			continue
 		}

@@ -58,6 +58,13 @@ export const deleteUser = async (id: string): Promise<void> => {
   await apiClient.delete(`/users/${id}`);
 };
 
+// Admin reset of another user's password — unlike a self-service password
+// change, this doesn't require knowing the current one. Gated server-side
+// by CAN_RESET_PASSWORD.
+export const resetUserPassword = async (id: string, newPassword: string): Promise<void> => {
+  await apiClient.put(`/users/${id}/reset-password`, { new_password: newPassword });
+};
+
 export const getUserRoles = async (userId: string): Promise<Role[]> => {
   const res = await apiClient.get(`/users/${userId}/roles`);
   return res.data.roles ?? [];

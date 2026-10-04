@@ -387,7 +387,7 @@ func (uc *UserController) GetUser(c *fiber.Ctx) error {
 	}
 
 	actionRepo := repository.NewActionRepository(uc.db)
-	hasPermission, _ := actionRepo.UserHasPermission(currentUserID, "CAN_MANGE_USER")
+	hasPermission, _ := actionRepo.UserHasPermission(currentUserID, "CAN_MANAGE_USER")
 
 	if currentUserID != id && !hasPermission {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
@@ -524,7 +524,7 @@ func (uc *UserController) UpdateUser(c *fiber.Ctx) error {
 
 	// Check permission
 	actionRepo := repository.NewActionRepository(uc.db)
-	hasPermission, _ := actionRepo.UserHasPermission(currentUserID, "CAN_MANGE_USER")
+	hasPermission, _ := actionRepo.UserHasPermission(currentUserID, "CAN_MANAGE_USER")
 
 	// Only allow if user is updating themselves OR has admin permission
 	if currentUserID != id && !hasPermission {
@@ -699,6 +699,71 @@ func (uc *UserController) UpdatePassword(c *fiber.Ctx) error {
 	})
 }
 
+// AdminResetPassword handles PUT /users/:id/reset-password — an admin
+// resetting another user's password without knowing their current one,
+// unlike UpdatePassword above (self-service, requires the current
+// password). Route-gated by CAN_RESET_PASSWORD in main.go; this handler
+// doesn't re-check the caller's identity the way UpdatePassword does,
+// since the whole point is resetting on behalf of someone else (e.g. a
+// locked-out user).
+func (uc *UserController) AdminResetPassword(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   "Invalid user ID",
+			"message": err.Error(),
+		})
+	}
+
+	var req struct {
+		NewPassword string `json:"new_password"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   "Invalid request body",
+			"message": err.Error(),
+		})
+	}
+	if len(req.NewPassword) < 6 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":   "Validation error",
+			"message": "New password must be at least 6 characters",
+		})
+	}
+
+	if _, err := uc.userRepo.FindByID(id); err != nil {
+		if err == sql.ErrNoRows {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error":   "User not found",
+				"message": "No user exists with the provided ID",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Database error",
+			"message": err.Error(),
+		})
+	}
+
+	newPasswordHash, err := hashPassword(req.NewPassword)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to hash password",
+			"message": err.Error(),
+		})
+	}
+
+	if _, err := uc.userRepo.UpdatePassword(id, newPasswordHash); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to reset password",
+			"message": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Password reset successfully",
+	})
+}
+
 // DeleteUser handles DELETE /users/:id
 func (uc *UserController) DeleteUser(c *fiber.Ctx) error {
 	id, err := uuid.Parse(c.Params("id"))
@@ -722,7 +787,7 @@ func (uc *UserController) DeleteUser(c *fiber.Ctx) error {
 
 	actionRepo := repository.NewActionRepository(uc.db)
 
-	hasPermission, _ := actionRepo.UserHasPermission(currentUserUuid, "CAN_MANGE_USER")
+	hasPermission, _ := actionRepo.UserHasPermission(currentUserUuid, "CAN_MANAGE_USER")
 
 	if !hasPermission {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
@@ -746,16 +811,22 @@ func (uc *UserController) DeleteUser(c *fiber.Ctx) error {
 		})
 	}
 
-	_, err = uc.userRepo.Delete(id)
+	// Soft-delete: deployments/process_instances/audit_logs all reference
+	// users.id with no cascade (deliberately, to preserve history), so a
+	// hard DELETE fails with a raw FK-violation error for any user who has
+	// ever deployed a BPMN, started an instance, or been audit-logged —
+	// which in practice is nearly every real user. Deactivate flips
+	// is_active instead, which UserController.Login already checks.
+	_, err = uc.userRepo.Deactivate(id)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "Failed to delete user",
+			"error":   "Failed to deactivate user",
 			"message": err.Error(),
 		})
 	}
 
 	return c.JSON(fiber.Map{
-		"message": "User deleted successfully",
+		"message": "User deactivated successfully",
 	})
 }
 

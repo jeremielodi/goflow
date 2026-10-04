@@ -92,18 +92,27 @@ func (r *IncidentRepository) List(f IncidentFilter) ([]models.Incident, error) {
 	return result, nil
 }
 
-func (r *IncidentRepository) Resolve(id uuid.UUID) error {
+func (r *IncidentRepository) Resolve(processInstanceID, id uuid.UUID) error {
 	now := time.Now()
 	_, err := r.db.Exec(`
-		UPDATE public.incidents SET state = 'resolved', resolved_at = $1 WHERE id = $2 AND state = 'open'
-	`, now, id)
+		UPDATE public.incidents SET state = 'resolved', resolved_at = $1 WHERE process_instance_id = $2 AND id = $3 AND state = 'open'
+	`, now, processInstanceID, id)
 	return err
 }
 
+// Delete loads the incident's process_instance_id itself first (same
+// "internal lookup before mutating" pattern as TaskRepository's mutators)
+// so the actual write below can route to a single Citus shard, even though
+// the caller (a REST handler with just an incident ID) has no cheaper way
+// to already have it in scope.
 func (r *IncidentRepository) Delete(id uuid.UUID) error {
+	var processInstanceID uuid.UUID
+	if err := r.db.Get(&processInstanceID, `SELECT process_instance_id FROM public.incidents WHERE id = $1`, id); err != nil {
+		return err
+	}
 	_, err := r.db.Exec(`
-		UPDATE public.incidents SET state = 'deleted' WHERE id = $1
-	`, id)
+		UPDATE public.incidents SET state = 'deleted' WHERE process_instance_id = $1 AND id = $2
+	`, processInstanceID, id)
 	return err
 }
 

@@ -1,0 +1,102 @@
+# docker-compose.citus.yml — opt-in override adding a Citus-backed
+# distributed-storage deployment, alongside the default single-Postgres
+# setup in docker-compose.yaml (which stays completely untouched).
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.citus.yml up -d --build --wait
+#
+# See architecture/citus-distributed-storage-design.md for what's actually
+# distributed (currently: reference tables only — global config/lookup
+# data, replicated to every node; per-instance tables and job/timer
+# claiming are explicitly deferred, see that doc).
+#
+# Note: the base file's plain `postgres` service also starts under this
+# override (Compose merges services additively; there's no clean way to
+# exclude it without version-dependent profile/depends_on interactions) —
+# it's simply unused once `goflow`'s DB_HOST points at citus-coordinator
+# instead. Harmless, just a small amount of idle resource use; stop it
+# manually with `docker compose stop postgres` if desired.
+#
+# Inter-node auth between the coordinator and workers is trust-based
+# within the Docker network here — fine for local dev/eval, the same
+# "not hardened for production" caveat the redpanda service already
+# carries in docker-compose.yaml.
+
+services:
+  citus-coordinator:
+    image: citusdata/citus:12.1
+    container_name: goflow-citus-coordinator
+    environment:
+      POSTGRES_DB: goflow
+      POSTGRES_USER: goflow
+      POSTGRES_PASSWORD: goflow123
+    ports:
+      - "5433:5432"
+    volumes:
+      - citus_coordinator_data:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  citus-worker-1:
+    image: citusdata/citus:12.1
+    container_name: goflow-citus-worker-1
+    environment:
+      POSTGRES_DB: goflow
+      POSTGRES_USER: goflow
+      POSTGRES_PASSWORD: goflow123
+    volumes:
+      - citus_worker1_data:/var/lib/postgresql/data
+      - ./database/citus-worker-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  citus-worker-2:
+    image: citusdata/citus:12.1
+    container_name: goflow-citus-worker-2
+    environment:
+      POSTGRES_DB: goflow
+      POSTGRES_USER: goflow
+      POSTGRES_PASSWORD: goflow123
+    volumes:
+      - citus_worker2_data:/var/lib/postgresql/data
+      - ./database/citus-worker-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  goflow:
+    depends_on:
+      citus-coordinator:
+        condition: service_healthy
+      citus-worker-1:
+        condition: service_healthy
+      citus-worker-2:
+        condition: service_healthy
+    environment:
+      DB_HOST: citus-coordinator
+      DB_PORT: 5432
+      CITUS_ENABLED: "true"
+      CITUS_WORKERS: citus-worker-1:5432,citus-worker-2:5432
+
+volumes:
+  citus_coordinator_data:
+  citus_worker1_data:
+  citus_worker2_data:

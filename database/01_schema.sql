@@ -181,8 +181,14 @@ ON process_instances(status);
 
 
 -- Need to track gateway state
+-- Primary key is composite (Citus phase 2): Citus requires any
+-- UNIQUE/PRIMARY KEY constraint on a distributed table to include the
+-- distribution column (process_instance_id here) — a plain `id` PK alone
+-- can't be enforced across shards. Nothing referenced gateway_state(id)
+-- by itself once executions.gateway_join_id's FK was dropped (see above),
+-- so this is safe. See architecture/citus-distributed-storage-design.md.
 CREATE TABLE gateway_state (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
     process_instance_id UUID NOT NULL REFERENCES process_instances(id),
     gateway_id TEXT NOT NULL, -- BPMN element ID
     expected_incoming INTEGER NOT NULL, -- How many incoming flows expected
@@ -191,6 +197,7 @@ CREATE TABLE gateway_state (
     status VARCHAR(50) NOT NULL DEFAULT 'waiting', -- waiting | completed
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     completed_at TIMESTAMP,
+    PRIMARY KEY (process_instance_id, id),
     UNIQUE(process_instance_id, gateway_id)
 );
 
@@ -205,21 +212,30 @@ CREATE TABLE gateway_state (
 --
 -- Parallel gateways later create multiple executions.
 -- =========================================================
+-- Primary key is composite (Citus phase 2, see the gateway_state comment
+-- above for why): nothing referenced executions(id) alone once
+-- parent_execution_id/gateway_join_id/tasks.execution_id/jobs.execution_id/
+-- etc.'s FKs were dropped, so this is safe.
 CREATE TABLE executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique execution token identifier
+    id UUID NOT NULL DEFAULT gen_random_uuid(), -- Unique execution token identifier
     process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
     current_element_id TEXT NOT NULL, -- BPMN node ID currently being executed
-    parent_execution_id UUID NULL -- Supports future parallel gateways (hierarchy)
-        REFERENCES executions(id),
+    -- parent_execution_id and gateway_join_id have no FK (Citus phase 2):
+    -- both would reference executions(id)/gateway_state(id) by a column
+    -- other than process_instance_id, which Citus can't verify as
+    -- colocated even though both tables share the same colocation group —
+    -- see architecture/citus-distributed-storage-design.md.
+    parent_execution_id UUID NULL, -- Supports future parallel gateways (hierarchy)
     status execution_status NOT NULL DEFAULT 'active', -- Current execution state
     is_active BOOLEAN NOT NULL DEFAULT true, -- Whether this token is still active
     path_id TEXT,
-    gateway_join_id UUID REFERENCES gateway_state(id),
+    gateway_join_id UUID,
     branch_variables JSONB,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When execution started
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last state change timestamp
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(), -- Last state change timestamp
+    PRIMARY KEY (process_instance_id, id)
 );
 
 CREATE INDEX idx_executions_process_instance_id
@@ -237,10 +253,16 @@ WHERE is_active = true;
 
 
 -- Event subprocess tracking
+-- process_instance_id/parent_execution_id have no FK (Citus phase 2):
+-- this table stays local while process_instances/executions become
+-- distributed, and a local table can't hold an FK into a distributed one
+-- either direction — see architecture/citus-distributed-storage-design.md.
+-- Rows are explicitly cleaned up by CleanupOrphanExecutionStateTx before
+-- a process_instances delete, same as before this change.
 CREATE TABLE event_subprocesses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
-    parent_execution_id UUID REFERENCES executions(id),
+    process_instance_id UUID NOT NULL,
+    parent_execution_id UUID,
     event_type TEXT NOT NULL, -- message, timer, error, etc.
     event_key TEXT, -- Message name or error code
     is_interrupting BOOLEAN DEFAULT true,
@@ -250,10 +272,12 @@ CREATE TABLE event_subprocesses (
 );
 
 -- Event subscriptions
+-- process_instance_id/execution_id have no FK (Citus phase 2) — same
+-- reasoning as event_subprocesses above.
 CREATE TABLE event_subscriptions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
-    execution_id UUID REFERENCES executions(id),
+    process_instance_id UUID NOT NULL,
+    execution_id UUID,
     event_type TEXT NOT NULL, -- message, signal, error
     event_name TEXT NOT NULL, -- Specific event identifier
     correlation_key TEXT, -- For message correlation
@@ -283,11 +307,13 @@ ON message_buffer(message_name, correlation_key)
 WHERE processed_at IS NULL;
 
 -- Boundary event attachments
+-- process_instance_id/execution_id have no FK (Citus phase 2) — same
+-- reasoning as event_subprocesses above.
 CREATE TABLE boundary_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    process_instance_id UUID NOT NULL REFERENCES process_instances(id),
+    process_instance_id UUID NOT NULL,
     attached_to_id TEXT NOT NULL, -- BPMN element ID this attaches to
-    execution_id UUID REFERENCES executions(id),
+    execution_id UUID,
     event_type TEXT NOT NULL, -- timer, error, message, signal
     event_config JSONB, -- Timer duration, error code, etc.
     is_interrupting BOOLEAN DEFAULT true,
@@ -304,14 +330,19 @@ WHERE is_active = true;
 -- TASKS
 -- Human workflow/tasklist layer
 -- =========================================================
+-- Primary key is composite (Citus phase 2, see the gateway_state comment
+-- above for why): nothing referenced tasks(id) alone once
+-- audit_logs.task_id's FK was dropped, so this is safe.
 CREATE TABLE tasks (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique task identifier
+    id UUID NOT NULL DEFAULT gen_random_uuid(), -- Unique task identifier
     process_instance_id UUID NOT NULL -- Parent process instance
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-    execution_id UUID NULL -- Associated execution token
-        REFERENCES executions(id)
-        ON DELETE SET NULL,
+    execution_id UUID NULL, -- Associated execution token
+    -- No FK on execution_id (Citus phase 2): tasks and executions are
+    -- colocated, but this FK isn't on process_instance_id so Citus can't
+    -- verify it — see architecture/citus-distributed-storage-design.md.
+    -- process_instance_id's cascade FK above still fully cleans up tasks.
     task_definition_key TEXT NOT NULL, -- BPMN userTask element ID
     task_name TEXT NULL, -- BPMN task name (human-readable)
     assignee TEXT NULL, -- User assigned to this task
@@ -321,7 +352,8 @@ CREATE TABLE tasks (
     created_at TIMESTAMP NOT NULL DEFAULT NOW(), -- When task was created
     updated_at  TIMESTAMP NOT NULL DEFAULT NULL,
     claimed_at TIMESTAMP NULL, -- When user claimed the task
-    completed_at TIMESTAMP NULL -- When task was completed
+    completed_at TIMESTAMP NULL, -- When task was completed
+    PRIMARY KEY (process_instance_id, id)
 );
 
 CREATE INDEX idx_tasks_process_instance_id
@@ -342,13 +374,18 @@ ON tasks(status);
 --
 -- Flexible JSONB structure similar to Camunda variables.
 -- =========================================================
+-- Primary key is composite (Citus phase 2, see the gateway_state comment
+-- above for why); the existing unique_process_instance_variables
+-- constraint below already includes process_instance_id, so it needs no
+-- change.
 CREATE TABLE variables (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique variable set identifier
+    id UUID NOT NULL DEFAULT gen_random_uuid(), -- Unique variable set identifier
     process_instance_id UUID NOT NULL -- Which process instance owns these variables
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
     data JSONB NOT NULL, -- JSON object containing all process variables
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW() -- Last variable modification
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(), -- Last variable modification
+    PRIMARY KEY (process_instance_id, id)
 );
 
 CREATE INDEX idx_variables_process_instance_id
@@ -369,14 +406,17 @@ USING GIN(data);
 -- Workflow engine creates jobs.
 -- Workers poll and complete jobs.
 -- =========================================================
+-- process_instance_id/execution_id have no FK (Citus phase 2): jobs stays
+-- local (see architecture/citus-distributed-storage-design.md — the
+-- global FOR UPDATE SKIP LOCKED claim queries need their own redesign
+-- before this table can be distributed), while process_instances and
+-- executions become distributed — a local table can't hold an FK into a
+-- distributed one. Rows are explicitly cleaned up by
+-- CleanupOrphanExecutionStateTx before a process_instances delete.
 CREATE TABLE jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique job identifier
-    process_instance_id UUID NOT NULL -- Parent process instance
-        REFERENCES process_instances(id)
-        ON DELETE CASCADE,
-    execution_id UUID NULL -- Associated execution token
-        REFERENCES executions(id)
-        ON DELETE SET NULL,
+    process_instance_id UUID NOT NULL, -- Parent process instance
+    execution_id UUID NULL, -- Associated execution token
     job_type TEXT NOT NULL, -- Type of service task (e.g., "http", "email")
     retries INTEGER NOT NULL DEFAULT 3, -- Number of remaining retry attempts
     status TEXT NOT NULL DEFAULT 'pending', -- Job state (pending/processing/completed/failed)
@@ -406,14 +446,12 @@ WHERE status = 'pending';
 -- TIMER JOBS
 -- Used later for BPMN timers/events
 -- =========================================================
+-- process_instance_id/execution_id have no FK (Citus phase 2) — same
+-- reasoning as jobs above.
 CREATE TABLE timer_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique timer identifier
-    process_instance_id UUID NOT NULL -- Parent process instance
-        REFERENCES process_instances(id)
-        ON DELETE CASCADE,
-    execution_id UUID NULL -- Associated execution token
-        REFERENCES executions(id)
-        ON DELETE SET NULL,
+    process_instance_id UUID NOT NULL, -- Parent process instance
+    execution_id UUID NULL, -- Associated execution token
     event_type TEXT NOT NULL, -- Type of timer (e.g., "intermediate", "boundary")
     due_at TIMESTAMP NOT NULL, -- When this timer should trigger
     payload JSONB NULL, -- Timer configuration (duration, cycle, etc.)
@@ -437,14 +475,18 @@ ON timer_jobs(is_triggered);
 -- AUDIT LOGS
 -- Enterprise-grade traceability
 -- =========================================================
+-- process_instance_id/task_id have no FK (Citus phase 2): audit_logs stays
+-- local (nullable process_instance_id — some rows are pure user actions
+-- with no instance at all, which Citus's distribution-column requirement
+-- can't represent; see architecture/citus-distributed-storage-design.md)
+-- while process_instances/tasks become distributed. user_id keeps its FK
+-- since users is a Citus reference table (Phase 1) — local tables can
+-- always reference a reference table safely. Rows are explicitly cleaned
+-- up by CleanupOrphanExecutionStateTx before a process_instances delete.
 CREATE TABLE audit_logs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique audit entry identifier
-    process_instance_id UUID NULL -- Related process instance (if any)
-        REFERENCES process_instances(id)
-        ON DELETE CASCADE,
-    task_id UUID NULL -- Related task (if any)
-        REFERENCES tasks(id)
-        ON DELETE CASCADE,
+    process_instance_id UUID NULL, -- Related process instance (if any)
+    task_id UUID NULL, -- Related task (if any)
     user_id UUID NULL -- User who performed the action
         REFERENCES users(id),
     action TEXT NOT NULL, -- Type of action performed (e.g., "claim", "complete")
@@ -463,21 +505,26 @@ ON audit_logs(task_id);
 -- INCIDENTS
 -- Created when a job/task fails permanently with no boundary event
 -- =========================================================
+-- Primary key is composite (Citus phase 2, see the gateway_state comment
+-- above for why): nothing referenced incidents(id) alone (historic_incidents
+-- reuses the same id value but has no FK to the live table).
 CREATE TABLE incidents (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
     process_instance_id UUID NOT NULL
         REFERENCES process_instances(id)
         ON DELETE CASCADE,
-    job_id UUID NULL
-        REFERENCES jobs(id)
-        ON DELETE CASCADE,
+    job_id UUID NULL,
+    -- No FK on job_id (Citus phase 2): incidents becomes distributed while
+    -- jobs stays local — see architecture/citus-distributed-storage-design.md.
+    -- process_instance_id's cascade FK above still fully cleans up incidents.
     incident_type TEXT NOT NULL,  -- failedExternalTask, failedJob
     activity_id TEXT NOT NULL,    -- BPMN element ID where failure occurred
     error_message TEXT NULL,
     error_code TEXT NULL,
     state TEXT NOT NULL DEFAULT 'open',  -- open, resolved, deleted
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    resolved_at TIMESTAMP NULL
+    resolved_at TIMESTAMP NULL,
+    PRIMARY KEY (process_instance_id, id)
 );
 
 CREATE INDEX idx_incidents_process_instance_id
@@ -503,10 +550,16 @@ CREATE INDEX idx_outbox_unpublished ON process_outbox(published_at)
 
 
 -- Multi-instance executions table
+-- execution_id has no FK (Citus phase 2): multi_instance_executions and
+-- executions are colocated, but this FK isn't on process_instance_id so
+-- Citus can't verify it — see architecture/citus-distributed-storage-design.md.
+-- process_instance_id's cascade FK below still fully cleans up this table.
+-- Primary key is composite (Citus phase 2, see the gateway_state comment
+-- above for why): nothing referenced multi_instance_executions(id) alone.
 CREATE TABLE IF NOT EXISTS public.multi_instance_executions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID NOT NULL DEFAULT gen_random_uuid(),
     process_instance_id UUID NOT NULL REFERENCES public.process_instances(id) ON DELETE CASCADE,
-    execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    execution_id UUID NOT NULL,
     activity_id VARCHAR(255) NOT NULL,
     is_sequential BOOLEAN NOT NULL DEFAULT false,
     total_count INT NOT NULL DEFAULT 0,
@@ -520,14 +573,21 @@ CREATE TABLE IF NOT EXISTS public.multi_instance_executions (
     output_collection VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'active',
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (process_instance_id, id)
 );
 
 -- Multi-instance children table
+-- parent_execution_id/child_execution_id have no FK (Citus phase 2): this
+-- table stays local (no process_instance_id column to colocate on) while
+-- executions becomes distributed — see
+-- architecture/citus-distributed-storage-design.md. Rows are explicitly
+-- cleaned up (via a subquery against executions) before a
+-- process_instances delete.
 CREATE TABLE IF NOT EXISTS public.multi_instance_children (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    parent_execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
-    child_execution_id UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    parent_execution_id UUID NOT NULL,
+    child_execution_id UUID NOT NULL,
     loop_index INT NOT NULL,
     element_value TEXT,
     status VARCHAR(50) NOT NULL DEFAULT 'active',
@@ -539,9 +599,11 @@ CREATE INDEX idx_multi_instance_execs_process ON public.multi_instance_execution
 CREATE INDEX idx_multi_instance_children_parent ON public.multi_instance_children(parent_execution_id);
 
 -- Execution-scoped variables for parallel gateway branch isolation
+-- execution_id has no FK (Citus phase 2) — same reasoning as
+-- multi_instance_children above.
 CREATE TABLE IF NOT EXISTS public.execution_variables (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    execution_id    UUID NOT NULL REFERENCES public.executions(id) ON DELETE CASCADE,
+    execution_id    UUID NOT NULL,
     variables       JSONB NOT NULL DEFAULT '{}',
     created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMP NOT NULL DEFAULT NOW()
@@ -578,9 +640,14 @@ COMMENT ON TABLE audit_logs IS 'Tracks all important workflow actions';
 -- CALL ACTIVITY: parent process tracking
 -- =========================================================
 ALTER TABLE process_instances
-  ADD COLUMN IF NOT EXISTS parent_instance_id UUID NULL REFERENCES process_instances(id),
+  ADD COLUMN IF NOT EXISTS parent_instance_id UUID NULL,
   ADD COLUMN IF NOT EXISTS parent_execution_id UUID NULL;
--- Note: no FK on parent_execution_id to avoid circular reference with executions
+-- Note: no FK on parent_execution_id to avoid circular reference with executions.
+-- parent_instance_id also has no FK (Citus phase 2, see
+-- architecture/citus-distributed-storage-design.md) — a call activity's
+-- parent and child are different process_instances rows with independent
+-- distribution-column hashes, not guaranteed colocated, so this
+-- self-reference can't be Citus-verified regardless of distribution.
 
 -- =========================================================
 -- EVENT-BASED GATEWAY: target element tracking per subscription

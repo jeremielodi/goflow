@@ -460,7 +460,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
 
-			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
+			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("failed to update execution node: %w", err)
 			}
@@ -697,7 +697,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			if err != nil {
 				return err
 			}
-			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ID, next); err != nil {
+			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 				tx.Rollback()
 				return err
 			}
@@ -811,7 +811,7 @@ func (r *Runtime) handleMultiInstance(ctx context.Context, exec *repository.Exec
 		}
 
 		// Set parent execution to waiting
-		err = engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting")
+		err = engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting")
 		if err != nil {
 			return err
 		}
@@ -866,10 +866,10 @@ func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.U
 
 	// Update loop counter FIRST
 	_, err = tx.Exec(`
-        UPDATE public.multi_instance_executions 
-        SET loop_counter = $1, updated_at = NOW() 
-        WHERE id = $2
-    `, loopIndex+1, miExec.ID)
+        UPDATE public.multi_instance_executions
+        SET loop_counter = $1, updated_at = NOW()
+        WHERE process_instance_id = $2 AND id = $3
+    `, loopIndex+1, miExec.ProcessInstanceID, miExec.ID)
 	if err != nil {
 		log.Printf("❌ Failed to update loop counter: %v", err)
 		return err

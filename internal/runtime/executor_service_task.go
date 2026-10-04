@@ -24,7 +24,7 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID); err != nil {
+	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, exec.ID, "active", node.ID); err != nil {
 		return fmt.Errorf("failed to update execution: %w", err)
 	}
 
@@ -53,7 +53,7 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("failed to create job: %w", err)
 	}
 
-	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting"); err != nil {
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}
 

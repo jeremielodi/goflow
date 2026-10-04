@@ -4,16 +4,20 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
 )
 
 type AnalyticsController struct {
+	db            *sqlx.DB
 	analyticsRepo *repository.AnalyticsRepository
 }
 
 func NewAnalyticsController(db *sqlx.DB) *AnalyticsController {
-	return &AnalyticsController{analyticsRepo: repository.NewAnalyticsRepository(db)}
+	return &AnalyticsController{db: db, analyticsRepo: repository.NewAnalyticsRepository(db)}
 }
 
 type processKeyStats struct {
@@ -40,6 +44,19 @@ type throughputPoint struct {
 // used when from/to are omitted).
 func (ctrl *AnalyticsController) GetProcessStats(c *fiber.Ctx) error {
 	processKey := c.Query("processKey")
+
+	userID, hasUser := uuid.Parse(common.GetUserUuid(c))
+	// A single-key query is rejected outright if the caller lacks VIEW on
+	// that key. An all-keys (dashboard) query can't be rejected the same
+	// way — byProcessKey below is filtered per-row instead. throughput
+	// stays a cross-process aggregate either way (a documented, accepted
+	// gap: it leaks aggregate counts, not per-key breakdowns, and
+	// re-querying it per key is a bigger change than this pass warrants).
+	if processKey != "" && hasUser == nil {
+		if allowed, _ := service.CanAccessProcess(ctrl.db, userID, processKey, "VIEW"); !allowed {
+			return c.Status(404).JSON(fiber.Map{"message": "process not found"})
+		}
+	}
 
 	to := time.Now()
 	from := to.AddDate(0, 0, -30)
@@ -122,6 +139,11 @@ func (ctrl *AnalyticsController) GetProcessStats(c *fiber.Ctx) error {
 
 	byProcessKey := make([]processKeyStats, 0, len(byKey))
 	for _, s := range byKey {
+		if hasUser == nil {
+			if allowed, _ := service.CanAccessProcess(ctrl.db, userID, s.ProcessKey, "VIEW"); !allowed {
+				continue
+			}
+		}
 		total := s.RunningCount + s.CompletedCount + s.TerminatedCount
 		if total > 0 {
 			s.IncidentRate = float64(s.IncidentCount) / float64(total)

@@ -2121,6 +2121,190 @@ func (*ModifyProcessInstanceResponse) Descriptor() ([]byte, []int) {
 	return file_gateway_proto_rawDescGZIP(), []int{32}
 }
 
+type UpdateJobRetriesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobKey        int64                  `protobuf:"varint,1,opt,name=jobKey,proto3" json:"jobKey,omitempty"`
+	Retries       int32                  `protobuf:"varint,2,opt,name=retries,proto3" json:"retries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateJobRetriesRequest) Reset() {
+	*x = UpdateJobRetriesRequest{}
+	mi := &file_gateway_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateJobRetriesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateJobRetriesRequest) ProtoMessage() {}
+
+func (x *UpdateJobRetriesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateJobRetriesRequest.ProtoReflect.Descriptor instead.
+func (*UpdateJobRetriesRequest) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *UpdateJobRetriesRequest) GetJobKey() int64 {
+	if x != nil {
+		return x.JobKey
+	}
+	return 0
+}
+
+func (x *UpdateJobRetriesRequest) GetRetries() int32 {
+	if x != nil {
+		return x.Retries
+	}
+	return 0
+}
+
+type UpdateJobRetriesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateJobRetriesResponse) Reset() {
+	*x = UpdateJobRetriesResponse{}
+	mi := &file_gateway_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateJobRetriesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateJobRetriesResponse) ProtoMessage() {}
+
+func (x *UpdateJobRetriesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateJobRetriesResponse.ProtoReflect.Descriptor instead.
+func (*UpdateJobRetriesResponse) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{34}
+}
+
+type BroadcastSignalRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SignalName    string                 `protobuf:"bytes,1,opt,name=signalName,proto3" json:"signalName,omitempty"`
+	Variables     string                 `protobuf:"bytes,2,opt,name=variables,proto3" json:"variables,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BroadcastSignalRequest) Reset() {
+	*x = BroadcastSignalRequest{}
+	mi := &file_gateway_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BroadcastSignalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BroadcastSignalRequest) ProtoMessage() {}
+
+func (x *BroadcastSignalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BroadcastSignalRequest.ProtoReflect.Descriptor instead.
+func (*BroadcastSignalRequest) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *BroadcastSignalRequest) GetSignalName() string {
+	if x != nil {
+		return x.SignalName
+	}
+	return ""
+}
+
+func (x *BroadcastSignalRequest) GetVariables() string {
+	if x != nil {
+		return x.Variables
+	}
+	return ""
+}
+
+type BroadcastSignalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           int64                  `protobuf:"varint,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BroadcastSignalResponse) Reset() {
+	*x = BroadcastSignalResponse{}
+	mi := &file_gateway_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BroadcastSignalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BroadcastSignalResponse) ProtoMessage() {}
+
+func (x *BroadcastSignalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_gateway_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BroadcastSignalResponse.ProtoReflect.Descriptor instead.
+func (*BroadcastSignalResponse) Descriptor() ([]byte, []int) {
+	return file_gateway_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *BroadcastSignalResponse) GetKey() int64 {
+	if x != nil {
+		return x.Key
+	}
+	return 0
+}
+
 var File_gateway_proto protoreflect.FileDescriptor
 
 const file_gateway_proto_rawDesc = "" +
@@ -2268,7 +2452,18 @@ const file_gateway_proto_rawDesc = "" +
 	"\telementId\x18\x01 \x01(\tR\telementId\"F\n" +
 	"\x14TerminateInstruction\x12.\n" +
 	"\x12elementInstanceKey\x18\x01 \x01(\x03R\x12elementInstanceKey\"\x1f\n" +
-	"\x1dModifyProcessInstanceResponse*=\n" +
+	"\x1dModifyProcessInstanceResponse\"K\n" +
+	"\x17UpdateJobRetriesRequest\x12\x16\n" +
+	"\x06jobKey\x18\x01 \x01(\x03R\x06jobKey\x12\x18\n" +
+	"\aretries\x18\x02 \x01(\x05R\aretries\"\x1a\n" +
+	"\x18UpdateJobRetriesResponse\"V\n" +
+	"\x16BroadcastSignalRequest\x12\x1e\n" +
+	"\n" +
+	"signalName\x18\x01 \x01(\tR\n" +
+	"signalName\x12\x1c\n" +
+	"\tvariables\x18\x02 \x01(\tR\tvariables\"+\n" +
+	"\x17BroadcastSignalResponse\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\x03R\x03key*=\n" +
 	"\x13PartitionBrokerRole\x12\n" +
 	"\n" +
 	"\x06LEADER\x10\x00\x12\f\n" +
@@ -2277,7 +2472,8 @@ const file_gateway_proto_rawDesc = "" +
 	"\x15PartitionBrokerHealth\x12\v\n" +
 	"\aHEALTHY\x10\x00\x12\r\n" +
 	"\tUNHEALTHY\x10\x01\x12\b\n" +
-	"\x04DEAD\x10\x022\xf4\b\n" +
+	"\x04DEAD\x10\x022\xc7\n" +
+	"\n" +
 	"\aGateway\x12Q\n" +
 	"\bTopology\x12!.gateway_protocol.TopologyRequest\x1a\".gateway_protocol.TopologyResponse\x12c\n" +
 	"\x0eDeployResource\x12'.gateway_protocol.DeployResourceRequest\x1a(.gateway_protocol.DeployResourceResponse\x12x\n" +
@@ -2289,7 +2485,9 @@ const file_gateway_proto_rawDesc = "" +
 	"\x15CancelProcessInstance\x12..gateway_protocol.CancelProcessInstanceRequest\x1a/.gateway_protocol.CancelProcessInstanceResponse\x12i\n" +
 	"\x10EvaluateDecision\x12).gateway_protocol.EvaluateDecisionRequest\x1a*.gateway_protocol.EvaluateDecisionResponse\x12f\n" +
 	"\x0fResolveIncident\x12(.gateway_protocol.ResolveIncidentRequest\x1a).gateway_protocol.ResolveIncidentResponse\x12x\n" +
-	"\x15ModifyProcessInstance\x12..gateway_protocol.ModifyProcessInstanceRequest\x1a/.gateway_protocol.ModifyProcessInstanceResponseB5Z3github.com/jeremielodi/goflow/internal/zeebegrpc/pbb\x06proto3"
+	"\x15ModifyProcessInstance\x12..gateway_protocol.ModifyProcessInstanceRequest\x1a/.gateway_protocol.ModifyProcessInstanceResponse\x12i\n" +
+	"\x10UpdateJobRetries\x12).gateway_protocol.UpdateJobRetriesRequest\x1a*.gateway_protocol.UpdateJobRetriesResponse\x12f\n" +
+	"\x0fBroadcastSignal\x12(.gateway_protocol.BroadcastSignalRequest\x1a).gateway_protocol.BroadcastSignalResponseB5Z3github.com/jeremielodi/goflow/internal/zeebegrpc/pbb\x06proto3"
 
 var (
 	file_gateway_proto_rawDescOnce sync.Once
@@ -2304,7 +2502,7 @@ func file_gateway_proto_rawDescGZIP() []byte {
 }
 
 var file_gateway_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_gateway_proto_goTypes = []any{
 	(PartitionBrokerRole)(0),              // 0: gateway_protocol.PartitionBrokerRole
 	(PartitionBrokerHealth)(0),            // 1: gateway_protocol.PartitionBrokerHealth
@@ -2341,6 +2539,10 @@ var file_gateway_proto_goTypes = []any{
 	(*ActivateInstruction)(nil),           // 32: gateway_protocol.ActivateInstruction
 	(*TerminateInstruction)(nil),          // 33: gateway_protocol.TerminateInstruction
 	(*ModifyProcessInstanceResponse)(nil), // 34: gateway_protocol.ModifyProcessInstanceResponse
+	(*UpdateJobRetriesRequest)(nil),       // 35: gateway_protocol.UpdateJobRetriesRequest
+	(*UpdateJobRetriesResponse)(nil),      // 36: gateway_protocol.UpdateJobRetriesResponse
+	(*BroadcastSignalRequest)(nil),        // 37: gateway_protocol.BroadcastSignalRequest
+	(*BroadcastSignalResponse)(nil),       // 38: gateway_protocol.BroadcastSignalResponse
 }
 var file_gateway_proto_depIdxs = []int32{
 	4,  // 0: gateway_protocol.TopologyResponse.brokers:type_name -> gateway_protocol.BrokerInfo
@@ -2367,19 +2569,23 @@ var file_gateway_proto_depIdxs = []int32{
 	27, // 21: gateway_protocol.Gateway.EvaluateDecision:input_type -> gateway_protocol.EvaluateDecisionRequest
 	29, // 22: gateway_protocol.Gateway.ResolveIncident:input_type -> gateway_protocol.ResolveIncidentRequest
 	31, // 23: gateway_protocol.Gateway.ModifyProcessInstance:input_type -> gateway_protocol.ModifyProcessInstanceRequest
-	3,  // 24: gateway_protocol.Gateway.Topology:output_type -> gateway_protocol.TopologyResponse
-	8,  // 25: gateway_protocol.Gateway.DeployResource:output_type -> gateway_protocol.DeployResourceResponse
-	15, // 26: gateway_protocol.Gateway.CreateProcessInstance:output_type -> gateway_protocol.CreateProcessInstanceResponse
-	17, // 27: gateway_protocol.Gateway.ActivateJobs:output_type -> gateway_protocol.ActivateJobsResponse
-	20, // 28: gateway_protocol.Gateway.CompleteJob:output_type -> gateway_protocol.CompleteJobResponse
-	22, // 29: gateway_protocol.Gateway.FailJob:output_type -> gateway_protocol.FailJobResponse
-	24, // 30: gateway_protocol.Gateway.PublishMessage:output_type -> gateway_protocol.PublishMessageResponse
-	26, // 31: gateway_protocol.Gateway.CancelProcessInstance:output_type -> gateway_protocol.CancelProcessInstanceResponse
-	28, // 32: gateway_protocol.Gateway.EvaluateDecision:output_type -> gateway_protocol.EvaluateDecisionResponse
-	30, // 33: gateway_protocol.Gateway.ResolveIncident:output_type -> gateway_protocol.ResolveIncidentResponse
-	34, // 34: gateway_protocol.Gateway.ModifyProcessInstance:output_type -> gateway_protocol.ModifyProcessInstanceResponse
-	24, // [24:35] is the sub-list for method output_type
-	13, // [13:24] is the sub-list for method input_type
+	35, // 24: gateway_protocol.Gateway.UpdateJobRetries:input_type -> gateway_protocol.UpdateJobRetriesRequest
+	37, // 25: gateway_protocol.Gateway.BroadcastSignal:input_type -> gateway_protocol.BroadcastSignalRequest
+	3,  // 26: gateway_protocol.Gateway.Topology:output_type -> gateway_protocol.TopologyResponse
+	8,  // 27: gateway_protocol.Gateway.DeployResource:output_type -> gateway_protocol.DeployResourceResponse
+	15, // 28: gateway_protocol.Gateway.CreateProcessInstance:output_type -> gateway_protocol.CreateProcessInstanceResponse
+	17, // 29: gateway_protocol.Gateway.ActivateJobs:output_type -> gateway_protocol.ActivateJobsResponse
+	20, // 30: gateway_protocol.Gateway.CompleteJob:output_type -> gateway_protocol.CompleteJobResponse
+	22, // 31: gateway_protocol.Gateway.FailJob:output_type -> gateway_protocol.FailJobResponse
+	24, // 32: gateway_protocol.Gateway.PublishMessage:output_type -> gateway_protocol.PublishMessageResponse
+	26, // 33: gateway_protocol.Gateway.CancelProcessInstance:output_type -> gateway_protocol.CancelProcessInstanceResponse
+	28, // 34: gateway_protocol.Gateway.EvaluateDecision:output_type -> gateway_protocol.EvaluateDecisionResponse
+	30, // 35: gateway_protocol.Gateway.ResolveIncident:output_type -> gateway_protocol.ResolveIncidentResponse
+	34, // 36: gateway_protocol.Gateway.ModifyProcessInstance:output_type -> gateway_protocol.ModifyProcessInstanceResponse
+	36, // 37: gateway_protocol.Gateway.UpdateJobRetries:output_type -> gateway_protocol.UpdateJobRetriesResponse
+	38, // 38: gateway_protocol.Gateway.BroadcastSignal:output_type -> gateway_protocol.BroadcastSignalResponse
+	26, // [26:39] is the sub-list for method output_type
+	13, // [13:26] is the sub-list for method input_type
 	13, // [13:13] is the sub-list for extension type_name
 	13, // [13:13] is the sub-list for extension extendee
 	0,  // [0:13] is the sub-list for field type_name
@@ -2402,7 +2608,7 @@ func file_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gateway_proto_rawDesc), len(file_gateway_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   33,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

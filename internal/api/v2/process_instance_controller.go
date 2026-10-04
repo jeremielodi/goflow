@@ -313,6 +313,17 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
+	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
+	// modification moves an execution's graph position directly, bypassing
+	// partition ownership. Not implemented through the Command Gateway —
+	// arbitrary token moves don't fit any of ValidateShape's narrow
+	// accepted shapes — so partitioned instances are explicitly rejected.
+	if writePath, lookupErr := partition.LookupInstanceOwner(pc.db, instanceID); lookupErr == nil && writePath == "partitioned" {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"title": "MODIFICATION_FAILED", "detail": "process instance modification is not supported for partitioned-write-path instances",
+		})
+	}
+
 	inst, err := pc.processInstanceRepo.FindByID(instanceID)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{

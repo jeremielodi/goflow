@@ -339,6 +339,21 @@ func toRecentEvent(env *pb.Envelope) RecentEvent {
 	case *pb.Envelope_JobRetriesSet:
 		base.Type = "JobRetriesSet"
 		base.Detail = e.JobRetriesSet
+	case *pb.Envelope_TaskCreated:
+		base.Type = "TaskCreated"
+		base.Detail = e.TaskCreated
+	case *pb.Envelope_TaskClaimed:
+		base.Type = "TaskClaimed"
+		base.Detail = e.TaskClaimed
+	case *pb.Envelope_TaskUnclaimed:
+		base.Type = "TaskUnclaimed"
+		base.Detail = e.TaskUnclaimed
+	case *pb.Envelope_TaskCompleted:
+		base.Type = "TaskCompleted"
+		base.Detail = e.TaskCompleted
+	case *pb.Envelope_TaskCancelled:
+		base.Type = "TaskCancelled"
+		base.Detail = e.TaskCancelled
 	default:
 		base.Type = "Unknown"
 	}

@@ -21,7 +21,7 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	if err := engineRepo.CompleteProcessInstanceTx(tx, exec.ProcessInstanceID); err != nil {
 		return fmt.Errorf("failed to complete process instance: %w", err)
 	}
-	if err := engineRepo.CompleteExecutionTx(tx, exec.ID); err != nil {
+	if err := engineRepo.CompleteExecutionTx(tx, exec.ProcessInstanceID, exec.ID); err != nil {
 		return fmt.Errorf("failed to complete execution: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -86,8 +86,8 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	_, err = r.DB.Exec(`
 		UPDATE executions
 		SET current_element_id = $1, status = 'active', is_active = true, updated_at = NOW()
-		WHERE id = $2
-	`, nextNodeID, *parentExecutionID)
+		WHERE process_instance_id = $2 AND id = $3
+	`, nextNodeID, *parentInstanceID, *parentExecutionID)
 	if err != nil {
 		return fmt.Errorf("callActivity end: reactivate parent: %w", err)
 	}

@@ -15,6 +15,11 @@
  * instance, permanently fail a job (JobFailed with incidentCreated=true),
  * resolve the resulting incident (IncidentResolved), then terminate a third
  * instance while its job is still pending (ProcessTerminated).
+ *
+ * Test [J] (added in a later pass, after auditing the schema): user-task
+ * lifecycle events (TaskCreated/TaskClaimed/TaskCompleted) — added because
+ * job lifecycle was fully instrumented here but task lifecycle had zero
+ * coverage at all, neither the proto schema nor any call site.
  */
 import * as path from 'path';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
@@ -24,6 +29,7 @@ const PARALLEL_BPMN = path.join(__dirname, 'bpmn', '03_meal_preparation.bpmn');
 const SHORT_TIMER_BPMN = path.join(__dirname, 'bpmn', '26_short_timer.bpmn');
 const ORDER_BPMN = path.join(__dirname, 'bpmn', '10_order_notification.bpmn');
 const SIGNAL_BPMN = path.join(__dirname, 'bpmn', '11_inventory_broadcast.bpmn');
+const USER_TASK_BPMN = path.join(__dirname, 'bpmn', '18_tasklist_process.bpmn');
 const client = new GoFlowClient();
 
 interface RecentEvent {
@@ -61,6 +67,7 @@ async function run() {
   await client.deployBpmn(SHORT_TIMER_BPMN);
   await client.deployBpmn(ORDER_BPMN);
   await client.deployBpmn(SIGNAL_BPMN);
+  await client.deployBpmn(USER_TASK_BPMN);
 
   await runSuite({
     name: '26 — Event log shadow mode',
@@ -283,6 +290,39 @@ async function run() {
           // Cross-check against the real REST view of the same instance.
           const real = await client.api.get(`/engine-rest/history/process-instance/${instanceId}`);
           assert(real.data?.state === 'completed', `expected real historic instance to also report completed, got ${JSON.stringify(real.data)}`);
+        },
+      },
+
+      {
+        name: '[J] User task lifecycle publishes TaskCreated, TaskClaimed, TaskCompleted in order',
+        async fn() {
+          const inst = await client.startProcess('TasklistProcess', {});
+          const instanceId = inst.processInstanceId ?? (inst as any).id;
+
+          const tasks = await client.getTasks(instanceId);
+          assert(tasks.length === 1, `expected exactly one task for instance ${instanceId}, got ${tasks.length}`);
+          const taskId = tasks[0].id;
+
+          await client.claimTask(taskId, 'eventlog-suite-reviewer');
+          await client.completeTask(taskId, {});
+          await client.waitForProcessEnd(instanceId, 10000);
+
+          const events = await waitForEventTypes(instanceId, ['TaskCreated', 'TaskClaimed', 'TaskCompleted']);
+          assert(events.length >= 3, `expected at least 3 task events for instance ${instanceId}, got ${JSON.stringify(events.map((e) => e.type))}`);
+
+          const order = events.map((e) => e.type);
+          const idxCreated = order.indexOf('TaskCreated');
+          const idxClaimed = order.indexOf('TaskClaimed');
+          const idxCompleted = order.indexOf('TaskCompleted');
+          assert(idxCreated < idxClaimed, 'expected TaskCreated to precede TaskClaimed');
+          assert(idxClaimed < idxCompleted, 'expected TaskClaimed to precede TaskCompleted');
+
+          const created = events.find((e) => e.type === 'TaskCreated')!.detail as any;
+          assert(created.task_id === taskId, `expected TaskCreated.task_id to match ${taskId}, got ${created.task_id}`);
+          assert(created.task_definition_key === 'reviewTask', `expected task_definition_key=reviewTask, got ${created.task_definition_key}`);
+
+          const claimed = events.find((e) => e.type === 'TaskClaimed')!.detail as any;
+          assert(claimed.assignee === 'eventlog-suite-reviewer', `expected TaskClaimed.assignee to match, got ${claimed.assignee}`);
         },
       },
     ],

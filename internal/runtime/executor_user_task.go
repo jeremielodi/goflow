@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jmoiron/sqlx"
@@ -28,7 +29,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ID, "active", node.ID); err != nil {
+	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, exec.ID, "active", node.ID); err != nil {
 		return fmt.Errorf("failed to update execution: %w", err)
 	}
 
@@ -90,7 +91,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 		return fmt.Errorf("failed to create user task: %w", err)
 	}
 
-	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ID, "waiting"); err != nil {
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}
 
@@ -103,12 +104,20 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 	// process variables.
 	if inputVars := common.EvaluateIOMappings(node.InputMappings, variables); len(inputVars) > 0 {
 		taskRepo := repository.NewTaskRepository(r.DB, r.dispatcher)
-		if _, err := taskRepo.UpdateTaskFormData(taskID, inputVars); err != nil {
+		if _, err := taskRepo.UpdateTaskFormData(exec.ProcessInstanceID, taskID, inputVars); err != nil {
 			log.Printf("Warning: failed to store input-mapped variables on task %s: %v", taskID, err)
 		}
 	}
 
 	r.auditService.LogTaskCreated(taskID, exec.ProcessInstanceID, node.Name, assignee, candidateGroup)
+
+	if p := eventlog.Global(); p != nil {
+		var assigneeStr string
+		if assignee != nil {
+			assigneeStr = *assignee
+		}
+		p.TaskCreated(exec.ProcessInstanceID.String(), taskID.String(), exec.ID.String(), taskDefinitionId, assigneeStr)
+	}
 
 	if r.dispatcher != nil {
 		processKey := ""

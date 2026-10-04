@@ -88,12 +88,6 @@ func (r *ProcessInstanceRepository) UpsertVariablesTx(tx *sqlx.Tx, instanceID uu
 	return err
 }
 
-// ReactivateExecution sets execution status to 'active'
-func (r *ProcessInstanceRepository) ReactivateExecutionTx(tx *sqlx.Tx, execID uuid.UUID) error {
-	_, err := tx.Exec(`UPDATE public.executions SET status = 'active', updated_at = $1 WHERE id = $2`, time.Now(), execID)
-	return err
-}
-
 // GetProcessDefinitionID returns the definition_id of a process instance
 func (r *ProcessInstanceRepository) GetProcessDefinitionID(instanceID uuid.UUID) (uuid.UUID, error) {
 	var defID uuid.UUID
@@ -190,23 +184,6 @@ func (r *ProcessInstanceRepository) FindAll(status, processKey, tenantID string)
 	return instances, err
 }
 
-// Delete removes a process instance and all related data
-func (r *ProcessInstanceRepository) Delete(instanceID uuid.UUID) error {
-	tx, err := r.db.Beginx()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	// Delete related data (foreign keys will cascade)
-	_, err = tx.Exec("DELETE FROM public.process_instances WHERE id = $1", instanceID)
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
 // internal/repository/process_instance_repository.go
 // Add this method to the ProcessInstanceRepository struct
 
@@ -241,20 +218,6 @@ func (r *ProcessInstanceRepository) FindByID(id uuid.UUID) (*models.ProcessInsta
 	}
 
 	return &instance, nil
-}
-
-// GetExecutionByID retrieves an execution by its ID
-func (r *ProcessInstanceRepository) GetExecutionByID(execID uuid.UUID) (*Execution, error) {
-	var exec Execution
-	err := r.db.Get(&exec, `
-		SELECT id, process_instance_id, current_element_id, status, is_active, created_at, updated_at
-		FROM public.executions 
-		WHERE id = $1
-	`, execID)
-	if err != nil {
-		return nil, err
-	}
-	return &exec, nil
 }
 
 // internal/repository/process_instance_repository.go
@@ -325,16 +288,6 @@ func (r *ProcessInstanceRepository) FindExecutionsByInstance(instanceID uuid.UUI
 	return executions, err
 }
 
-// UpdateExecutionStatus updates the status of an execution
-func (r *ProcessInstanceRepository) UpdateExecutionStatus(execID uuid.UUID, status string) error {
-	_, err := r.db.Exec(`
-		UPDATE public.executions 
-		SET status = $1, updated_at = NOW()
-		WHERE id = $2
-	`, status, execID)
-	return err
-}
-
 // TerminateActiveExecutionsByProcessInstanceTx marks every still-active or
 // waiting execution (token) of a process instance as terminated — used when
 // the whole instance is terminated, so no token is left looking "active" in
@@ -346,26 +299,6 @@ func (r *ProcessInstanceRepository) TerminateActiveExecutionsByProcessInstanceTx
 		SET status = 'terminated', is_active = false, updated_at = NOW()
 		WHERE process_instance_id = $1 AND status IN ('active', 'waiting')
 	`, instanceID)
-	return err
-}
-
-// UpdateExecutionStatusTx updates the status of an execution within a transaction
-func (r *ProcessInstanceRepository) UpdateExecutionStatusTx(tx *sqlx.Tx, execID uuid.UUID, status string) error {
-	_, err := tx.Exec(`
-		UPDATE public.executions
-		SET status = $1, updated_at = NOW()
-		WHERE id = $2
-	`, status, execID)
-	return err
-}
-
-// UpdateExecutionNode updates the current node of an execution
-func (r *ProcessInstanceRepository) UpdateExecutionNode(execID uuid.UUID, nodeID string) error {
-	_, err := r.db.Exec(`
-		UPDATE public.executions 
-		SET current_element_id = $1, updated_at = NOW()
-		WHERE id = $2
-	`, nodeID, execID)
 	return err
 }
 
@@ -477,23 +410,6 @@ func (r *ProcessInstanceRepository) CountHistoric(status, processKey string) (in
 
 	err := r.db.Get(&count, query, args...)
 	return count, err
-}
-
-// ============================================================
-// BULK OPERATIONS
-// ============================================================
-
-// DeleteAllHistoric deletes all completed/terminated process instances older than a date
-func (r *ProcessInstanceRepository) DeleteAllHistoric(beforeDate time.Time) (int64, error) {
-	result, err := r.db.Exec(`
-		DELETE FROM public.process_instances 
-		WHERE (status = 'completed' OR status = 'terminated') 
-		AND ended_at < $1
-	`, beforeDate)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 // ============================================================

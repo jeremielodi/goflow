@@ -1,7 +1,6 @@
 package api
 
 import (
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
@@ -40,6 +40,19 @@ func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService,
 		dispatcher:          dispatcher,
 		auditService:        service.NewAuditService(db),
 	}
+}
+
+// checkInstanceAccess verifies the caller has at least `level` access to
+// instanceID via service.CanAccessProcessInstance. Returns true (fail
+// open) if there's no authenticated user in context — the handler's own
+// not-found/error logic already covers an unresolvable instance.
+func (pc *ProcessInstanceController) checkInstanceAccess(c *fiber.Ctx, instanceID uuid.UUID, level string) bool {
+	userID, err := uuid.Parse(common.GetUserUuid(c))
+	if err != nil {
+		return true
+	}
+	allowed, _ := service.CanAccessProcessInstance(pc.db, userID, instanceID, level)
+	return allowed
 }
 
 // Variable represents a typed variable from Camunda
@@ -124,6 +137,13 @@ func (pc *ProcessInstanceController) GetProcessVariables(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	variables, err := pc.getVariablesLiveOrHistoric(instanceID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
@@ -174,6 +194,13 @@ func (pc *ProcessInstanceController) GetProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	variables, err := pc.getVariablesLiveOrHistoric(instanceID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
@@ -204,6 +231,13 @@ func (pc *ProcessInstanceController) SetProcessVariables(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{
 			"type":    "InvalidRequest",
 			"message": "Invalid process instance id",
+		})
+	}
+
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -267,6 +301,13 @@ func (pc *ProcessInstanceController) SetProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	var req Variable
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{
@@ -323,6 +364,13 @@ func (pc *ProcessInstanceController) DeleteProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	// Get existing variables
 	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
 	if err != nil {
@@ -354,6 +402,13 @@ func (pc *ProcessInstanceController) DeleteProcessVariables(c *fiber.Ctx) error 
 		return c.Status(400).JSON(fiber.Map{
 			"type":    "InvalidRequest",
 			"message": "Invalid process instance id",
+		})
+	}
+
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -581,6 +636,13 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	instance, err := pc.processInstanceRepo.FindByID(instanceID)
 	if err != nil || instance == nil {
 		// Not live — fall back to the historic archive for a
@@ -618,7 +680,7 @@ func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error 
 	}
 
 	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
-		visible := instances[:0]
+		visible := make([]models.ProcessInstance, 0, len(instances))
 		for _, inst := range instances {
 			if allowed, _ := service.CanAccessProcess(pc.db, userID, inst.ProcessKey, "VIEW"); allowed {
 				visible = append(visible, inst)
@@ -627,6 +689,10 @@ func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error 
 		instances = visible
 	}
 
+	// A nil slice serializes as JSON null, which crashes the frontend list pages.
+	if instances == nil {
+		instances = []models.ProcessInstance{}
+	}
 	return c.JSON(instances)
 }
 
@@ -645,6 +711,13 @@ func (pc *ProcessInstanceController) SuspendProcess(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{
 			"type":    "InvalidRequest",
 			"message": "Invalid process instance id",
+		})
+	}
+
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -699,12 +772,28 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	reason := c.Query("deleteReason")
 	if reason == "" {
 		reason = "Process terminated by user"
 	}
 
-	// Shared with the gRPC CancelProcessInstance RPC.
+	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
+	// a partitioned-write-path instance terminates via the Command Gateway
+	// instead of a direct Postgres write. Shared with gRPC CancelProcessInstance.
+	if writePath, lookupErr := partition.LookupInstanceOwner(pc.db, instanceID); lookupErr == nil && writePath == "partitioned" {
+		if err := partition.Terminate(instanceID, reason); err != nil {
+			return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
+		}
+		return c.Status(204).Send(nil)
+	}
+
 	if err := service.TerminateProcessInstance(pc.db, pc.dispatcher, instanceID, reason); err != nil {
 		if errors.Is(err, service.ErrProcessInstanceNotFound) {
 			return c.Status(404).JSON(fiber.Map{
@@ -726,6 +815,13 @@ func (pc *ProcessInstanceController) EndProcess(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{
 			"type":    "InvalidRequest",
 			"message": "Invalid process instance id",
+		})
+	}
+
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -796,6 +892,13 @@ func (pc *ProcessInstanceController) GetProcessState(c *fiber.Ctx) error {
 		})
 	}
 
+	if !pc.checkInstanceAccess(c, instanceID, "VIEW") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
+		})
+	}
+
 	// Try to get active process instance
 	instance, err := pc.processInstanceRepo.FindByID(instanceID)
 	if err != nil || instance == nil {
@@ -842,6 +945,13 @@ func (pc *ProcessInstanceController) StopProcessWithReason(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{
 			"type":    "InvalidRequest",
 			"message": "Invalid process instance id",
+		})
+	}
+
+	if !pc.checkInstanceAccess(c, instanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{
+			"type":    "NotFound",
+			"message": "Process instance not found",
 		})
 	}
 
@@ -907,32 +1017,4 @@ func (pc *ProcessInstanceController) StopProcessWithReason(c *fiber.Ctx) error {
 		"message": "Process stopped successfully",
 		"reason":  req.Reason,
 	})
-}
-
-// GetHistoricProcessInstance handles GET /history/process-instance/:id
-// Retrieves a historic process instance
-func (pc *ProcessInstanceController) GetHistoricProcessInstance(c *fiber.Ctx) error {
-	instanceID, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"type":    "InvalidRequest",
-			"message": "Invalid process instance id",
-		})
-	}
-
-	instance, err := pc.processInstanceRepo.FindHistoricByID(instanceID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return c.Status(404).JSON(fiber.Map{
-				"type":    "NotFound",
-				"message": "Process instance not found",
-			})
-		}
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	return c.JSON(instance)
 }

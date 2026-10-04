@@ -366,3 +366,142 @@ func TestValidateShape_Diamond_WithTimer_Rejected(t *testing.T) {
 		t.Fatal("expected a diamond shape with a timer node present to be rejected")
 	}
 }
+
+func TestValidateShape_Parallel_TwoBranches_Passes(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err != nil {
+		t.Fatalf("expected the parallel fork/join shape (2 branches) to pass, got: %v", err)
+	}
+}
+
+func TestValidateShape_Parallel_ThreeBranches_Passes(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+			flow("f4", "taskC", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f6", "join", "")}},
+		&engine.Node{ID: "taskC", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f7", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f8", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err != nil {
+		t.Fatalf("expected the parallel fork/join shape (3 branches) to pass, got: %v", err)
+	}
+}
+
+func TestValidateShape_Parallel_ConditionOnForkFlow_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", `${branch == "a"}`),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a conditioned fork flow to be rejected — the parallel gateway forks unconditionally")
+	}
+}
+
+func TestValidateShape_Parallel_BothFlowsSameTask_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskA", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected both fork flows targeting the same task to be rejected")
+	}
+}
+
+func TestValidateShape_Parallel_BranchTaskSkipsJoin_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "end", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a branch task that flows directly to the end event (skipping the join) to be rejected")
+	}
+}
+
+func TestValidateShape_Parallel_JoinFlowsToWrongTarget_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "taskA", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a join gateway that doesn't flow to the end event to be rejected")
+	}
+}
+
+func TestValidateShape_Parallel_WithBusinessRuleTask_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.BusinessRuleTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a parallel branch containing a business rule task to be rejected — branches are service-task-only this phase")
+	}
+}
+
+func TestValidateShape_Parallel_WithTimer_Rejected(t *testing.T) {
+	graph := newGraph(
+		&engine.Node{ID: "start", Type: engine.StartEventType, Outgoing: []engine.Flow{flow("f1", "fork", "")}},
+		&engine.Node{ID: "fork", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{
+			flow("f2", "taskA", ""),
+			flow("f3", "taskB", ""),
+		}},
+		&engine.Node{ID: "taskA", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f4", "join", "")}},
+		&engine.Node{ID: "taskB", Type: engine.ServiceTaskType, Outgoing: []engine.Flow{flow("f5", "join", "")}},
+		&engine.Node{ID: "join", Type: engine.ParallelGatewayType, Outgoing: []engine.Flow{flow("f6", "end", "")}},
+		&engine.Node{ID: "timer", Type: engine.IntermediateTimerEventType, Outgoing: []engine.Flow{flow("f7", "end", "")}},
+		&engine.Node{ID: "end", Type: engine.EndEventType},
+	)
+	if err := ValidateShape(graph); err == nil {
+		t.Fatal("expected a parallel shape with a timer node present to be rejected")
+	}
+}

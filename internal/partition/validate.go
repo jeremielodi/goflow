@@ -48,14 +48,21 @@ import (
 //     each targeting a distinct service task -> both tasks flow to one
 //     shared end event. Diamond branches stay service-task-only with no
 //     boundary events or timers.
+//   - Phase 7 (parallel fork/join): one start event -> one fork
+//     parallelGateway with N (N>=2) unconditional outgoing flows, each
+//     targeting a distinct service task -> all N tasks flow directly to
+//     one join parallelGateway -> one shared end event. AND semantics
+//     (every branch runs), unlike the diamond's XOR. Branches stay
+//     service-task-only with no boundary events or timers, same
+//     restriction as the diamond.
 //
 // Called only when a process definition is flipped to the partitioned
 // write path (PATCH .../write-path) — this is an explicit scope fence, not
-// a silent gap: parallel/inclusive gateways, boundary timers, multi-
-// instance, and message/signal correlation are simply not implemented by
-// the partitioned engine yet (see the design doc's "Explicit non-goals").
+// a silent gap: inclusive gateways, boundary timers, multi-instance, and
+// message/signal correlation are simply not implemented by the
+// partitioned engine yet (see the design doc's "Explicit non-goals").
 func ValidateShape(graph *engine.ProcessGraph) error {
-	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes, boundaryNodes, timerNodes []*engine.Node
+	var startNodes, endNodes, serviceTaskNodes, businessRuleNodes, gatewayNodes, parallelGatewayNodes, boundaryNodes, timerNodes []*engine.Node
 	for _, n := range graph.Nodes {
 		switch n.Type {
 		case engine.StartEventType:
@@ -68,6 +75,8 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 			endNodes = append(endNodes, n)
 		case engine.ExclusiveGatewayType:
 			gatewayNodes = append(gatewayNodes, n)
+		case engine.ParallelGatewayType:
+			parallelGatewayNodes = append(parallelGatewayNodes, n)
 		case engine.ErrorBoundaryEventType:
 			boundaryNodes = append(boundaryNodes, n)
 		case engine.IntermediateTimerEventType:
@@ -82,7 +91,7 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 	startNode := startNodes[0]
 
 	switch {
-	case len(gatewayNodes) == 0 && len(timerNodes) == 0 && len(serviceTaskNodes)+len(businessRuleNodes) >= 1:
+	case len(gatewayNodes) == 0 && len(parallelGatewayNodes) == 0 && len(timerNodes) == 0 && len(serviceTaskNodes)+len(businessRuleNodes) >= 1:
 		if len(endNodes) != 1 {
 			return unsupportedShapeErr("")
 		}
@@ -93,16 +102,21 @@ func ValidateShape(graph *engine.ProcessGraph) error {
 			return err
 		}
 		return validateBoundaryEvents(boundaryNodes, serviceTaskNodes, endNodes[0])
-	case len(gatewayNodes) == 0 && len(timerNodes) == 1 && len(serviceTaskNodes)+len(businessRuleNodes) == 0 && len(boundaryNodes) == 0:
+	case len(gatewayNodes) == 0 && len(parallelGatewayNodes) == 0 && len(timerNodes) == 1 && len(serviceTaskNodes)+len(businessRuleNodes) == 0 && len(boundaryNodes) == 0:
 		if len(endNodes) != 1 {
 			return unsupportedShapeErr("")
 		}
 		return validateLinearShape(startNode, timerNodes, endNodes[0])
-	case len(gatewayNodes) == 1 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0 && len(timerNodes) == 0:
+	case len(gatewayNodes) == 1 && len(parallelGatewayNodes) == 0 && len(serviceTaskNodes) == 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0 && len(timerNodes) == 0:
 		if len(endNodes) != 1 {
 			return fmt.Errorf("the diamond shape requires both branches to converge on exactly one shared end event, found %d end events", len(endNodes))
 		}
 		return validateDiamondShape(startNode, gatewayNodes[0], serviceTaskNodes, endNodes[0])
+	case len(parallelGatewayNodes) == 2 && len(gatewayNodes) == 0 && len(serviceTaskNodes) >= 2 && len(businessRuleNodes) == 0 && len(boundaryNodes) == 0 && len(timerNodes) == 0:
+		if len(endNodes) != 1 {
+			return fmt.Errorf("the parallel fork/join shape requires exactly one shared end event, found %d end events", len(endNodes))
+		}
+		return validateParallelShape(startNode, parallelGatewayNodes, serviceTaskNodes, endNodes[0])
 	default:
 		return unsupportedShapeErr("")
 	}
@@ -222,9 +236,80 @@ func validateDiamondShape(startNode, gateway *engine.Node, taskNodes []*engine.N
 	return nil
 }
 
+// validateParallelShape (Phase 7) checks: start -> exactly one fork
+// parallelGateway (unconditional, one outgoing flow per branch task) -> N
+// (N>=2) distinct service tasks, each flowing directly to a shared join
+// parallelGateway -> the shared end event. Unlike the diamond, all N
+// branches always run (AND semantics, no conditions) instead of exactly
+// one (XOR). No new command type or Processor handler is needed: the
+// fork's child executions are created and walked to their first job by
+// the same runtime.ExecuteExecution call that's already reused for every
+// prior shape, and each branch's own CompleteJobCommand independently
+// resumes that one child via the existing generic
+// "rt.ExecuteExecution(result.ExecutionID)" call in handleCompleteJob —
+// runtime.go's ParallelGatewayExecutor join logic (shared with the
+// legacy/Citus paths) already handles counting arrived branches and
+// resuming the parent once the last one joins. Kafka's per-instance
+// partition ordering means sibling branches' job completions are already
+// processed strictly one at a time by the same owning goroutine, so the
+// concurrent-write races that logic guards against on the legacy path
+// (see architecture/citus-distributed-storage-design.md section 6) simply
+// can't happen here.
+func validateParallelShape(startNode *engine.Node, gatewayNodes, taskNodes []*engine.Node, endNode *engine.Node) error {
+	if len(startNode.Outgoing) != 1 {
+		return fmt.Errorf("the parallel fork/join shape requires exactly one outgoing flow from the start event")
+	}
+
+	var fork, join *engine.Node
+	for _, g := range gatewayNodes {
+		if len(g.Outgoing) == len(taskNodes) {
+			fork = g
+		} else if len(g.Outgoing) == 1 {
+			join = g
+		}
+	}
+	if fork == nil || join == nil || fork.ID == join.ID {
+		return fmt.Errorf("the parallel fork/join shape requires one fork parallelGateway with exactly %d outgoing flows (one per branch task) and one join parallelGateway with exactly 1 outgoing flow", len(taskNodes))
+	}
+	if startNode.Outgoing[0].TargetRef != fork.ID {
+		return fmt.Errorf("the parallel fork/join shape requires start -> parallelGateway directly")
+	}
+
+	taskByID := make(map[string]*engine.Node, len(taskNodes))
+	for _, t := range taskNodes {
+		taskByID[t.ID] = t
+	}
+	targeted := map[string]bool{}
+	for _, flow := range fork.Outgoing {
+		if strings.TrimSpace(flow.Condition) != "" {
+			return fmt.Errorf("the parallel fork/join shape forks unconditionally — flow %s must not have a condition", flow.ID)
+		}
+		if _, ok := taskByID[flow.TargetRef]; !ok {
+			return fmt.Errorf("the parallel fork/join shape requires every fork flow to target one of the branch service tasks — flow %s targets %s", flow.ID, flow.TargetRef)
+		}
+		if targeted[flow.TargetRef] {
+			return fmt.Errorf("the parallel fork/join shape requires each branch task to be targeted by exactly one fork flow — %s is targeted more than once", flow.TargetRef)
+		}
+		targeted[flow.TargetRef] = true
+	}
+	if len(targeted) != len(taskNodes) {
+		return fmt.Errorf("the parallel fork/join shape requires every branch task to be reachable from the fork gateway")
+	}
+
+	for _, t := range taskNodes {
+		if len(t.Outgoing) != 1 || t.Outgoing[0].TargetRef != join.ID {
+			return fmt.Errorf("the parallel fork/join shape requires branch service task %s to flow directly, and only, to the join gateway", t.ID)
+		}
+	}
+	if len(join.Outgoing) != 1 || join.Outgoing[0].TargetRef != endNode.ID {
+		return fmt.Errorf("the parallel fork/join shape requires the join gateway to flow directly, and only, to the shared end event")
+	}
+	return nil
+}
+
 func unsupportedShapeErr(badType engine.NodeType) error {
 	if badType != "" {
-		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, errorBoundaryEvent, intermediateTimerEvent, and endEvent", badType)
+		return fmt.Errorf("unsupported node type %q — the partitioned write path only supports startEvent, serviceTask, businessRuleTask, exclusiveGateway, parallelGateway, errorBoundaryEvent, intermediateTimerEvent, and endEvent", badType)
 	}
-	return fmt.Errorf("the partitioned write path only supports three shapes: (1) start -> a chain of one or more service/business-rule tasks (each optionally with one attached error boundary event) -> end, (2) start -> exactly one intermediate timer event -> end (no tasks), or (3) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event")
+	return fmt.Errorf("the partitioned write path only supports four shapes: (1) start -> a chain of one or more service/business-rule tasks (each optionally with one attached error boundary event) -> end, (2) start -> exactly one intermediate timer event -> end (no tasks), (3) start -> exclusiveGateway (exactly 2 outgoing flows, both with explicit conditions) -> {serviceTaskA | serviceTaskB} -> a shared end event, or (4) start -> parallelGateway (fork, N unconditional outgoing flows) -> N distinct service tasks -> parallelGateway (join) -> a shared end event")
 }

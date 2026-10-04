@@ -157,6 +157,8 @@ func (p *Processor) handle(ctx context.Context, data []byte) error {
 		return p.handleResolveIncident(cmd.ResolveIncident)
 	case *pb.CommandEnvelope_TimerFired:
 		return p.handleTimerFired(ctx, cmd.TimerFired)
+	case *pb.CommandEnvelope_Terminate:
+		return p.handleTerminate(cmd.Terminate)
 	default:
 		log.Printf("partition processor: unknown command type for instance %s", env.ProcessInstanceId)
 		return nil
@@ -387,7 +389,7 @@ func (p *Processor) handleTimerFired(ctx context.Context, cmd *pb.TimerFiredComm
 		return nil
 	}
 
-	if _, _, err := service.ResumeTimerExecution(p.db, p.dispatcher, execID, cmd.TargetNodeId); err != nil {
+	if _, _, err := service.ResumeTimerExecution(p.db, p.dispatcher, row.ProcessInstanceID, execID, cmd.TargetNodeId); err != nil {
 		return fmt.Errorf("resume timer execution %s: %w", execID, err)
 	}
 
@@ -399,6 +401,28 @@ func (p *Processor) handleTimerFired(ctx context.Context, cmd *pb.TimerFiredComm
 	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
 	if err := rt.ExecuteExecution(ctx, execID); err != nil {
 		return fmt.Errorf("execute after timer fired for %s: %w", execID, err)
+	}
+	return nil
+}
+
+// handleTerminate (gap-closing pass 2) reuses service.TerminateProcessInstance
+// verbatim — it's already a single, self-contained operation (transaction +
+// cascade cleanup + archive), not something to reimplement here. Unlike
+// every handler above, redelivery safety is keyed off "does the row still
+// exist" rather than a status check: a prior attempt's success already
+// archived-and-deleted the instance's live rows, so a second FindByID
+// genuinely returns ErrProcessInstanceNotFound — treated as a safe no-op.
+// No follow-up ExecuteExecution walk needed; termination doesn't move to a
+// next node.
+func (p *Processor) handleTerminate(cmd *pb.TerminateCommand) error {
+	instanceID, err := uuid.Parse(cmd.ProcessInstanceId)
+	if err != nil {
+		return fmt.Errorf("invalid process_instance_id %q: %w", cmd.ProcessInstanceId, err)
+	}
+
+	err = service.TerminateProcessInstance(p.db, p.dispatcher, instanceID, cmd.Reason)
+	if err != nil && !errors.Is(err, service.ErrProcessInstanceNotFound) {
+		return fmt.Errorf("terminate process instance %s: %w", instanceID, err)
 	}
 	return nil
 }

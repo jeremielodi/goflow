@@ -144,7 +144,7 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
 			return
 		}
-		if _, _, err := ResumeTimerExecution(s.db, s.dispatcher, execID, targetNodeID); err != nil {
+		if _, _, err := ResumeTimerExecution(s.db, s.dispatcher, timer.ProcessInstanceID, execID, targetNodeID); err != nil {
 			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
 			return
 		}
@@ -264,7 +264,7 @@ func ParseTimerTargetNode(payload []byte) (string, error) {
 // internal/partition's Partition Processor (see TimerPartitionRouter
 // above) the same way SetJobRetries/ResolveIncident were extracted in the
 // prior gap-closing pass.
-func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, execID uuid.UUID, targetNodeID string) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
+func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, processInstanceID, execID uuid.UUID, targetNodeID string) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
 	engineRepo := repository.NewEngineRepository(db, dispatcher)
 	auditService := NewAuditService(db)
 
@@ -274,7 +274,7 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, e
 	}
 	defer tx.Rollback()
 
-	if err := tx.Get(&fromNodeID, `SELECT current_element_id FROM public.executions WHERE id = $1`, execID); err != nil {
+	if err := tx.Get(&fromNodeID, `SELECT current_element_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, processInstanceID, execID); err != nil {
 		return "", nil, fmt.Errorf("failed to load current node: %w", err)
 	}
 
@@ -287,7 +287,7 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, e
 		return "", nil, fmt.Errorf("failed to cancel user task: %w", err)
 	}
 
-	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, execID, "active", targetNodeID); err != nil {
+	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, processInstanceID, execID, "active", targetNodeID); err != nil {
 		return "", nil, fmt.Errorf("failed to update execution: %w", err)
 	}
 
@@ -297,18 +297,15 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, e
 
 	log.Printf("Execution %s resumed after timer, moving to node %s (user task cancelled)", execID, targetNodeID)
 
-	exec, execErr := engineRepo.GetExecutionByID(execID)
-	var instanceID uuid.UUID
-	if execErr == nil && exec != nil {
-		instanceID = exec.ProcessInstanceID
-	}
-
+	// processInstanceID is already known from the caller — no need to
+	// re-discover it via a scatter-gathered GetExecutionByID lookup the
+	// way this function used to (see architecture/citus-distributed-storage-design.md).
 	for _, taskID := range cancelledTaskIDs {
-		LogAuditErr("task cancelled", auditService.LogTaskCancelled(taskID, instanceID, "boundary timer fired"))
+		LogAuditErr("task cancelled", auditService.LogTaskCancelled(taskID, processInstanceID, "boundary timer fired"))
 	}
-	LogAuditErr("execution moved", auditService.LogExecutionMoved(execID, instanceID, fromNodeID, targetNodeID, nil))
+	LogAuditErr("execution moved", auditService.LogExecutionMoved(execID, processInstanceID, fromNodeID, targetNodeID, nil))
 	if p := eventlog.Global(); p != nil {
-		p.ExecutionMoved(instanceID.String(), execID.String(), fromNodeID, targetNodeID)
+		p.ExecutionMoved(processInstanceID.String(), execID.String(), fromNodeID, targetNodeID)
 	}
 
 	return fromNodeID, cancelledTaskIDs, nil
