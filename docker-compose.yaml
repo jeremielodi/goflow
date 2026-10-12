@@ -10,7 +10,9 @@ services:
       POSTGRES_USER: goflow
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
     ports:
-      - "5432:5432"
+      # Publié sur 127.0.0.1 seulement : l'appli passe par le réseau Docker.
+      # Pour y accéder depuis une autre machine, POSTGRES_BIND=0.0.0.0.
+      - "${POSTGRES_BIND:-127.0.0.1}:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database:/docker-entrypoint-initdb.d:ro
@@ -24,23 +26,31 @@ services:
     restart: unless-stopped
 
   # Redpanda (Kafka-wire-compatible event log — Phase 0 shadow-mode event
-  # sourcing scoping, see architecture/event-sourced-kafka-design.md; single
-  # node, dev-mode only, not a durability/HA setup)
+  # sourcing scoping, see architecture/event-sourced-kafka-design.md).
+  # Un seul nœud, sur le même serveur que l'appli : données persistées et
+  # fsyncées dans le volume redpanda_data, mais pas répliquées — la sécurité
+  # vient des sauvegardes de ce volume. Mémoire/CPU : REDPANDA_MEMORY,
+  # REDPANDA_SMP.
   redpanda:
     image: redpandadata/redpanda:v24.2.4
     container_name: goflow-redpanda
     command:
       - redpanda
       - start
-      - --smp=1
-      - --memory=512M
+      - --smp=${REDPANDA_SMP:-1}
+      - --memory=${REDPANDA_MEMORY:-1G}
+      # Recommandé quand les CPU sont partagés avec l'appli et Postgres sur la
+      # même machine (pas d'épinglage de threads, pas de polling actif).
+      # N'affecte pas la durabilité : les écritures restent fsyncées.
       - --overprovisioned
       - --node-id=0
       - --check=false
       - --kafka-addr=PLAINTEXT://0.0.0.0:9092
       - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
     ports:
-      - "9092:9092"
+      # Publié sur 127.0.0.1 seulement, sans authentification : ne jamais
+      # l'exposer sur le réseau tel quel.
+      - "127.0.0.1:9092:9092"
     volumes:
       - redpanda_data:/var/lib/redpanda/data
     healthcheck:
@@ -72,6 +82,8 @@ services:
 
       # Event log (Phase 0 shadow mode — see internal/eventlog)
       KAFKA_BROKERS: redpanda:9092
+      # Copies de chaque partition à la création des topics (1 = mono-nœud)
+      KAFKA_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR:-1}
 
       # Queue Settings
       QUEUE_MAX_RETRIES: 3
@@ -98,6 +110,14 @@ services:
       
       # Other
       GOFLOW_ENV: production
+
+      # Observabilité : jeton Bearer exigé sur GET /metrics (vide = ouvert)
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+
+      # Rétention : supprime les instances terminées depuis plus de N jours
+      # (historic_*, audit_logs liés). Vide = tout garder.
+      RETENTION_DAYS: ${RETENTION_DAYS:-}
+      RETENTION_INTERVAL: ${RETENTION_INTERVAL:-1h}
     ports:
       - "${SERVER_PORT:-8080}:8080"
       - "26500:26500" # gRPC gateway (Zeebe protocol subset — see internal/zeebegrpc)

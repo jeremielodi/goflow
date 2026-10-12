@@ -48,8 +48,11 @@ func NewCommandProducer(brokers []string) *CommandProducer {
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),
 			Topic:        CommandsTopic,
-			Balancer:     &kafka.Hash{},
-			RequiredAcks: kafka.RequireOne,
+			Balancer: &kafka.Hash{},
+			// Commands are the partitioned write path's only record of a
+			// request until it's processed, so wait for every in-sync
+			// replica (identical to RequireOne on a single broker).
+			RequiredAcks: kafka.RequireAll,
 		},
 	}
 }

@@ -11,7 +11,9 @@ import (
 
 // EnsureTopics idempotently creates Topic (goflow.process-events) and
 // CommandsTopic (goflow.process-commands) with numPartitions partitions
-// each, bumping Topic's partition count up if it already exists with fewer
+// each and replicationFactor copies of each partition (only applied at
+// creation: an existing topic keeps its replication factor), bumping
+// Topic's partition count up if it already exists with fewer
 // — which it will the first time this runs after Phase 0, since that
 // shadow-mode topic was auto-created with Redpanda/Kafka's default of 1
 // partition (Phase 0 never needed partition-key affinity to matter for
@@ -23,7 +25,7 @@ import (
 // only safe here because no partitioned-write-path instance exists yet to
 // have that mapping change out from under it. See
 // architecture/event-sourced-kafka-design.md for the full reasoning.
-func EnsureTopics(brokers []string, numPartitions int) error {
+func EnsureTopics(brokers []string, numPartitions, replicationFactor int) error {
 	if len(brokers) == 0 {
 		return fmt.Errorf("eventlog: no brokers configured")
 	}
@@ -46,8 +48,8 @@ func EnsureTopics(brokers []string, numPartitions int) error {
 	defer controllerConn.Close()
 
 	if err := controllerConn.CreateTopics(
-		kafka.TopicConfig{Topic: Topic, NumPartitions: numPartitions, ReplicationFactor: 1},
-		kafka.TopicConfig{Topic: CommandsTopic, NumPartitions: numPartitions, ReplicationFactor: 1},
+		kafka.TopicConfig{Topic: Topic, NumPartitions: numPartitions, ReplicationFactor: replicationFactor},
+		kafka.TopicConfig{Topic: CommandsTopic, NumPartitions: numPartitions, ReplicationFactor: replicationFactor},
 	); err != nil {
 		return fmt.Errorf("eventlog: create topics: %w", err)
 	}

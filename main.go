@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,8 +19,10 @@ import (
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
+	"github.com/jeremielodi/goflow/internal/metrics"
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/retention"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/internal/worker"
@@ -147,7 +150,15 @@ func main() {
 	if eventLogConsumer != nil {
 		brokers := strings.Split(util.DotEnvVariable("KAFKA_BROKERS"), ",")
 		const partitionCount = 12
-		if err := eventlog.EnsureTopics(brokers, partitionCount); err != nil {
+		replicationFactor := 1
+		if v := util.DotEnvVariable("KAFKA_REPLICATION_FACTOR"); v != "" {
+			rf, err := strconv.Atoi(v)
+			if err != nil || rf < 1 {
+				log.Fatalf("KAFKA_REPLICATION_FACTOR must be a whole number >= 1, got %q", v)
+			}
+			replicationFactor = rf
+		}
+		if err := eventlog.EnsureTopics(brokers, partitionCount, replicationFactor); err != nil {
 			log.Fatalln("partition processor: failed to ensure Kafka topics: ", err)
 		}
 		eventlog.SetGlobalCommandProducer(eventlog.NewCommandProducer(brokers))
@@ -213,6 +224,29 @@ func main() {
 	workerPool := worker.NewWorkerPool(db, "GoFlow-Main", 25, 1000, taskEventDispatcher)
 	workerPool.Start()
 	defer workerPool.Stop()
+
+	// ============================================================
+	// METRICS & RETENTION
+	// ============================================================
+
+	metrics.Register(db)
+	metrics.RegisterGaugeFunc("goflow_worker_pool_queue_length", "Requests waiting in the async worker pool queue.",
+		func() float64 { return float64(workerPool.GetMetrics().QueueLength) })
+	metrics.RegisterGaugeFunc("goflow_worker_pool_active_workers", "Async worker pool workers currently busy.",
+		func() float64 { return float64(workerPool.GetMetrics().ActiveWorkers) })
+	metrics.RegisterGaugeFunc("goflow_worker_pool_jobs_failed", "Async worker pool requests that failed since startup.",
+		func() float64 { return float64(workerPool.GetMetrics().JobsFailed) })
+
+	retentionCfg, err := retention.ConfigFromEnv(util.DotEnvVariable)
+	if err != nil {
+		log.Fatalln("retention:", err)
+	}
+	if retentionCfg.Enabled() {
+		retention.Start(context.Background(), db, retentionCfg)
+		log.Printf("✅ Retention purge enabled: finished instances older than %d days, every %s", retentionCfg.Days, retentionCfg.Interval)
+	} else {
+		log.Println("⏭️ RETENTION_DAYS not set — finished instances are kept forever")
+	}
 
 	// Optional: Monitor worker pool health
 	go func() {
@@ -294,6 +328,7 @@ func main() {
 	// ============================================================
 
 	app := fiber.New()
+	app.Use(metrics.Middleware())
 
 	// Health check endpoints
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -301,8 +336,21 @@ func main() {
 	})
 
 	app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully"})
+		ctx, cancel := context.WithTimeout(c.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"title": "Error", "message": "database unreachable", "database": "down"})
+		}
+		return c.JSON(fiber.Map{"title": "Information", "message": "Goflow server is running successfully", "database": "ok"})
 	})
+
+	// Prometheus metrics. Registered before the auth middleware below so a
+	// scraper needs no user account; protect it with METRICS_TOKEN instead.
+	metricsToken := util.DotEnvVariable("METRICS_TOKEN")
+	if metricsToken == "" && util.DotEnvVariable("GOFLOW_ENV") == "production" {
+		log.Println("⚠️ METRICS_TOKEN not set — /metrics is readable without authentication")
+	}
+	app.Get("/metrics", metrics.Handler(metricsToken))
 
 	// ============================================================
 	// EVENT STREAMING ENDPOINTS

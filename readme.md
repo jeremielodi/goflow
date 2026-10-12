@@ -18,6 +18,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 - [Event-Sourced Write Path (Experimental)](#event-sourced-write-path-experimental)
 - [Integration Tests](#integration-tests)
 - [Environment Variables](#environment-variables)
+- [Operations](#operations)
 - [Comparison to Camunda 7 / Camunda 8](#comparison-to-camunda-7--camunda-8)
 - [Roadmap](#roadmap)
 
@@ -459,6 +460,16 @@ SUPER_USER_PASSWORD=admin123
 # leave unset to disable both Kafka shadow-mode logging and the
 # partitioned write path entirely
 # KAFKA_BROKERS=redpanda:9092
+# KAFKA_REPLICATION_FACTOR=1   # replicas per partition, applied when topics are created
+
+# Observability — bearer token required on GET /metrics (unset = open)
+# METRICS_TOKEN=<random value>
+
+# Retention — automatically delete instances that finished more than N days
+# ago (unset or 0 = keep everything forever); see "Operations" below
+# RETENTION_DAYS=365
+# RETENTION_INTERVAL=1h
+# RETENTION_BATCH_SIZE=500
 
 # Citus-backed distributed storage (optional — see below)
 # leave unset (the default) to run on a single plain Postgres instance;
@@ -474,6 +485,52 @@ docker compose -f docker-compose.yaml -f docker-compose.citus.yml up -d --build 
 ```
 
 Brings up a Citus coordinator + 2 workers alongside the app instead of the single default Postgres instance; the plain `docker compose up` command above is completely unaffected either way. See [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md) for what's actually distributed today (config/lookup tables only, as Citus reference tables) and what's intentionally deferred.
+
+---
+
+## Operations
+
+### Database migrations
+
+Schema changes are plain SQL files applied by hand, never by the application — see [`database/migrations/README.md`](database/migrations/README.md).
+
+### Metrics
+
+`GET /metrics` serves Prometheus metrics. Set `METRICS_TOKEN` and scrape with that bearer token:
+
+```yaml
+scrape_configs:
+  - job_name: goflow
+    authorization:
+      credentials: <METRICS_TOKEN>
+    static_configs:
+      - targets: ["goflow:8080"]
+```
+
+| Metric | What it tells you |
+|---|---|
+| `goflow_process_instances{status}` | live instances by status |
+| `goflow_jobs{status}`, `goflow_user_tasks{status}` | work waiting / in progress |
+| `goflow_incidents_open` | failures needing an operator |
+| `goflow_timers_pending`, `goflow_timers_overdue` | timer backlog; overdue > 0 means the scheduler is behind |
+| `goflow_table_size_bytes{table}`, `goflow_table_rows_estimate{table}` | growth of `audit_logs`, `historic_*`, event-log projections |
+| `goflow_retention_deleted_rows_total{table}` | rows removed by the retention purge |
+| `goflow_http_requests_total`, `goflow_http_request_duration_seconds` | traffic, errors and latency per route pattern |
+| `go_sql_*` | database connection pool (open, in use, wait time) |
+| `goflow_worker_pool_*` | async worker pool queue and failures |
+| `goflow_metrics_scrape_error` | 1 if the engine-state queries failed during the last scrape |
+
+Engine-state metrics are read from Postgres at scrape time. On a Citus deployment, `goflow_table_size_bytes` only covers the coordinator's local tables.
+
+`GET /health` now also pings the database and returns `503` when it is unreachable.
+
+### Retention
+
+With `RETENTION_DAYS=N`, every `RETENTION_INTERVAL` (default `1h`, plus once at startup) the server deletes every instance that **ended** more than N days ago: its `historic_*` rows, any remaining `audit_logs` rows, and its event-log projections, in batches of `RETENTION_BATCH_SIZE` per transaction. Live instances are never touched, and `audit_logs` rows not tied to an instance (logins, user and role administration) are kept forever. With several GoFlow instances, a Postgres advisory lock makes exactly one of them purge each round. Unset by default: nothing is deleted unless you opt in.
+
+### Redpanda
+
+`docker-compose.yaml` runs one Redpanda node next to the app. Writes are fsynced to the `redpanda_data` volume, but there is no replication on a single machine, so back that volume up together with Postgres. Ports `9092` (Redpanda, no authentication) and `5432` (Postgres) are published on `127.0.0.1` only; the app reaches both over the Docker network. Tune with `REDPANDA_MEMORY` (default `1G`) and `REDPANDA_SMP` (default `1`).
 
 ---
 
