@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -223,19 +224,20 @@ func (u Util) GetSHA1Hash(text string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
+var dotEnvOnce sync.Once
+
+// DotEnvVariable returns an environment variable. A .env file (in the
+// parent of rootDirPath, else rootDirPath itself) is loaded once if present,
+// but it is optional: godotenv never overrides an already-set variable, so a
+// container configured purely through its environment needs no .env file.
 func (u Util) DotEnvVariable(key string) string {
-
-	envPath := path.Join(*u.rootDirPath, "..", ".env")
-	err := godotenv.Load(envPath)
-	if err != nil {
-
-		envPath := path.Join(*u.rootDirPath, ".env")
-		err2 := godotenv.Load(envPath)
-		if err2 != nil {
-			fmt.Println("Error loading .env file")
-			return ""
+	dotEnvOnce.Do(func() {
+		if err := godotenv.Load(path.Join(*u.rootDirPath, "..", ".env")); err != nil {
+			if err2 := godotenv.Load(path.Join(*u.rootDirPath, ".env")); err2 != nil {
+				fmt.Println("No .env file found — using process environment only")
+			}
 		}
-	}
+	})
 
 	return os.Getenv(key)
 }

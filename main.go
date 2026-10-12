@@ -37,6 +37,38 @@ func permissions(db *sqlx.DB, code string) fiber.Handler {
 	return middleware.PermissionMiddleware(db, code)
 }
 
+// knownDevJWTSecrets are placeholder values that have shipped in this repo's
+// sample config; starting in production with one of them would let anyone
+// who has read the repo forge tokens.
+var knownDevJWTSecrets = map[string]bool{
+	"change_me":                              true,
+	"change-me-in-production":                true,
+	"goflow_dev_secret_change_in_production": true,
+}
+
+// resolveJWTSecret reads JWT_SECRET_KEY (falling back to the legacy
+// goflow_secret_key name) and refuses to start without one: an empty HMAC
+// key is silently accepted by jwt/v4, which makes every token forgeable.
+func resolveJWTSecret(util common.Util) string {
+	secret := util.DotEnvVariable("JWT_SECRET_KEY")
+	if secret == "" {
+		secret = util.DotEnvVariable("goflow_secret_key")
+		if secret != "" {
+			log.Println("⚠️ goflow_secret_key is deprecated — rename it to JWT_SECRET_KEY")
+		}
+	}
+	if secret == "" {
+		log.Fatalln("JWT_SECRET_KEY is not set — refusing to start with an empty token-signing key")
+	}
+	if util.DotEnvVariable("GOFLOW_ENV") == "production" && knownDevJWTSecrets[secret] {
+		log.Fatalln("JWT_SECRET_KEY is a sample placeholder value — set a real secret for production (e.g. `openssl rand -base64 48`)")
+	}
+	if len(secret) < 32 {
+		log.Println("⚠️ JWT_SECRET_KEY is shorter than 32 characters — use a longer random value (e.g. `openssl rand -base64 48`)")
+	}
+	return secret
+}
+
 func main() {
 
 	time.Local = time.UTC
@@ -213,7 +245,7 @@ func main() {
 
 	multiInstanceController := api.NewMultiInstanceController(db)
 
-	jwcService := authentication.NewJWTService(db, util.DotEnvVariable("goflow_secret_key"))
+	jwcService := authentication.NewJWTService(db, resolveJWTSecret(util))
 	userController := api.NewUserController(db, jwcService)
 
 	// OIDC is entirely optional: NewOIDCService returns nil unless both

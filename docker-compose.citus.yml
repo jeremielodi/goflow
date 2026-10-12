@@ -29,7 +29,7 @@ services:
     environment:
       POSTGRES_DB: goflow
       POSTGRES_USER: goflow
-      POSTGRES_PASSWORD: goflow123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
     ports:
       - "5433:5432"
     volumes:
@@ -50,7 +50,7 @@ services:
     environment:
       POSTGRES_DB: goflow
       POSTGRES_USER: goflow
-      POSTGRES_PASSWORD: goflow123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
     volumes:
       - citus_worker1_data:/var/lib/postgresql/data
       - ./database/citus-worker-init:/docker-entrypoint-initdb.d:ro
@@ -69,7 +69,7 @@ services:
     environment:
       POSTGRES_DB: goflow
       POSTGRES_USER: goflow
-      POSTGRES_PASSWORD: goflow123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
     volumes:
       - citus_worker2_data:/var/lib/postgresql/data
       - ./database/citus-worker-init:/docker-entrypoint-initdb.d:ro

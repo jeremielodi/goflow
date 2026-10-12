@@ -69,7 +69,7 @@ already carry variables, but not a standalone event type).
 `ProcessStarted`/`ProcessCompleted`/`ProcessTerminated`/`JobCreated`/
 `JobCompleted`/`JobFailed` only — into two new, purely additive Postgres
 tables (`eventlog_projected_instances`, `eventlog_projected_jobs`;
-`database/migrations/011_eventlog_projection.sql`), upserted one row per
+`database/archive/migrations-before-baseline/011_eventlog_projection.sql`), upserted one row per
 event via `internal/repository/eventlog_projection_repository.go`. Nothing
 else in the app reads or writes these tables. This is deliberately scoped to
 prove "coarse instance/job state is reconstructable from events alone," not

@@ -3,6 +3,7 @@ package service
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 
 	"github.com/google/uuid"
@@ -126,6 +127,13 @@ func CreateDefaultData(db *sqlx.DB, util common.Util) error {
 		}
 		superUserID = existingUser.ID
 	} else {
+		if config.SuperUserPassword == "" {
+			return fmt.Errorf("SUPER_USER_PASSWORD is not set — refusing to create super user '%s' with an empty password", config.SuperUserEmail)
+		}
+		if config.SuperUserPassword == "admin123" || config.SuperUserPassword == "change_me" {
+			log.Printf("⚠️ Super user '%s' is being created with a sample password — change it right after first login", config.SuperUserEmail)
+		}
+
 		// Create super user with bcrypt hash
 		passwordHash, err := bcrypt.GenerateFromPassword([]byte(config.SuperUserPassword), bcrypt.DefaultCost)
 		if err != nil {

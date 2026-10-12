@@ -1,4 +1,9 @@
--- migrations/001_optimize_postgres.sql
+-- database/tuning/postgresql-tuning.sql
+--
+-- PAS une migration : réglages du serveur Postgres (ALTER SYSTEM). Les
+-- valeurs ci-dessous (shared_buffers 4GB, statement_timeout 30s...) sont à
+-- adapter à la machine avant application. ALTER SYSTEM ne peut pas tourner
+-- dans une transaction : lancer sans -1, puis redémarrer Postgres.
 
 -- Increase max connections (requires restart)
 ALTER SYSTEM SET max_connections = 200;

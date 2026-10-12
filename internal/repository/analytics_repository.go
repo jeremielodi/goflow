@@ -76,7 +76,7 @@ func (r *AnalyticsRepository) GetHistoricStatusStats(processKey string, from, to
 // IncidentCount is one process key's total incident count, summed across
 // still-live instances (incidents joined through process_instances) and
 // archived ones (historic_incidents, denormalized key) — see
-// migrations/009_historic_incidents.sql for why both sources exist.
+// database/archive/migrations-before-baseline/009_historic_incidents.sql for why both sources exist.
 type IncidentCount struct {
 	ProcessKey string `db:"process_key"`
 	Count      int    `db:"count"`

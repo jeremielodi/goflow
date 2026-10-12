@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: goflow
       POSTGRES_USER: goflow
-      POSTGRES_PASSWORD: goflow123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
     ports:
       - "5432:5432"
     volumes:
@@ -67,7 +67,7 @@ services:
       DB_HOST: postgres
       DB_PORT: 5432
       DB_USER: goflow
-      DB_PASS: goflow123
+      DB_PASS: ${POSTGRES_PASSWORD:-goflow123}
       DB_NAME: goflow
 
       # Event log (Phase 0 shadow mode — see internal/eventlog)
@@ -87,8 +87,9 @@ services:
       SERVER_PORT: 8080
       QUEUE_WORKERS: 10
       
-      # JWT (must match variable name used in code)
-      goflow_secret_key: goflow_dev_secret_change_in_production
+      # JWT signing key — required, read from .env (never hardcode it here).
+      # Generate one with: openssl rand -base64 48
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set in .env}
 
       # Super User (valeurs lues depuis .env)
       SUPER_USER_NAME: ${SUPER_USER_NAME:-admin}
@@ -100,8 +101,6 @@ services:
     ports:
       - "${SERVER_PORT:-8080}:8080"
       - "26500:26500" # gRPC gateway (Zeebe protocol subset — see internal/zeebegrpc)
-    volumes:
-      - ./migrations:/app/migrations
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 30s

@@ -98,7 +98,7 @@ into a distributed table (either direction), and a self-referencing FK not
 expressed on the shared distribution column (`process_instance_id`) can't
 be verified as colocated even when both sides are distributed. 21 FK
 constraints across the schema needed dropping — see
-`database/migrations/013_citus_phase2_drop_fks.sql` for the full list and
+`database/archive/migrations-before-baseline/013_citus_phase2_drop_fks.sql` for the full list and
 reasoning per constraint. Application code (`internal/repository`,
 `internal/runtime`, `internal/service`) already maintains these
 relationships correctly; nothing here was ever the *only* thing enforcing

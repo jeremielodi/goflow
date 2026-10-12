@@ -2,7 +2,7 @@
  * Suite 25 — Analytics (GET /engine-rest/analytics/process-stats)
  *
  * Regression test for the incidents-cascade-delete-on-archive fix
- * (migrations/009_historic_incidents.sql) — without it, "incident rate by
+ * (archive/migrations-before-baseline/009_historic_incidents.sql) — without it, "incident rate by
  * process key" would silently undercount every archived instance, since
  * ArchiveAndDeleteProcessInstance hard-deletes the live process_instances
  * row (cascading onto incidents) the moment an instance finishes.

@@ -27,8 +27,6 @@ WORKDIR /app
 # Copy the binary
 COPY --from=builder /app/goflow .
 
-# Copy .env file
-COPY .env .env
 
 # Expose port
 EXPOSE 8080

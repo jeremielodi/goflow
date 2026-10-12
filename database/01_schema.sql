@@ -437,7 +437,7 @@ CREATE INDEX idx_jobs_type
 ON jobs(job_type);
 
 -- Composite partial index for the hot fetch-and-lock query (job_type +
--- status = 'pending') — see migrations/008_jobs_composite_index.sql.
+-- status = 'pending') — see archive/migrations-before-baseline/008_jobs_composite_index.sql.
 CREATE INDEX IF NOT EXISTS idx_jobs_type_status_pending
 ON jobs(job_type, status)
 WHERE status = 'pending';
@@ -769,7 +769,7 @@ ON historic_process_instances(process_definition_key);
 CREATE INDEX IF NOT EXISTS idx_historic_process_instances_tenant_id
 ON historic_process_instances(tenant_id);
 
--- Analytics query support — see migrations/010_historic_process_instance_time_indexes.sql.
+-- Analytics query support — see archive/migrations-before-baseline/010_historic_process_instance_time_indexes.sql.
 CREATE INDEX IF NOT EXISTS idx_historic_process_instances_started_at
 ON historic_process_instances(started_at);
 
@@ -833,7 +833,7 @@ CREATE TABLE IF NOT EXISTS historic_variables (
 CREATE INDEX IF NOT EXISTS idx_historic_variables_process_instance_id
 ON historic_variables(process_instance_id);
 
--- Archived incidents — see migrations/009_historic_incidents.sql for why
+-- Archived incidents — see archive/migrations-before-baseline/009_historic_incidents.sql for why
 -- this exists (incidents.process_instance_id has ON DELETE CASCADE, so
 -- without this, every incident vanishes the moment its instance archives).
 CREATE TABLE IF NOT EXISTS historic_incidents (
@@ -892,7 +892,7 @@ CREATE INDEX IF NOT EXISTS idx_process_permissions_key
 ON process_permissions(process_key);
 
 -- Phase 0 event-sourced engine scoping (shadow mode) — see
--- migrations/011_eventlog_projection.sql and
+-- archive/migrations-before-baseline/011_eventlog_projection.sql and
 -- architecture/event-sourced-kafka-design.md. Populated only by
 -- internal/eventlog.Consumer's background projector, not read/written by
 -- any real request path — exists purely to prove engine state is
@@ -924,3 +924,15 @@ ON eventlog_projected_jobs(process_instance_id);
 
 CREATE INDEX IF NOT EXISTS idx_process_permissions_grantee
 ON process_permissions(grantee_type, grantee_id);
+
+-- Suivi des migrations (voir database/migrations/README.md). Une base neuve
+-- part directement de la baseline 000.
+CREATE TABLE IF NOT EXISTS public.schema_migrations (
+    version     TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at  TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('000', 'baseline — schéma de database/01_schema.sql (anciennes migrations 002-014 incluses)')
+ON CONFLICT (version) DO NOTHING;

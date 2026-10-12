@@ -53,11 +53,11 @@ func NewPostgres(util common.Util) (*sqlx.DB, error) {
 
 	// Build connection string with additional performance parameters
 	connStr := fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable "+
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s "+
 			"connect_timeout=10 "+
 			"statement_timeout=30000 "+
 			"idle_in_transaction_session_timeout=60000",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
+		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
 	db, err := sqlx.Connect("postgres", connStr)
@@ -87,9 +87,9 @@ func NewPostgresWithPool(util common.Util, config PoolConfig) (*sqlx.DB, error) 
 	DB_PORT := env("DB_PORT")
 
 	connStr := fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable "+
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s "+
 			"connect_timeout=10",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
+		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
 	db, err := sqlx.Connect("postgres", connStr)
@@ -117,8 +117,8 @@ func NewPostgresDev(util common.Util) (*sqlx.DB, error) {
 	DB_PORT := env("DB_PORT")
 
 	connStr := fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s",
+		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
 	db, err := sqlx.Connect("postgres", connStr)
@@ -142,11 +142,11 @@ func NewPostgresHighPerf(util common.Util) (*sqlx.DB, error) {
 	DB_PORT := env("DB_PORT")
 
 	connStr := fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable "+
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s "+
 			"connect_timeout=5 "+
 			"statement_timeout=60000 "+
 			"pool_max_conns=100",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
+		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
 	db, err := sqlx.Connect("postgres", connStr)
@@ -193,8 +193,8 @@ func NewPostgres2(util common.Util) (*sqlx.DB, error) {
 	DB_PORT := env("DB_PORT")
 
 	connStr := fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable",
-		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME,
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s",
+		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
 	db, err := sqlx.Open("postgres", connStr)
@@ -223,8 +223,8 @@ func NewPostgres2(util common.Util) (*sqlx.DB, error) {
 func ConnStringForListener(util common.Util) string {
 	env := util.DotEnvVariable
 	return fmt.Sprintf(
-		"host=%s port=%v user=%s password=%s dbname=%s sslmode=disable",
-		env("DB_HOST"), env("DB_PORT"), env("DB_USER"), env("DB_PASS"), env("DB_NAME"),
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s",
+		env("DB_HOST"), env("DB_PORT"), env("DB_USER"), env("DB_PASS"), env("DB_NAME"), sslMode(env),
 	)
 }
 
@@ -246,4 +246,13 @@ func GetPoolStats(db *sqlx.DB) map[string]interface{} {
 // HealthCheck performs a simple database health check
 func HealthCheck(db *sqlx.DB) error {
 	return db.Ping()
+}
+
+// sslMode returns DB_SSLMODE (disable, require, verify-ca, verify-full),
+// defaulting to "disable" so existing deployments keep their behavior.
+func sslMode(env func(string) string) string {
+	if mode := env("DB_SSLMODE"); mode != "" {
+		return mode
+	}
+	return "disable"
 }
