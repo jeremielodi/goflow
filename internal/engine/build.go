@@ -167,18 +167,43 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	}
 
 	for _, t := range process.ScriptTasks {
-    node := &Node{
-        ID:   t.ID,
-        Name: t.Name,
-        Type: ScriptTaskType,  // Add this constant
-    }
-    // Store script content for execution
-    if t.Script != "" {
-        node.Script = &t.Script
-        node.ScriptFormat = &t.ScriptFormat
-    }
-    register(node)
-}
+		node := &Node{
+			ID:   t.ID,
+			Name: t.Name,
+			Type: ScriptTaskType,
+		}
+		// Camunda 7: an inline <script> body.
+		if t.Script != "" {
+			script, format := t.Script, t.ScriptFormat
+			node.Script = &script
+			node.ScriptFormat = &format
+			node.ResultVariable = t.CamundaResultVariable
+		}
+		if t.Ext != nil {
+			// Camunda 8: a FEEL expression, evaluated by the engine...
+			if zs := t.Ext.ZeebeScript; zs != nil && zs.Expression != "" {
+				script, format := zs.Expression, "feel"
+				node.Script = &script
+				node.ScriptFormat = &format
+				node.ResultVariable = zs.ResultVariable
+			}
+			// ...or a job for a worker, like a service task.
+			if td := t.Ext.ZeebeTaskDefinition; td != nil && td.Type != "" {
+				jobType := td.Type
+				node.Type = ServiceTaskType
+				node.JobType = &jobType
+				node.Script, node.ScriptFormat = nil, nil
+				if th := t.Ext.ZeebeTaskHeaders; th != nil && len(th.Headers) > 0 {
+					node.TaskHeaders = make(map[string]string, len(th.Headers))
+					for _, h := range th.Headers {
+						node.TaskHeaders[h.Key] = h.Value
+					}
+				}
+			}
+			applyIoMapping(node, t.Ext.ZeebeIoMapping)
+		}
+		register(node)
+	}
 
 	// ---- Business Rule Tasks (zeebe:calledDecision) ----
 	for _, t := range process.BusinessRuleTasks {
@@ -191,6 +216,13 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			if cd := t.Ext.ZeebeCalledDecision; cd != nil {
 				node.DecisionKey = cd.DecisionId
 				node.ResultVariable = cd.ResultVariable
+			}
+			// Camunda 8: a business rule task with a job type is worked by
+			// a job worker instead of evaluating a DMN decision.
+			if td := t.Ext.ZeebeTaskDefinition; td != nil && td.Type != "" && t.Ext.ZeebeCalledDecision == nil {
+				jobType := td.Type
+				node.Type = ServiceTaskType
+				node.JobType = &jobType
 			}
 			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
@@ -277,10 +309,11 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	// ---- Receive Tasks (wait for a message, like a message catch event) ----
 	for _, t := range process.ReceiveTasks {
 		register(&Node{
-			ID:         t.ID,
-			Name:       t.Name,
-			Type:       IntermediateMessageCatchEventType,
-			MessageRef: t.MessageName,
+			ID:                    t.ID,
+			Name:                  t.Name,
+			Type:                  IntermediateMessageCatchEventType,
+			MessageRef:            t.MessageName,
+			MessageCorrelationKey: t.MessageCorrelationKey,
 		})
 	}
 
@@ -388,10 +421,11 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	for _, ev := range process.IntermediateCatchEvents {
 		if ev.MessageEventDefinition != nil {
 			register(&Node{
-				ID:         ev.ID,
-				Name:       ev.Name,
-				Type:       IntermediateMessageCatchEventType,
-				MessageRef: ev.MessageName,
+				ID:                    ev.ID,
+				Name:                  ev.Name,
+				Type:                  IntermediateMessageCatchEventType,
+				MessageRef:            ev.MessageName,
+				MessageCorrelationKey: ev.MessageCorrelationKey,
 			})
 		} else if ev.SignalEventDefinition != nil {
 			register(&Node{
@@ -426,6 +460,7 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			if n, ok := nodeMap[sv.ID]; ok {
 				n.Type = MessageStartEventType
 				n.MessageRef = sv.MessageName
+				n.MessageCorrelationKey = sv.MessageCorrelationKey
 			}
 		}
 	}
@@ -433,11 +468,12 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	// ---- Boundary Message Events ----
 	for _, b := range process.BoundaryMessageEvents {
 		register(&Node{
-			ID:             b.ID,
-			Type:           MessageBoundaryEventType,
-			AttachedToRef:  b.AttachedToRef,
-			CancelActivity: b.CancelActivity,
-			MessageRef:     b.MessageName,
+			ID:                    b.ID,
+			Type:                  MessageBoundaryEventType,
+			AttachedToRef:         b.AttachedToRef,
+			CancelActivity:        b.CancelActivity,
+			MessageRef:            b.MessageName,
+			MessageCorrelationKey: b.MessageCorrelationKey,
 		})
 	}
 

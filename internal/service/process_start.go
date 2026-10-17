@@ -69,6 +69,25 @@ func StartProcessInstanceWithIDs(
 	return startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables)
 }
 
+// StartProcessInstanceAt is StartProcessInstance starting at a given start
+// event — a message, signal or timer start event — instead of the
+// process's none start event.
+func StartProcessInstanceAt(
+	db *sqlx.DB,
+	graph *engine.ProcessGraph,
+	processDefinitionID uuid.UUID,
+	tenantID *string,
+	variables map[string]interface{},
+	startNodeID string,
+) (instanceID, execID uuid.UUID, err error) {
+	instanceID = uuid.New()
+	execID = uuid.New()
+	if err := startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID); err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	return instanceID, execID, nil
+}
+
 func startProcessInstance(
 	db *sqlx.DB,
 	graph *engine.ProcessGraph,
@@ -86,7 +105,16 @@ func startProcessInstance(
 	if startNodeID == "" {
 		return fmt.Errorf("no start event found in process definition")
 	}
+	return startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID)
+}
 
+func startProcessInstanceAt(
+	db *sqlx.DB,
+	processDefinitionID, instanceID, execID uuid.UUID,
+	tenantID *string,
+	variables map[string]interface{},
+	startNodeID string,
+) error {
 	if variables == nil {
 		variables = map[string]interface{}{}
 	}

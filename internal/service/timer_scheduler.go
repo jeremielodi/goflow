@@ -297,6 +297,15 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, p
 	}
 	cancelledTaskIDs = append(cancelledTaskIDs, scopeTasks...)
 
+	// An event-based gateway's competing message/signal events lose.
+	if _, err := tx.Exec(`
+		UPDATE event_subscriptions SET consumed_at = NOW()
+		WHERE process_instance_id = $1 AND execution_id = $2 AND consumed_at IS NULL
+		  AND event_type IN ('message', 'signal')
+	`, processInstanceID, execID); err != nil {
+		return "", nil, fmt.Errorf("failed to cancel competing events: %w", err)
+	}
+
 	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, processInstanceID, execID, "active", targetNodeID); err != nil {
 		return "", nil, fmt.Errorf("failed to update execution: %w", err)
 	}

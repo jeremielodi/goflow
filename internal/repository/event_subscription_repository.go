@@ -104,7 +104,13 @@ func (r *EventSubscriptionRepository) CancelSiblingSubscriptions(executionID uui
 		WHERE execution_id = $1
 		  AND id != $2
 		  AND consumed_at IS NULL
+		  AND event_type <> 'compensable'
 	`, executionID, exceptID)
+	if err != nil {
+		return err
+	}
+	// An event-based gateway's competing timer.
+	_, err = r.db.Exec(`DELETE FROM timer_jobs WHERE execution_id = $1 AND is_triggered = false`, executionID)
 	return err
 }
 

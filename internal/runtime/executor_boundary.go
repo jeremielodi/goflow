@@ -66,11 +66,7 @@ func (r *Runtime) subscribeBoundaryTx(tx *sqlx.Tx, engineRepo *repository.Engine
 	case engine.BoundaryTimerEventType:
 		_, err = r.createTimerTx(tx, engineRepo, trigger, n.TimerDefinition, n.ID, "boundary")
 	case engine.MessageBoundaryEventType:
-		_, err = tx.Exec(`
-			INSERT INTO event_subscriptions
-			  (process_instance_id, execution_id, event_type, event_name, target_element_id)
-			VALUES ($1, $2, 'message', $3, $4)
-		`, trigger.ProcessInstanceID, trigger.ID, n.MessageRef, n.ID)
+		err = insertMessageSubscriptionTx(tx, trigger.ProcessInstanceID, trigger.ID, n.MessageRef, r.messageCorrelationKey(n, trigger.ProcessInstanceID), n.ID)
 	case engine.SignalBoundaryEventType:
 		_, err = tx.Exec(`
 			INSERT INTO event_subscriptions

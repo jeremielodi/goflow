@@ -17,11 +17,7 @@ func (r *Runtime) executeMessageCatchEvent(ctx context.Context, engineRepo *repo
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`
-		INSERT INTO event_subscriptions
-		  (process_instance_id, execution_id, event_type, event_name)
-		VALUES ($1, $2, 'message', $3)
-	`, exec.ProcessInstanceID, exec.ID, node.MessageRef)
+	err = insertMessageSubscriptionTx(tx, exec.ProcessInstanceID, exec.ID, node.MessageRef, r.messageCorrelationKey(node, exec.ProcessInstanceID), "")
 	if err != nil {
 		return fmt.Errorf("message catch: insert subscription: %w", err)
 	}

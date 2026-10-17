@@ -133,6 +133,8 @@ async function main() {
     '41_escalation.test.ts',
     '42_conditional.test.ts',
     '43_compensation.test.ts',
+    '44_script_task.test.ts',
+    '45_messages.test.ts',
   ];
 
   const exitCodes: number[] = [];

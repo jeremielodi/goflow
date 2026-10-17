@@ -2,8 +2,8 @@ package engine
 
 import (
 	"fmt"
-	"strings"
 	"slices"
+	"strings"
 
 	"github.com/jeremielodi/goflow/internal/parser"
 )
@@ -233,6 +233,7 @@ func finishEventSubProcess(node *Node, sp subProcessInfo) error {
 	case s.MessageEventDefinition != nil:
 		node.TriggerType = TriggerMessage
 		node.MessageRef = s.MessageName
+		node.MessageCorrelationKey = s.MessageCorrelationKey
 	case s.SignalEventDefinition != nil:
 		node.TriggerType = TriggerSignal
 		node.SignalRef = s.SignalName

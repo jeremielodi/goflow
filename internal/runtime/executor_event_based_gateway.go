@@ -35,11 +35,7 @@ func (r *Runtime) executeEventBasedGateway(ctx context.Context, engineRepo *repo
 
 		switch catchNode.Type {
 		case engine.IntermediateMessageCatchEventType:
-			_, err = tx.Exec(`
-				INSERT INTO event_subscriptions
-				  (process_instance_id, execution_id, event_type, event_name, target_element_id)
-				VALUES ($1, $2, 'message', $3, $4)
-			`, exec.ProcessInstanceID, exec.ID, catchNode.MessageRef, targetElementID)
+			err = insertMessageSubscriptionTx(tx, exec.ProcessInstanceID, exec.ID, catchNode.MessageRef, r.messageCorrelationKey(catchNode, exec.ProcessInstanceID), targetElementID)
 			if err != nil {
 				return fmt.Errorf("EBG: insert message subscription: %w", err)
 			}
@@ -55,13 +51,10 @@ func (r *Runtime) executeEventBasedGateway(ctx context.Context, engineRepo *repo
 			}
 
 		case engine.IntermediateTimerEventType, engine.IntermediateCatchEventType:
-			// Timer-based competing event: create a timer job that fires and then resumes
-			// at targetElementID. For now, just create a regular timer job and store target.
-			_, err = tx.Exec(`
-				INSERT INTO event_subscriptions
-				  (process_instance_id, execution_id, event_type, event_name, target_element_id)
-				VALUES ($1, $2, 'timer', $3, $4)
-			`, exec.ProcessInstanceID, exec.ID, catchNode.ID, targetElementID)
+			// The timer moves the execution straight past the catch event
+			// when it fires; whichever event comes first cancels the others
+			// (correlateSubscription / ResumeTimerExecution).
+			_, err = r.createTimerTx(tx, engineRepo, exec, catchNode.TimerDefinition, targetElementID, "eventBasedGateway")
 			if err != nil {
 				return fmt.Errorf("EBG: insert timer subscription: %w", err)
 			}

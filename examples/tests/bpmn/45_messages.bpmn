@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_Messages"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Camunda 8 message semantics (suite 45). -->
+
+  <bpmn:message id="Msg_Paid" name="Paid45">
+    <bpmn:extensionElements><zeebe:subscription correlationKey="=orderId"/></bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Msg_Begin" name="Begin45">
+    <bpmn:extensionElements><zeebe:subscription correlationKey="=orderId"/></bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Msg_Cancel" name="Cancel45">
+    <bpmn:extensionElements><zeebe:subscription correlationKey="=orderId"/></bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Msg_Approve" name="Approve45">
+    <bpmn:extensionElements><zeebe:subscription correlationKey="=orderId"/></bpmn:extensionElements>
+  </bpmn:message>
+
+  <!-- intermediate message catch with a correlation key -->
+  <bpmn:process id="MsgKey45" isExecutable="true">
+    <bpmn:startEvent id="mk_start"/>
+    <bpmn:sequenceFlow id="mk1" sourceRef="mk_start" targetRef="mk_wait"/>
+    <bpmn:intermediateCatchEvent id="mk_wait">
+      <bpmn:messageEventDefinition messageRef="Msg_Paid"/>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="mk2" sourceRef="mk_wait" targetRef="mk_after"/>
+    <bpmn:userTask id="mk_after" name="After payment"/>
+    <bpmn:sequenceFlow id="mk3" sourceRef="mk_after" targetRef="mk_end"/>
+    <bpmn:endEvent id="mk_end"/>
+  </bpmn:process>
+
+  <!-- started by a message -->
+  <bpmn:process id="MsgStart45" isExecutable="true">
+    <bpmn:startEvent id="ms_start">
+      <bpmn:messageEventDefinition messageRef="Msg_Begin"/>
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="ms1" sourceRef="ms_start" targetRef="ms_task"/>
+    <bpmn:userTask id="ms_task" name="Started by message"/>
+    <bpmn:sequenceFlow id="ms2" sourceRef="ms_task" targetRef="ms_end"/>
+    <bpmn:endEvent id="ms_end"/>
+  </bpmn:process>
+
+  <!-- event-based gateway: a message or a timer, whichever comes first -->
+  <bpmn:process id="MsgEbg45" isExecutable="true">
+    <bpmn:startEvent id="eb_start"/>
+    <bpmn:sequenceFlow id="eb1" sourceRef="eb_start" targetRef="eb_gw"/>
+    <bpmn:eventBasedGateway id="eb_gw"/>
+    <bpmn:sequenceFlow id="eb2" sourceRef="eb_gw" targetRef="eb_msg"/>
+    <bpmn:sequenceFlow id="eb3" sourceRef="eb_gw" targetRef="eb_timer"/>
+    <bpmn:intermediateCatchEvent id="eb_msg">
+      <bpmn:messageEventDefinition messageRef="Msg_Approve"/>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="eb_timer">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT2S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="eb4" sourceRef="eb_msg" targetRef="eb_approved"/>
+    <bpmn:sequenceFlow id="eb5" sourceRef="eb_timer" targetRef="eb_timed_out"/>
+    <bpmn:userTask id="eb_approved" name="Approved"/>
+    <bpmn:userTask id="eb_timed_out" name="Timed out"/>
+    <bpmn:sequenceFlow id="eb6" sourceRef="eb_approved" targetRef="eb_end1"/>
+    <bpmn:sequenceFlow id="eb7" sourceRef="eb_timed_out" targetRef="eb_end2"/>
+    <bpmn:endEvent id="eb_end1"/>
+    <bpmn:endEvent id="eb_end2"/>
+  </bpmn:process>
+
+  <!-- an interrupting message boundary event with a correlation key -->
+  <bpmn:process id="MsgBoundary45" isExecutable="true">
+    <bpmn:startEvent id="mb_start"/>
+    <bpmn:sequenceFlow id="mb1" sourceRef="mb_start" targetRef="mb_work"/>
+    <bpmn:userTask id="mb_work" name="Work"/>
+    <bpmn:boundaryEvent id="mb_cancel" attachedToRef="mb_work">
+      <bpmn:messageEventDefinition messageRef="Msg_Cancel"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="mb2" sourceRef="mb_work" targetRef="mb_end"/>
+    <bpmn:sequenceFlow id="mb3" sourceRef="mb_cancel" targetRef="mb_cancelled"/>
+    <bpmn:userTask id="mb_cancelled" name="Cancelled"/>
+    <bpmn:sequenceFlow id="mb4" sourceRef="mb_cancelled" targetRef="mb_end2"/>
+    <bpmn:endEvent id="mb_end"/>
+    <bpmn:endEvent id="mb_end2"/>
+  </bpmn:process>
+</bpmn:definitions>

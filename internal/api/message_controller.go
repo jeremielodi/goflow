@@ -29,6 +29,11 @@ func NewMessageController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *
 	return &MessageController{db: db, dispatcher: dispatcher, auditService: service.NewAuditService(db)}
 }
 
+// DB and Dispatcher let the /v2 controller publish through the same
+// dependencies.
+func (mc *MessageController) DB() *sqlx.DB                            { return mc.db }
+func (mc *MessageController) Dispatcher() *events.TaskEventDispatcher { return mc.dispatcher }
+
 type CorrelateMessageRequest struct {
 	MessageName     string                 `json:"messageName"`
 	CorrelationKeys map[string]interface{} `json:"correlationKeys"` // varName → value

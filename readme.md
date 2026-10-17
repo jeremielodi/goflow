@@ -34,7 +34,8 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | End Event | ✅ |
 | Service Task (External Worker) | ✅ |
 | User Task (with assignee / candidateGroups) | ✅ |
-| Script Task | ✅ |
+| Script Task (`zeebe:script` FEEL expression, or a job worker) | ✅ |
+| Messages with Camunda 8 semantics: `zeebe:subscription` correlation keys, time to live (buffered messages), `messageId` deduplication, once per process, message start events (one active instance per key) | ✅ |
 | Call Activity (sub-process invocation) | ✅ |
 | Exclusive Gateway (XOR) | ✅ |
 | Inclusive Gateway (OR) | ✅ |
@@ -290,6 +291,8 @@ POST /v2/flownode-instances/search
 POST /v2/incidents/search
 POST /v2/variables/search
 ```
+
+`POST /v2/messages/publication` and the gRPC `PublishMessage` follow Camunda 8: the message goes to the subscriptions whose `zeebe:subscription correlationKey` evaluates to the published `correlationKey` — at most once per process — or starts the processes waiting on it with a message start event. With a `timeToLive` (ms), it is kept and correlates to subscriptions that open later; a `messageId` already published and alive is refused (409 / `ALREADY_EXISTS`). Nothing waiting is not an error. Processes without a `correlationKey` expression keep matching a key equal to their `correlationKey` variable, as before. `POST /engine-rest/message` keeps Camunda 7's semantics.
 
 ---
 

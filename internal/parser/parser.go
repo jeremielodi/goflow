@@ -45,10 +45,11 @@ type Process struct {
 
 // ReceiveTask waits for a message, like an intermediate message catch event.
 type ReceiveTask struct {
-	ID          string `xml:"id,attr"`
-	Name        string `xml:"name,attr"`
-	MessageRef  string `xml:"messageRef,attr"`
-	MessageName string `xml:"-"` // resolved
+	ID                    string `xml:"id,attr"`
+	Name                  string `xml:"name,attr"`
+	MessageRef            string `xml:"messageRef,attr"`
+	MessageName           string `xml:"-"` // resolved
+	MessageCorrelationKey string `xml:"-"` // resolved: zeebe:subscription correlationKey (FEEL)
 }
 
 // ThrowEvent is an intermediate throw event: none (pass-through), signal,
@@ -194,6 +195,26 @@ type BoundaryErrorEvent struct {
 type MessageDefinition struct {
 	ID   string `xml:"id,attr"`
 	Name string `xml:"name,attr"`
+	// Camunda 8: <zeebe:subscription correlationKey="=orderId"/>.
+	Ext *MessageExtensionElements `xml:"extensionElements"`
+}
+
+type MessageExtensionElements struct {
+	Subscription *ZeebeSubscription `xml:"subscription"`
+}
+
+// ZeebeSubscription holds the FEEL expression giving a message catch
+// event's correlation key, evaluated when its subscription opens.
+type ZeebeSubscription struct {
+	CorrelationKey string `xml:"correlationKey,attr"`
+}
+
+// CorrelationKey returns the correlation key expression, or "".
+func (m MessageDefinition) CorrelationKey() string {
+	if m.Ext == nil || m.Ext.Subscription == nil {
+		return ""
+	}
+	return m.Ext.Subscription.CorrelationKey
 }
 
 type SignalDefinition struct {
@@ -230,6 +251,7 @@ type StartEvent struct {
 	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
 	TimerDefinition        *TimerDefinition        `xml:"-"`
 	MessageName            string                  `xml:"-"` // resolved
+	MessageCorrelationKey  string                  `xml:"-"` // resolved: zeebe:subscription correlationKey (FEEL)
 
 	// Only meaningful on the start event of an event sub-process.
 	ErrorEventDefinition  *ErrorEventDefinition  `xml:"errorEventDefinition"`
@@ -333,6 +355,7 @@ type ExtensionElements struct {
 	ZeebeIoMapping            *ZeebeIoMapping            `xml:"ioMapping"`
 	ZeebeCalledDecision       *ZeebeCalledDecision       `xml:"calledDecision"`
 	ZeebePriorityDefinition   *ZeebePriorityDefinition   `xml:"priorityDefinition"`
+	ZeebeScript               *ZeebeScript               `xml:"script"`
 }
 
 type UserTask struct {
@@ -377,6 +400,12 @@ type ScriptTask struct {
 	Script       string   `xml:"script"`
 	Incoming     []string `xml:"incoming"`
 	Outgoing     []string `xml:"outgoing"`
+
+	// Camunda 8: zeebe:script (a FEEL expression) or zeebe:taskDefinition
+	// (worked by a job worker), plus I/O mappings.
+	Ext *ExtensionElements `xml:"extensionElements"`
+	// Camunda 7: where the script's result goes.
+	CamundaResultVariable string `xml:"http://camunda.org/schema/1.0/bpmn resultVariable,attr"`
 }
 type ExclusiveGateway struct {
 	ID       string   `xml:"id,attr"`
@@ -409,6 +438,7 @@ type IntermediateCatchEvent struct {
 	ConditionalEventDefinition *ConditionalEventDefinition `xml:"conditionalEventDefinition"`
 	TimerDefinition            *TimerDefinition            `xml:"-"`
 	MessageName                string                      `xml:"-"` // resolved from Messages map
+	MessageCorrelationKey      string                      `xml:"-"` // resolved: zeebe:subscription correlationKey (FEEL)
 	SignalName                 string                      `xml:"-"` // resolved from Signals map
 }
 
@@ -424,6 +454,7 @@ type BoundaryEvent struct {
 	SignalEventDefinition  *SignalEventDefinition  `xml:"signalEventDefinition"`
 	TimerDefinition        *TimerDefinition        `xml:"-"`
 	MessageName            string                  `xml:"-"` // resolved
+	MessageCorrelationKey  string                  `xml:"-"` // resolved: zeebe:subscription correlationKey (FEEL)
 	SignalName             string                  `xml:"-"` // resolved
 
 	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
@@ -434,10 +465,11 @@ type BoundaryEvent struct {
 }
 
 type BoundaryMessageEvent struct {
-	ID             string
-	AttachedToRef  string
-	CancelActivity bool
-	MessageName    string
+	ID                    string
+	AttachedToRef         string
+	CancelActivity        bool
+	MessageName           string
+	MessageCorrelationKey string // FEEL expression, from zeebe:subscription
 }
 
 type BoundarySignalEvent struct {
@@ -763,6 +795,11 @@ func PopulateMessageEvents(defs *Definitions) {
 	for _, m := range defs.Messages {
 		msgNameByID[m.ID] = m.Name
 	}
+	// Message ID → zeebe:subscription correlation key expression.
+	keyByID := make(map[string]string, len(defs.Messages))
+	for _, m := range defs.Messages {
+		keyByID[m.ID] = m.CorrelationKey()
+	}
 
 	for _, process := range allScopes(defs) {
 		process.BoundaryMessageEvents = []BoundaryMessageEvent{}
@@ -772,6 +809,7 @@ func PopulateMessageEvents(defs *Definitions) {
 			ev := &process.IntermediateCatchEvents[j]
 			if ev.MessageEventDefinition != nil && ev.MessageEventDefinition.MessageRef != "" {
 				ev.MessageName = msgNameByID[ev.MessageEventDefinition.MessageRef]
+				ev.MessageCorrelationKey = keyByID[ev.MessageEventDefinition.MessageRef]
 				if ev.MessageName == "" {
 					ev.MessageName = ev.MessageEventDefinition.MessageRef // fallback to ref ID
 				}
@@ -783,6 +821,7 @@ func PopulateMessageEvents(defs *Definitions) {
 			sv := &process.StartEvents[j]
 			if sv.MessageEventDefinition != nil && sv.MessageEventDefinition.MessageRef != "" {
 				sv.MessageName = msgNameByID[sv.MessageEventDefinition.MessageRef]
+				sv.MessageCorrelationKey = keyByID[sv.MessageEventDefinition.MessageRef]
 				if sv.MessageName == "" {
 					sv.MessageName = sv.MessageEventDefinition.MessageRef
 				}
@@ -802,10 +841,11 @@ func PopulateMessageEvents(defs *Definitions) {
 				}
 			}
 			process.BoundaryMessageEvents = append(process.BoundaryMessageEvents, BoundaryMessageEvent{
-				ID:             ev.ID,
-				AttachedToRef:  ev.AttachedToRef,
-				CancelActivity: ev.Interrupting(),
-				MessageName:    msgName,
+				ID:                    ev.ID,
+				AttachedToRef:         ev.AttachedToRef,
+				CancelActivity:        ev.Interrupting(),
+				MessageName:           msgName,
+				MessageCorrelationKey: keyByID[ev.MessageEventDefinition.MessageRef],
 			})
 		}
 	}
@@ -916,6 +956,11 @@ func PopulateThrowAndEndEvents(defs *Definitions) {
 			rt := &process.ReceiveTasks[j]
 			if rt.MessageRef != "" {
 				rt.MessageName = resolve(msgNameByID, rt.MessageRef)
+				for _, m := range defs.Messages {
+					if m.ID == rt.MessageRef {
+						rt.MessageCorrelationKey = m.CorrelationKey()
+					}
+				}
 			}
 		}
 		for j := range process.IntermediateThrowEvents {
@@ -976,4 +1021,11 @@ type Association struct {
 // ActivityRef optionally limits compensation to one activity.
 type CompensateEventDefinition struct {
 	ActivityRef string `xml:"activityRef,attr"`
+}
+
+// ZeebeScript is a Camunda 8 script task's FEEL expression and the variable
+// its result is written to.
+type ZeebeScript struct {
+	Expression     string `xml:"expression,attr"`
+	ResultVariable string `xml:"resultVariable,attr"`
 }

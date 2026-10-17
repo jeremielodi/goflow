@@ -1,10 +1,14 @@
 package v2
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/api"
+	"github.com/jeremielodi/goflow/internal/runtime"
 )
 
 type MessageController struct {
@@ -20,9 +24,13 @@ type PublishMessageRequest struct {
 	Name           string                 `json:"name"`
 	CorrelationKey string                 `json:"correlationKey"`
 	Variables      map[string]interface{} `json:"variables"`
+	TimeToLive     int64                  `json:"timeToLive"` // milliseconds
+	MessageID      string                 `json:"messageId"`
+	TenantID       string                 `json:"tenantId"`
 }
 
-// PublishMessage handles POST /v2/messages/publication.
+// PublishMessage handles POST /v2/messages/publication with Camunda 8
+// semantics (see runtime.PublishMessage).
 func (mc *MessageController) PublishMessage(c *fiber.Ctx) error {
 	var req PublishMessageRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -32,25 +40,39 @@ func (mc *MessageController) PublishMessage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"title": "INVALID_ARGUMENT", "detail": "name is required"})
 	}
 
-	// Camunda 8 correlates by a single opaque key rather than a named
-	// process variable; GoFlow's subscriptions are keyed by variable name,
-	// so we correlate against a synthetic "correlationKey" variable.
-	var correlationKeys map[string]interface{}
-	if req.CorrelationKey != "" {
-		correlationKeys = map[string]interface{}{"correlationKey": req.CorrelationKey}
-	}
-
-	processInstanceID, executionID, err := mc.inner.Correlate(req.Name, correlationKeys, req.Variables)
-	if err != nil {
-		status := fiber.StatusInternalServerError
-		if errors.Is(err, api.ErrNoMatchingSubscription) {
-			status = fiber.StatusNotFound
-		}
-		return c.Status(status).JSON(fiber.Map{"title": "CORRELATION_FAILED", "detail": err.Error()})
-	}
-
-	return c.JSON(fiber.Map{
-		"processInstanceKey": processInstanceID,
-		"executionKey":       executionID,
+	res, err := runtime.PublishMessage(context.Background(), mc.inner.DB(), mc.inner.Dispatcher(), runtime.PublishedMessage{
+		Name:           req.Name,
+		CorrelationKey: req.CorrelationKey,
+		Variables:      req.Variables,
+		TimeToLive:     time.Duration(req.TimeToLive) * time.Millisecond,
+		MessageID:      req.MessageID,
+		TenantID:       req.TenantID,
 	})
+	if err != nil {
+		if errors.Is(err, runtime.ErrMessageAlreadyPublished) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"title": "ALREADY_EXISTS", "detail": err.Error()})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "PUBLISH_FAILED", "detail": err.Error()})
+	}
+
+	body := fiber.Map{
+		"key":                           res.MessageID,
+		"tenantId":                      req.TenantID,
+		"correlatedProcessInstanceKeys": nonNilIDs(res.Correlated),
+		"startedProcessInstanceKeys":    nonNilIDs(res.Started),
+	}
+	// Kept from GoFlow's earlier 1:1 response.
+	if len(res.Correlated) > 0 {
+		body["processInstanceKey"] = res.Correlated[0]
+	} else if len(res.Started) > 0 {
+		body["processInstanceKey"] = res.Started[0]
+	}
+	return c.JSON(body)
+}
+
+func nonNilIDs(ids []uuid.UUID) []uuid.UUID {
+	if ids == nil {
+		return []uuid.UUID{}
+	}
+	return ids
 }

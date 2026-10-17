@@ -106,7 +106,10 @@ type Node struct {
 
 	// Message/Signal event support
 	MessageRef string `json:"messageRef,omitempty"` // Message name (resolved from bpmn:message)
-	SignalRef  string `json:"signalRef,omitempty"`  // Signal name (resolved from bpmn:signal)
+	// FEEL expression giving the correlation key of a message catch
+	// (zeebe:subscription), evaluated when its subscription opens.
+	MessageCorrelationKey string `json:"messageCorrelationKey,omitempty"`
+	SignalRef             string `json:"signalRef,omitempty"` // Signal name (resolved from bpmn:signal)
 
 	// Call Activity support
 	CalledElement string `json:"calledElement,omitempty"` // Process key of the called process

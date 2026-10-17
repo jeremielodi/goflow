@@ -462,29 +462,25 @@ func (s *Server) PublishMessage(ctx context.Context, req *pb.PublishMessageReque
 		}
 	}
 
-	// Zeebe correlates by a single opaque key; GoFlow's subscriptions are
-	// keyed by variable name, so — matching what the v2 REST handler
-	// already does — correlate against a synthetic "correlationKey"
-	// variable when the client sets one.
-	var correlationKeys map[string]interface{}
-	if req.CorrelationKey != "" {
-		correlationKeys = map[string]interface{}{"correlationKey": req.CorrelationKey}
+	if req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
-
-	msgCtrl := api.NewMessageController(s.db, s.dispatcher)
-	_, _, err := msgCtrl.Correlate(req.Name, correlationKeys, vars)
+	res, err := runtime.PublishMessage(ctx, s.db, s.dispatcher, runtime.PublishedMessage{
+		Name:           req.Name,
+		CorrelationKey: req.CorrelationKey,
+		Variables:      vars,
+		TimeToLive:     time.Duration(req.TimeToLive) * time.Millisecond,
+		MessageID:      req.MessageId,
+		TenantID:       req.TenantId,
+	})
 	if err != nil {
-		if errors.Is(err, api.ErrNoMatchingSubscription) {
-			return nil, status.Error(codes.NotFound, err.Error())
+		if errors.Is(err, runtime.ErrMessageAlreadyPublished) {
+			return nil, status.Errorf(codes.AlreadyExists, "message %q with id %q is already published", req.Name, req.MessageId)
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	// Zeebe assigns every published message a key; GoFlow has no message
-	// entity to key off, so mint a fresh one via the same zeebe_keys table
-	// used for every other resource type — nothing ever needs to resolve
-	// it back.
-	key, err := s.zeebeKeys.GetOrAssignKey("message", uuid.New())
+	key, err := s.zeebeKeys.GetOrAssignKey("message", res.MessageID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}

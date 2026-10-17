@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
+	"github.com/jeremielodi/goflow/internal/feel"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 )
@@ -15,7 +17,13 @@ import (
 // Returns the next node ID so the caller can continue the loop.
 func (r *Runtime) executeScriptTask(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) (nextID string, err error) {
 	if node.Script != nil {
-		scriptResult, err := executeScript(*node.Script, variables)
+		var scriptResult map[string]interface{}
+		var err error
+		if node.ScriptFormat != nil && strings.EqualFold(*node.ScriptFormat, "feel") {
+			scriptResult, err = evaluateFEELScript(node, variables)
+		} else {
+			scriptResult, err = executeScript(*node.Script, variables)
+		}
 		if err != nil {
 			return "", fmt.Errorf("script execution failed: %w", err)
 		}
@@ -68,4 +76,44 @@ func (r *Runtime) executeScriptTask(ctx context.Context, engineRepo *repository.
 	}
 
 	return next, nil
+}
+
+// evaluateFEELScript runs a Camunda 8 script task (zeebe:script, or
+// scriptFormat="feel"): its expression is evaluated by the native FEEL
+// interpreter — whatever FEEL_MODE is, since script tasks have no legacy
+// behavior to preserve — with the task's input mappings visible, and the
+// result is written to the result variable. With output mappings, only the
+// mapped values reach the process, as in Camunda 8.
+func evaluateFEELScript(node *engine.Node, variables map[string]interface{}) (map[string]interface{}, error) {
+	scope := variables
+	if inputs := common.EvaluateIOMappings(node.InputMappings, variables); len(inputs) > 0 {
+		scope = make(map[string]interface{}, len(variables)+len(inputs))
+		for k, v := range variables {
+			scope[k] = v
+		}
+		for k, v := range inputs {
+			scope[k] = v
+		}
+	}
+	expr := strings.TrimPrefix(strings.TrimSpace(*node.Script), "=")
+	value, err := feel.Evaluate(expr, scope)
+	if err != nil {
+		return nil, err
+	}
+
+	result := map[string]interface{}{}
+	if node.ResultVariable != "" {
+		result[node.ResultVariable] = value
+	}
+	if len(node.OutputMappings) == 0 {
+		return result, nil
+	}
+	withResult := make(map[string]interface{}, len(scope)+len(result))
+	for k, v := range scope {
+		withResult[k] = v
+	}
+	for k, v := range result {
+		withResult[k] = v
+	}
+	return common.EvaluateIOMappings(node.OutputMappings, withResult), nil
 }

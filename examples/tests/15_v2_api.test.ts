@@ -139,7 +139,7 @@ async function run() {
             name: 'PaymentReceived',
             variables: {},
           });
-          assert(res.data.processInstanceKey === instanceId, 'expected the message to correlate to our instance');
+          assert(res.data.correlatedProcessInstanceKeys.includes(instanceId), 'expected the message to correlate to our instance');
 
           // Drain the rest of the process so it doesn't dangle.
           await sleep(300);

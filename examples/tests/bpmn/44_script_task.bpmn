@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_ScriptTask"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Camunda 8 script tasks (suite 44). -->
+
+  <!-- FEEL script tasks: arithmetic, then a list built from a list -->
+  <bpmn:process id="ScriptFeel" isExecutable="true">
+    <bpmn:startEvent id="sf_start"/>
+    <bpmn:sequenceFlow id="sf1" sourceRef="sf_start" targetRef="sf_sum"/>
+    <bpmn:scriptTask id="sf_sum" name="Sum">
+      <bpmn:extensionElements><zeebe:script expression="=a + b" resultVariable="sum"/></bpmn:extensionElements>
+    </bpmn:scriptTask>
+    <bpmn:sequenceFlow id="sf2" sourceRef="sf_sum" targetRef="sf_double"/>
+    <bpmn:scriptTask id="sf_double" name="Double">
+      <bpmn:extensionElements><zeebe:script expression="=for x in items return x * 2" resultVariable="doubled"/></bpmn:extensionElements>
+    </bpmn:scriptTask>
+    <bpmn:sequenceFlow id="sf3" sourceRef="sf_double" targetRef="sf_mapped"/>
+    <!-- input mapping visible to the expression; output mapping renames the result -->
+    <bpmn:scriptTask id="sf_mapped" name="Mapped">
+      <bpmn:extensionElements>
+        <zeebe:script expression="=price * (1 + rate)" resultVariable="gross"/>
+        <zeebe:ioMapping>
+          <zeebe:input source="=0.2" target="rate"/>
+          <zeebe:output source="=gross" target="total"/>
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+    </bpmn:scriptTask>
+    <bpmn:sequenceFlow id="sf4" sourceRef="sf_mapped" targetRef="sf_check"/>
+    <bpmn:userTask id="sf_check" name="Check"/>
+    <bpmn:sequenceFlow id="sf5" sourceRef="sf_check" targetRef="sf_end"/>
+    <bpmn:endEvent id="sf_end"/>
+  </bpmn:process>
+
+  <!-- script task and business rule task worked by job workers -->
+  <bpmn:process id="ScriptJob" isExecutable="true">
+    <bpmn:startEvent id="sj_start"/>
+    <bpmn:sequenceFlow id="sj1" sourceRef="sj_start" targetRef="sj_script"/>
+    <bpmn:scriptTask id="sj_script" name="External Script">
+      <bpmn:extensionElements><zeebe:taskDefinition type="script_worker"/></bpmn:extensionElements>
+    </bpmn:scriptTask>
+    <bpmn:sequenceFlow id="sj2" sourceRef="sj_script" targetRef="sj_rule"/>
+    <bpmn:businessRuleTask id="sj_rule" name="External Rule">
+      <bpmn:extensionElements><zeebe:taskDefinition type="rule_worker"/></bpmn:extensionElements>
+    </bpmn:businessRuleTask>
+    <bpmn:sequenceFlow id="sj3" sourceRef="sj_rule" targetRef="sj_end"/>
+    <bpmn:endEvent id="sj_end"/>
+  </bpmn:process>
+</bpmn:definitions>
