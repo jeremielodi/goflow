@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "GoFlow integration tests — TypeScript / Axios",
   "scripts": {
-    "test": "ts-node run_all.ts",
+    "test": "ts-node --transpile-only run_all.ts",
+    "typecheck": "tsc --noEmit -p .",
     "test:auth": "ts-node 01_auth.test.ts",
     "test:user-task": "ts-node 02_user_task.test.ts",
     "test:service-task": "ts-node 03_service_task.test.ts",

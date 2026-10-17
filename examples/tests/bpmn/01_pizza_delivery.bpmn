@@ -13,11 +13,11 @@
 
   <!--
     SOURCE: https://camunda.com/bpmn/reference/ — Boundary Timer Event example
-    SCENARIO: Customer orders pizza. If delivery takes more than 60s (PT60S for tests),
+    SCENARIO: Customer orders pizza. If delivery takes more than 8s (PT8S for tests),
               an anxious phone call is made to the restaurant.
     FEATURES TESTED:
       - User Task with assignee expression (${customer})
-      - Boundary Timer Event (interrupting, PT60S)
+      - Boundary Timer Event (interrupting, PT8S)
       - Service Task on timer-triggered path (topic: call_restaurant)
       - Two distinct End Events
   -->
@@ -33,11 +33,11 @@
       <bpmn:outgoing>Flow_Order_Delivered</bpmn:outgoing>
     </bpmn:userTask>
 
-    <!-- Boundary timer: fires after PT60S if pizza has not arrived -->
-    <bpmn:boundaryEvent id="timer_delivery_timeout" name="60s timeout" attachedToRef="order_pizza" cancelActivity="true">
+    <!-- Boundary timer: fires after PT8S if pizza has not arrived -->
+    <bpmn:boundaryEvent id="timer_delivery_timeout" name="8s timeout" attachedToRef="order_pizza" cancelActivity="true">
       <bpmn:outgoing>Flow_Timeout_Call</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerDef_Delivery">
-        <bpmn:timeDuration>PT60S</bpmn:timeDuration>
+        <bpmn:timeDuration>PT8S</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:boundaryEvent>
 

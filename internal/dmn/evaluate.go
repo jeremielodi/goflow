@@ -45,7 +45,10 @@ func EvaluateDecisionTable(table *DecisionTable, variables map[string]interface{
 			if i < len(rule.InputEntries) {
 				test = rule.InputEntries[i].Text
 			}
-			ok, err := matchesUnaryTest(test, inputValues[i])
+			input := inputValues[i]
+			ok, err := common.EvaluateUnaryTests(test, input, variables, func() (bool, error) {
+				return matchesUnaryTest(test, input)
+			})
 			if err != nil {
 				return nil, fmt.Errorf("rule %s: %w", rule.ID, err)
 			}

@@ -17,9 +17,9 @@
               the pizza, then bake for a set time before removal.
     FEATURES TESTED:
       - Service Task (topic: turn_on_oven) — starts the oven
-      - Intermediate Timer Catch Event (PT20S) — wait for oven to heat up
+      - Intermediate Timer Catch Event (PT4S) — wait for oven to heat up
       - User Task (place_pizza) — place pizza in hot oven
-      - Intermediate Timer Catch Event (PT30S) — bake timer
+      - Intermediate Timer Catch Event (PT6S) — bake timer
       - User Task (remove_pizza) — remove pizza when done
       - Linear process flow with two timers
   -->
@@ -35,12 +35,12 @@
       <bpmn:outgoing>Flow_Oven_HeatTimer</bpmn:outgoing>
     </bpmn:serviceTask>
 
-    <!-- Wait for oven to reach temperature (PT20S for tests) -->
+    <!-- Wait for oven to reach temperature (PT4S for tests) -->
     <bpmn:intermediateCatchEvent id="timer_heat_up" name="Wait — oven heats up (20s)">
       <bpmn:incoming>Flow_Oven_HeatTimer</bpmn:incoming>
       <bpmn:outgoing>Flow_Heat_Place</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerDef_HeatUp">
-        <bpmn:timeDuration>PT20S</bpmn:timeDuration>
+        <bpmn:timeDuration>PT4S</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:intermediateCatchEvent>
 
@@ -50,12 +50,12 @@
       <bpmn:outgoing>Flow_Place_BakeTimer</bpmn:outgoing>
     </bpmn:userTask>
 
-    <!-- Wait for baking to complete (PT30S for tests) -->
+    <!-- Wait for baking to complete (PT6S for tests) -->
     <bpmn:intermediateCatchEvent id="timer_bake" name="Wait — pizza bakes (30s)">
       <bpmn:incoming>Flow_Place_BakeTimer</bpmn:incoming>
       <bpmn:outgoing>Flow_Bake_Remove</bpmn:outgoing>
       <bpmn:timerEventDefinition id="TimerDef_Bake">
-        <bpmn:timeDuration>PT30S</bpmn:timeDuration>
+        <bpmn:timeDuration>PT6S</bpmn:timeDuration>
       </bpmn:timerEventDefinition>
     </bpmn:intermediateCatchEvent>
 

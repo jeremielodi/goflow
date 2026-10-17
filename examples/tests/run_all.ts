@@ -48,7 +48,9 @@ function runFile(file: string): Promise<number> {
     const child = spawn(
       process.execPath,
       ['-r', 'ts-node/register', path.join(__dirname, file)],
-      { stdio: 'inherit', env: { ...process.env } }
+      // Transpile only: type-checking every suite on launch is what made a
+      // full run slow. Type-check once with "npm run typecheck" instead.
+      { stdio: 'inherit', env: { TS_NODE_TRANSPILE_ONLY: 'true', ...process.env } }
     );
     child.on('close', code => resolve(code ?? 1));
   });
@@ -126,6 +128,7 @@ async function main() {
     '36_bpmn_elements.test.ts',
     '37_event_subprocess.test.ts',
     '38_boundary_events.test.ts',
+    '39_feel.test.ts',
   ];
 
   const exitCodes: number[] = [];

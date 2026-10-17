@@ -38,7 +38,7 @@ async function run() {
           const task = await client.waitForTask('order_pizza', instanceId, 15000);
           assert(task.assignee === 'alice', `expected assignee "alice", got "${task.assignee}"`);
 
-          // Complete the task before the 60s timer — simulates pizza arriving on time
+          // Complete the task before the 8s timer — simulates pizza arriving on time
           await client.completeTask(task.id, { delivered: true });
 
           await client.waitForProcessEnd(instanceId, 15000);
@@ -49,10 +49,8 @@ async function run() {
 
       // ── B: timer path ───────────────────────────────────────────────────────
       {
-        name: '[Timer path] Timer fires after 60s — escalation worker receives "call_restaurant" job',
+        name: '[Timer path] Timer fires after 8s — escalation worker receives "call_restaurant" job',
         async fn() {
-          // NOTE: This test takes ~65 seconds to pass (timer PT60S).
-          // Reduce PT60S to PT10S in the BPMN for faster CI runs.
           const inst = await client.startProcess('PizzaDeliveryProcess', {
             customer: 'bob',
           });
@@ -60,7 +58,7 @@ async function run() {
 
           // Confirm the user task is waiting
           await client.waitForTask('order_pizza', instanceId, 10000);
-          console.log('       ⏳  Waiting for boundary timer to fire (up to 75s)…');
+          console.log('       ⏳  Waiting for boundary timer to fire (up to 20s)…');
 
           // Do NOT complete the task — wait for timer to interrupt it
           // Poll the external task topic that appears after the timer fires,
@@ -68,7 +66,7 @@ async function run() {
           await client.pollExternalTask(
             'call_restaurant',
             async () => ({ calledAt: new Date().toISOString() }),
-            75_000,
+            20_000,
             instanceId
           );
 

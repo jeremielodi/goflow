@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_Feel"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Native FEEL (suite 39, FEEL_MODE=feel only): expressions the legacy
+       FEEL-to-CEL path can't evaluate correctly. -->
+
+  <bpmn:process id="FeelShowcase" isExecutable="true">
+    <bpmn:startEvent id="fs_start"/>
+    <bpmn:sequenceFlow id="fs1" sourceRef="fs_start" targetRef="enter_order"/>
+
+    <!-- output mapping with for/sum on exact decimals -->
+    <bpmn:userTask id="enter_order" name="Enter Order">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:output source="= sum(for i in items return i.qty * i.price)" target="total"/>
+          <zeebe:output source="= items[qty &gt; 1].sku" target="bulkSkus"/>
+          <zeebe:output source="= if count(items) &gt; 1 then &quot;multi&quot; else &quot;single&quot;" target="kind"/>
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="fs2" sourceRef="enter_order" targetRef="gw_exact"/>
+
+    <bpmn:exclusiveGateway id="gw_exact"/>
+    <bpmn:sequenceFlow id="fs3" sourceRef="gw_exact" targetRef="exact">
+      <bpmn:conditionExpression>= total = 0.3 and kind = "multi" and list contains(bulkSkus, "A")</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="fs4" sourceRef="gw_exact" targetRef="inexact">
+      <bpmn:conditionExpression>= not(total = 0.3 and kind = "multi" and list contains(bulkSkus, "A"))</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:userTask id="exact" name="Exact Total"/>
+    <bpmn:userTask id="inexact" name="Inexact Total"/>
+    <bpmn:sequenceFlow id="fs5" sourceRef="exact" targetRef="gw_discount"/>
+    <bpmn:sequenceFlow id="fs6" sourceRef="inexact" targetRef="fs_end_bad"/>
+    <bpmn:endEvent id="fs_end_bad"/>
+
+    <!-- a variable that was never set is null, not an error -->
+    <bpmn:exclusiveGateway id="gw_discount"/>
+    <bpmn:sequenceFlow id="fs7" sourceRef="gw_discount" targetRef="no_discount">
+      <bpmn:conditionExpression>= discountCode = null</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="fs8" sourceRef="gw_discount" targetRef="discount">
+      <bpmn:conditionExpression>= discountCode != null</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:userTask id="no_discount" name="No Discount"/>
+    <bpmn:userTask id="discount" name="Discount"/>
+    <bpmn:sequenceFlow id="fs9" sourceRef="no_discount" targetRef="fs_end"/>
+    <bpmn:sequenceFlow id="fs10" sourceRef="discount" targetRef="fs_end"/>
+    <bpmn:endEvent id="fs_end"/>
+  </bpmn:process>
+</bpmn:definitions>

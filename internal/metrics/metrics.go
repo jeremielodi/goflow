@@ -35,6 +35,14 @@ var (
 
 	// RetentionDeletedRows is incremented by the retention purge
 	// (internal/retention) for every row it deletes, labeled by table.
+	// FeelShadowMismatches counts FEEL expressions where the native FEEL
+	// interpreter and the CEL path disagreed, in FEEL_MODE=shadow
+	// (internal/common), by kind ("condition" or "value").
+	FeelShadowMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "goflow_feel_shadow_mismatches_total",
+		Help: "FEEL expressions on which the native interpreter and the CEL path disagreed (FEEL_MODE=shadow).",
+	}, []string{"kind"})
+
 	RetentionDeletedRows = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "goflow_retention_deleted_rows_total",
 		Help: "Rows deleted by the retention purge, by table.",
@@ -48,6 +56,7 @@ func Register(db *sqlx.DB) {
 		httpRequests,
 		httpDuration,
 		RetentionDeletedRows,
+		FeelShadowMismatches,
 		collectors.NewDBStatsCollector(db.DB, "goflow"),
 		&engineCollector{db: db},
 	)

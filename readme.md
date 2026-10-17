@@ -471,6 +471,11 @@ SUPER_USER_PASSWORD=admin123
 # RETENTION_INTERVAL=1h
 # RETENTION_BATCH_SIZE=500
 
+# FEEL expressions ("=" prefix) and DMN tables: shadow (default: legacy
+# FEEL-to-CEL path decides, native FEEL runs alongside and mismatches are
+# logged), feel (native interpreter decides), cel (legacy only)
+# FEEL_MODE=shadow
+
 # Citus-backed distributed storage (optional — see below)
 # leave unset (the default) to run on a single plain Postgres instance;
 # only set when using docker-compose.citus.yml, which sets both automatically
@@ -527,6 +532,18 @@ Engine-state metrics are read from Postgres at scrape time. On a Citus deploymen
 ### Retention
 
 With `RETENTION_DAYS=N`, every `RETENTION_INTERVAL` (default `1h`, plus once at startup) the server deletes every instance that **ended** more than N days ago: its `historic_*` rows, any remaining `audit_logs` rows, and its event-log projections, in batches of `RETENTION_BATCH_SIZE` per transaction. Live instances are never touched, and `audit_logs` rows not tied to an instance (logins, user and role administration) are kept forever. With several GoFlow instances, a Postgres advisory lock makes exactly one of them purge each round. Unset by default: nothing is deleted unless you opt in.
+
+### FEEL expressions
+
+Expressions starting with `=` (Camunda 8 style) and DMN input entries can be evaluated by a native FEEL interpreter (`internal/feel`) instead of the historical FEEL-to-CEL text rewriting. Native FEEL brings FEEL semantics the rewriting can't: a missing variable is `null` instead of an error, numbers are exact decimals (`0.1 + 0.2 = 0.3`), and `if/then/else`, `for`, `some/every`, list filters (`items[qty > 1]`), ranges, contexts and built-in functions (`string length`, `list contains`, `sum`, `date`, `duration`…) work.
+
+`FEEL_MODE` controls the switch:
+
+- `shadow` (default): the legacy path still decides; the native interpreter runs alongside and every disagreement is logged once per expression (`FEEL shadow mismatch …`) and counted in `goflow_feel_shadow_mismatches_total{kind}`.
+- `feel`: the native interpreter decides. Switch once shadow mode shows no unexpected mismatches on real traffic.
+- `cel`: legacy path only.
+
+Camunda 7 `${…}` expressions and unprefixed conditions always use the legacy path: they aren't FEEL.
 
 ### Redpanda
 

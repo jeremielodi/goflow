@@ -2,8 +2,8 @@
  * Suite 04 — Intermediate Timer Catch Event  (BPMN: 04_oven_timer.bpmn)
  * Source: https://camunda.com/bpmn/reference/ — Intermediate Timer Event example
  *
- * Scenario: Preparing a frozen pizza. The oven must heat up (PT20S) before
- * placing the pizza, then bake (PT30S) before removing it.
+ * Scenario: Preparing a frozen pizza. The oven must heat up (PT4S) before
+ * placing the pizza, then bake (PT6S) before removing it.
  * Two intermediate catch timers gate the process.
  *
  * Tests:
@@ -18,11 +18,11 @@ import { GoFlowClient, runSuite, assert, sleep } from './client';
 const BPMN = path.join(__dirname, 'bpmn', '04_oven_timer.bpmn');
 const client = new GoFlowClient();
 
-// PT20S + PT30S = 50s of timer waiting in the BPMN.
+// PT4S + PT6S = 10s of timer waiting in the BPMN.
 // Adjust those durations in the BPMN file to speed up local runs.
-const HEAT_TIMER_MS  = 20_000; // matches PT20S
-const BAKE_TIMER_MS  = 30_000; // matches PT30S
-const TIMER_BUFFER   =  5_000; // extra wait to account for engine polling latency
+const HEAT_TIMER_MS  = 4_000;  // matches PT4S
+const BAKE_TIMER_MS  = 6_000;  // matches PT6S
+const TIMER_BUFFER   =  3_000; // extra wait to account for engine polling latency
 
 async function run() {
   await client.loginAsSuperUser();
@@ -45,7 +45,7 @@ async function run() {
             temperature: 180,
           }), 10000);
 
-          // Step 2: wait for heat-up intermediate timer (PT20S)
+          // Step 2: wait for heat-up intermediate timer (PT4S)
           console.log(`       ⏳  Waiting ${(HEAT_TIMER_MS + TIMER_BUFFER) / 1000}s for heat-up timer…`);
           await sleep(HEAT_TIMER_MS + TIMER_BUFFER);
 
@@ -54,7 +54,7 @@ async function run() {
           assert(placeTask.assignee === 'christian', `expected assignee "christian", got "${placeTask.assignee}"`);
           await client.completeTask(placeTask.id, { pizzaIn: true });
 
-          // Step 4: wait for bake intermediate timer (PT30S)
+          // Step 4: wait for bake intermediate timer (PT6S)
           console.log(`       ⏳  Waiting ${(BAKE_TIMER_MS + TIMER_BUFFER) / 1000}s for bake timer…`);
           await sleep(BAKE_TIMER_MS + TIMER_BUFFER);
 
@@ -69,7 +69,7 @@ async function run() {
 
       // ── B: first timer blocks place_pizza ───────────────────────────────────
       {
-        name: '[Heat-up timer] place_pizza does NOT appear before PT20S elapses',
+        name: '[Heat-up timer] place_pizza does NOT appear before PT4S elapses',
         async fn() {
           const inst = await client.startProcess('OvenTimerProcess', { cook: 'christian' });
           const instanceId = inst.processInstanceId ?? inst.id;
@@ -100,7 +100,7 @@ async function run() {
 
       // ── C: second timer blocks remove_pizza ─────────────────────────────────
       {
-        name: '[Bake timer] remove_pizza does NOT appear before PT30S elapses after place_pizza',
+        name: '[Bake timer] remove_pizza does NOT appear before PT6S elapses after place_pizza',
         async fn() {
           const inst = await client.startProcess('OvenTimerProcess', { cook: 'christian' });
           const instanceId = inst.processInstanceId ?? inst.id;

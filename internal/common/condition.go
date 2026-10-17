@@ -43,12 +43,17 @@ func EvaluateCondition(
 		return true, nil
 	}
 
-	normalized, prg, err := compileExpression(expr, variables)
-	if err != nil {
-		return false, err
+	celEval := func() (bool, error) {
+		normalized, prg, err := compileExpression(expr, variables)
+		if err != nil {
+			return false, err
+		}
+		return executeProgram(prg, variables, normalized)
 	}
-
-	return executeProgram(prg, variables, normalized)
+	if result, err, used := evaluateFEELCondition(expr, variables, celEval); used {
+		return result, err
+	}
+	return celEval()
 }
 
 // EvaluateValue evaluates a FEEL/CEL expression (or Camunda 7 ${...} wrapper)
@@ -70,16 +75,21 @@ func EvaluateValue(expr string, variables map[string]interface{}) (interface{}, 
 		return trimmed, nil
 	}
 
-	normalized, prg, err := compileExpression(trimmed, variables)
-	if err != nil {
-		return nil, err
+	celEval := func() (interface{}, error) {
+		normalized, prg, err := compileExpression(trimmed, variables)
+		if err != nil {
+			return nil, err
+		}
+		out, _, err := prg.Eval(convertNumericVars(variables))
+		if err != nil {
+			return nil, fmt.Errorf("expression evaluation error for '%s': %w", normalized, err)
+		}
+		return out.Value(), nil
 	}
-
-	out, _, err := prg.Eval(convertNumericVars(variables))
-	if err != nil {
-		return nil, fmt.Errorf("expression evaluation error for '%s': %w", normalized, err)
+	if result, err, used := evaluateFEELValue(trimmed, variables, celEval); used {
+		return result, err
 	}
-	return out.Value(), nil
+	return celEval()
 }
 
 // compileExpression normalizes expr to CEL and returns a compiled (and

@@ -118,6 +118,10 @@ services:
       # (historic_*, audit_logs liés). Vide = tout garder.
       RETENTION_DAYS: ${RETENTION_DAYS:-}
       RETENTION_INTERVAL: ${RETENTION_INTERVAL:-1h}
+
+      # Expressions FEEL (préfixe "=") : shadow (défaut : CEL utilisé, écarts
+      # avec le moteur FEEL natif journalisés), feel (moteur natif), cel
+      FEEL_MODE: ${FEEL_MODE:-shadow}
     ports:
       - "${SERVER_PORT:-8080}:8080"
       - "26500:26500" # gRPC gateway (Zeebe protocol subset — see internal/zeebegrpc)
