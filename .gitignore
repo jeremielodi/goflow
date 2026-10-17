@@ -1,3 +1,4 @@
 .env
 
 examples/**/node_modules
+backups/

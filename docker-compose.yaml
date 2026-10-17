@@ -5,6 +5,9 @@ services:
   postgres:
     image: postgres:16
     container_name: goflow-postgres
+    # max_connections doit couvrir DB_MAX_OPEN_CONNS × le nombre d'instances
+    # GoFlow (+ quelques connexions d'admin).
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-200}"]
     environment:
       POSTGRES_DB: goflow
       POSTGRES_USER: goflow
@@ -79,6 +82,8 @@ services:
       DB_USER: goflow
       DB_PASS: ${POSTGRES_PASSWORD:-goflow123}
       DB_NAME: goflow
+      # Taille du pool de connexions par instance GoFlow
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-80}
 
       # Event log (Phase 0 shadow mode — see internal/eventlog)
       KAFKA_BROKERS: redpanda:9092

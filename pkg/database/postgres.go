@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jeremielodi/goflow/pkg/common"
@@ -17,10 +18,14 @@ type PoolConfig struct {
 	ConnMaxIdleTime time.Duration
 }
 
-// Default pool configuration for production
+// Default pool configuration for production. MaxOpenConns must stay well
+// below Postgres's max_connections, multiplied by the number of GoFlow
+// instances: past it Postgres refuses new connections ("too many clients
+// already") and requests fail. Override with DB_MAX_OPEN_CONNS and
+// DB_MAX_IDLE_CONNS.
 var DefaultPoolConfig = PoolConfig{
-	MaxOpenConns:    100,              // Maximum number of open connections
-	MaxIdleConns:    50,               // Maximum number of idle connections
+	MaxOpenConns:    80,               // Maximum number of open connections
+	MaxIdleConns:    40,               // Maximum number of idle connections
 	ConnMaxLifetime: 1 * time.Hour,    // Maximum lifetime of a connection
 	ConnMaxIdleTime: 10 * time.Minute, // Maximum idle time before closing
 }
@@ -66,7 +71,7 @@ func NewPostgres(util common.Util) (*sqlx.DB, error) {
 	}
 
 	// Apply connection pool configuration
-	configureConnectionPool(db, DefaultPoolConfig)
+	configureConnectionPool(db, poolConfigFromEnv(env, DefaultPoolConfig))
 
 	// Verify connection is alive
 	if err := db.Ping(); err != nil {
@@ -255,4 +260,18 @@ func sslMode(env func(string) string) string {
 		return mode
 	}
 	return "disable"
+}
+
+// poolConfigFromEnv applies DB_MAX_OPEN_CONNS / DB_MAX_IDLE_CONNS over base.
+func poolConfigFromEnv(env func(string) string, base PoolConfig) PoolConfig {
+	if n, err := strconv.Atoi(env("DB_MAX_OPEN_CONNS")); err == nil && n > 0 {
+		base.MaxOpenConns = n
+	}
+	if n, err := strconv.Atoi(env("DB_MAX_IDLE_CONNS")); err == nil && n >= 0 {
+		base.MaxIdleConns = n
+	}
+	if base.MaxIdleConns > base.MaxOpenConns {
+		base.MaxIdleConns = base.MaxOpenConns
+	}
+	return base
 }

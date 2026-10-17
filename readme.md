@@ -533,6 +533,31 @@ Engine-state metrics are read from Postgres at scrape time. On a Citus deploymen
 
 With `RETENTION_DAYS=N`, every `RETENTION_INTERVAL` (default `1h`, plus once at startup) the server deletes every instance that **ended** more than N days ago: its `historic_*` rows, any remaining `audit_logs` rows, and its event-log projections, in batches of `RETENTION_BATCH_SIZE` per transaction. Live instances are never touched, and `audit_logs` rows not tied to an instance (logins, user and role administration) are kept forever. With several GoFlow instances, a Postgres advisory lock makes exactly one of them purge each round. Unset by default: nothing is deleted unless you opt in.
 
+### Backups
+
+Postgres is the source of truth (Redpanda only holds the event log and in-flight partitioned-path commands), so it is what must be backed up:
+
+```bash
+./scripts/backup-postgres.sh      # pg_dump -Fc into ./backups, checked readable, rotated after 14 days
+./scripts/test-restore.sh         # restores the latest dump into a temporary database and counts rows
+```
+
+Run the backup daily from cron (`0 3 * * * cd /path/to/goflow && ./scripts/backup-postgres.sh >> backups/backup.log 2>&1`), copy `backups/` off the server, and run `test-restore.sh` regularly: a backup that was never restored is not a backup. Variables: `BACKUP_DIR`, `BACKUP_KEEP_DAYS`, `POSTGRES_CONTAINER`.
+
+### Database connections
+
+Each GoFlow instance opens up to `DB_MAX_OPEN_CONNS` connections (default 80). Postgres's `max_connections` (`POSTGRES_MAX_CONNECTIONS`, default 200) must cover that times the number of GoFlow instances, plus a few for administration — otherwise, under load, Postgres refuses connections (`too many clients already`) and requests fail.
+
+### Load testing
+
+`cmd/loadtest` measures how many process instances per second a server sustains: it deploys a minimal process (start → service task → end), runs job workers, and starts instances at increasing rates until latency, errors or the job backlog show the server can't keep up.
+
+```bash
+go run ./cmd/loadtest -url http://127.0.0.1:8080 -email <admin> -password <pwd> -rates 25,50,100,200 -step 30s -workers 64
+```
+
+It creates real instances: run it against a non-production server, or in production only in a quiet window and knowing the instances will stay in history (until retention removes them).
+
 ### FEEL expressions
 
 Expressions starting with `=` (Camunda 8 style) and DMN input entries can be evaluated by a native FEEL interpreter (`internal/feel`) instead of the historical FEEL-to-CEL text rewriting. Native FEEL brings FEEL semantics the rewriting can't: a missing variable is `null` instead of an error, numbers are exact decimals (`0.1 + 0.2 = 0.3`), and `if/then/else`, `for`, `some/every`, list filters (`items[qty > 1]`), ranges, contexts and built-in functions (`string length`, `list contains`, `sum`, `date`, `duration`…) work.
