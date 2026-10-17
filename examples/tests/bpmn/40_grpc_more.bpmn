@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_GrpcMore"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- gRPC gateway, remaining RPCs (suite 40). -->
+
+  <bpmn:error id="Err_Grpc" errorCode="GRPC_ERR"/>
+
+  <!-- ThrowError: the job's BPMN error is caught by the boundary -->
+  <bpmn:process id="GrpcThrow" isExecutable="true">
+    <bpmn:startEvent id="gt_start"/>
+    <bpmn:sequenceFlow id="gt1" sourceRef="gt_start" targetRef="gt_job"/>
+    <bpmn:serviceTask id="gt_job">
+      <bpmn:extensionElements><zeebe:taskDefinition type="grpc_throw_job"/></bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="gt_caught" attachedToRef="gt_job"><bpmn:errorEventDefinition errorRef="Err_Grpc"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="gt2" sourceRef="gt_job" targetRef="gt_end"/>
+    <bpmn:endEvent id="gt_end"/>
+    <bpmn:sequenceFlow id="gt3" sourceRef="gt_caught" targetRef="grpc_caught"/>
+    <bpmn:userTask id="grpc_caught" name="Error Caught"/>
+    <bpmn:sequenceFlow id="gt4" sourceRef="grpc_caught" targetRef="gt_caught_end"/>
+    <bpmn:endEvent id="gt_caught_end"/>
+  </bpmn:process>
+
+  <!-- SetVariables: a variable set from outside decides the route -->
+  <bpmn:process id="GrpcVars" isExecutable="true">
+    <bpmn:startEvent id="gv_start"/>
+    <bpmn:sequenceFlow id="gv1" sourceRef="gv_start" targetRef="grpc_wait"/>
+    <bpmn:userTask id="grpc_wait" name="Wait"/>
+    <bpmn:sequenceFlow id="gv2" sourceRef="grpc_wait" targetRef="gv_gw"/>
+    <bpmn:exclusiveGateway id="gv_gw"/>
+    <bpmn:sequenceFlow id="gv3" sourceRef="gv_gw" targetRef="grpc_approved">
+      <bpmn:conditionExpression>= approved = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="gv4" sourceRef="gv_gw" targetRef="grpc_rejected">
+      <bpmn:conditionExpression>= approved = false</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:userTask id="grpc_approved" name="Approved"/>
+    <bpmn:userTask id="grpc_rejected" name="Rejected"/>
+    <bpmn:sequenceFlow id="gv5" sourceRef="grpc_approved" targetRef="gv_end"/>
+    <bpmn:sequenceFlow id="gv6" sourceRef="grpc_rejected" targetRef="gv_end"/>
+    <bpmn:endEvent id="gv_end"/>
+  </bpmn:process>
+
+  <!-- CreateProcessInstanceWithResult and StreamActivatedJobs -->
+  <bpmn:process id="GrpcResult" isExecutable="true">
+    <bpmn:startEvent id="gr_start"/>
+    <bpmn:sequenceFlow id="gr1" sourceRef="gr_start" targetRef="gr_job"/>
+    <bpmn:serviceTask id="gr_job">
+      <bpmn:extensionElements><zeebe:taskDefinition type="grpc_result_job"/></bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="gr2" sourceRef="gr_job" targetRef="gr_end"/>
+    <bpmn:endEvent id="gr_end"/>
+  </bpmn:process>
+</bpmn:definitions>

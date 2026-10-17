@@ -129,6 +129,7 @@ async function main() {
     '37_event_subprocess.test.ts',
     '38_boundary_events.test.ts',
     '39_feel.test.ts',
+    '40_grpc_more.test.ts',
   ];
 
   const exitCodes: number[] = [];

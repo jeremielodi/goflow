@@ -19,19 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Gateway_Topology_FullMethodName              = "/gateway_protocol.Gateway/Topology"
-	Gateway_DeployResource_FullMethodName        = "/gateway_protocol.Gateway/DeployResource"
-	Gateway_CreateProcessInstance_FullMethodName = "/gateway_protocol.Gateway/CreateProcessInstance"
-	Gateway_ActivateJobs_FullMethodName          = "/gateway_protocol.Gateway/ActivateJobs"
-	Gateway_CompleteJob_FullMethodName           = "/gateway_protocol.Gateway/CompleteJob"
-	Gateway_FailJob_FullMethodName               = "/gateway_protocol.Gateway/FailJob"
-	Gateway_PublishMessage_FullMethodName        = "/gateway_protocol.Gateway/PublishMessage"
-	Gateway_CancelProcessInstance_FullMethodName = "/gateway_protocol.Gateway/CancelProcessInstance"
-	Gateway_EvaluateDecision_FullMethodName      = "/gateway_protocol.Gateway/EvaluateDecision"
-	Gateway_ResolveIncident_FullMethodName       = "/gateway_protocol.Gateway/ResolveIncident"
-	Gateway_ModifyProcessInstance_FullMethodName = "/gateway_protocol.Gateway/ModifyProcessInstance"
-	Gateway_UpdateJobRetries_FullMethodName      = "/gateway_protocol.Gateway/UpdateJobRetries"
-	Gateway_BroadcastSignal_FullMethodName       = "/gateway_protocol.Gateway/BroadcastSignal"
+	Gateway_Topology_FullMethodName                        = "/gateway_protocol.Gateway/Topology"
+	Gateway_DeployResource_FullMethodName                  = "/gateway_protocol.Gateway/DeployResource"
+	Gateway_CreateProcessInstance_FullMethodName           = "/gateway_protocol.Gateway/CreateProcessInstance"
+	Gateway_ActivateJobs_FullMethodName                    = "/gateway_protocol.Gateway/ActivateJobs"
+	Gateway_CompleteJob_FullMethodName                     = "/gateway_protocol.Gateway/CompleteJob"
+	Gateway_FailJob_FullMethodName                         = "/gateway_protocol.Gateway/FailJob"
+	Gateway_PublishMessage_FullMethodName                  = "/gateway_protocol.Gateway/PublishMessage"
+	Gateway_CancelProcessInstance_FullMethodName           = "/gateway_protocol.Gateway/CancelProcessInstance"
+	Gateway_EvaluateDecision_FullMethodName                = "/gateway_protocol.Gateway/EvaluateDecision"
+	Gateway_ResolveIncident_FullMethodName                 = "/gateway_protocol.Gateway/ResolveIncident"
+	Gateway_ModifyProcessInstance_FullMethodName           = "/gateway_protocol.Gateway/ModifyProcessInstance"
+	Gateway_UpdateJobRetries_FullMethodName                = "/gateway_protocol.Gateway/UpdateJobRetries"
+	Gateway_BroadcastSignal_FullMethodName                 = "/gateway_protocol.Gateway/BroadcastSignal"
+	Gateway_StreamActivatedJobs_FullMethodName             = "/gateway_protocol.Gateway/StreamActivatedJobs"
+	Gateway_CreateProcessInstanceWithResult_FullMethodName = "/gateway_protocol.Gateway/CreateProcessInstanceWithResult"
+	Gateway_DeployProcess_FullMethodName                   = "/gateway_protocol.Gateway/DeployProcess"
+	Gateway_ThrowError_FullMethodName                      = "/gateway_protocol.Gateway/ThrowError"
+	Gateway_SetVariables_FullMethodName                    = "/gateway_protocol.Gateway/SetVariables"
+	Gateway_DeleteResource_FullMethodName                  = "/gateway_protocol.Gateway/DeleteResource"
 )
 
 // GatewayClient is the client API for Gateway service.
@@ -51,6 +57,12 @@ type GatewayClient interface {
 	ModifyProcessInstance(ctx context.Context, in *ModifyProcessInstanceRequest, opts ...grpc.CallOption) (*ModifyProcessInstanceResponse, error)
 	UpdateJobRetries(ctx context.Context, in *UpdateJobRetriesRequest, opts ...grpc.CallOption) (*UpdateJobRetriesResponse, error)
 	BroadcastSignal(ctx context.Context, in *BroadcastSignalRequest, opts ...grpc.CallOption) (*BroadcastSignalResponse, error)
+	StreamActivatedJobs(ctx context.Context, in *StreamActivatedJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ActivatedJob], error)
+	CreateProcessInstanceWithResult(ctx context.Context, in *CreateProcessInstanceWithResultRequest, opts ...grpc.CallOption) (*CreateProcessInstanceWithResultResponse, error)
+	DeployProcess(ctx context.Context, in *DeployProcessRequest, opts ...grpc.CallOption) (*DeployProcessResponse, error)
+	ThrowError(ctx context.Context, in *ThrowErrorRequest, opts ...grpc.CallOption) (*ThrowErrorResponse, error)
+	SetVariables(ctx context.Context, in *SetVariablesRequest, opts ...grpc.CallOption) (*SetVariablesResponse, error)
+	DeleteResource(ctx context.Context, in *DeleteResourceRequest, opts ...grpc.CallOption) (*DeleteResourceResponse, error)
 }
 
 type gatewayClient struct {
@@ -200,6 +212,75 @@ func (c *gatewayClient) BroadcastSignal(ctx context.Context, in *BroadcastSignal
 	return out, nil
 }
 
+func (c *gatewayClient) StreamActivatedJobs(ctx context.Context, in *StreamActivatedJobsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ActivatedJob], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Gateway_ServiceDesc.Streams[1], Gateway_StreamActivatedJobs_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamActivatedJobsRequest, ActivatedJob]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Gateway_StreamActivatedJobsClient = grpc.ServerStreamingClient[ActivatedJob]
+
+func (c *gatewayClient) CreateProcessInstanceWithResult(ctx context.Context, in *CreateProcessInstanceWithResultRequest, opts ...grpc.CallOption) (*CreateProcessInstanceWithResultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateProcessInstanceWithResultResponse)
+	err := c.cc.Invoke(ctx, Gateway_CreateProcessInstanceWithResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) DeployProcess(ctx context.Context, in *DeployProcessRequest, opts ...grpc.CallOption) (*DeployProcessResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeployProcessResponse)
+	err := c.cc.Invoke(ctx, Gateway_DeployProcess_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) ThrowError(ctx context.Context, in *ThrowErrorRequest, opts ...grpc.CallOption) (*ThrowErrorResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ThrowErrorResponse)
+	err := c.cc.Invoke(ctx, Gateway_ThrowError_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) SetVariables(ctx context.Context, in *SetVariablesRequest, opts ...grpc.CallOption) (*SetVariablesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetVariablesResponse)
+	err := c.cc.Invoke(ctx, Gateway_SetVariables_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gatewayClient) DeleteResource(ctx context.Context, in *DeleteResourceRequest, opts ...grpc.CallOption) (*DeleteResourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteResourceResponse)
+	err := c.cc.Invoke(ctx, Gateway_DeleteResource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GatewayServer is the server API for Gateway service.
 // All implementations must embed UnimplementedGatewayServer
 // for forward compatibility.
@@ -217,6 +298,12 @@ type GatewayServer interface {
 	ModifyProcessInstance(context.Context, *ModifyProcessInstanceRequest) (*ModifyProcessInstanceResponse, error)
 	UpdateJobRetries(context.Context, *UpdateJobRetriesRequest) (*UpdateJobRetriesResponse, error)
 	BroadcastSignal(context.Context, *BroadcastSignalRequest) (*BroadcastSignalResponse, error)
+	StreamActivatedJobs(*StreamActivatedJobsRequest, grpc.ServerStreamingServer[ActivatedJob]) error
+	CreateProcessInstanceWithResult(context.Context, *CreateProcessInstanceWithResultRequest) (*CreateProcessInstanceWithResultResponse, error)
+	DeployProcess(context.Context, *DeployProcessRequest) (*DeployProcessResponse, error)
+	ThrowError(context.Context, *ThrowErrorRequest) (*ThrowErrorResponse, error)
+	SetVariables(context.Context, *SetVariablesRequest) (*SetVariablesResponse, error)
+	DeleteResource(context.Context, *DeleteResourceRequest) (*DeleteResourceResponse, error)
 	mustEmbedUnimplementedGatewayServer()
 }
 
@@ -265,6 +352,24 @@ func (UnimplementedGatewayServer) UpdateJobRetries(context.Context, *UpdateJobRe
 }
 func (UnimplementedGatewayServer) BroadcastSignal(context.Context, *BroadcastSignalRequest) (*BroadcastSignalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BroadcastSignal not implemented")
+}
+func (UnimplementedGatewayServer) StreamActivatedJobs(*StreamActivatedJobsRequest, grpc.ServerStreamingServer[ActivatedJob]) error {
+	return status.Error(codes.Unimplemented, "method StreamActivatedJobs not implemented")
+}
+func (UnimplementedGatewayServer) CreateProcessInstanceWithResult(context.Context, *CreateProcessInstanceWithResultRequest) (*CreateProcessInstanceWithResultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CreateProcessInstanceWithResult not implemented")
+}
+func (UnimplementedGatewayServer) DeployProcess(context.Context, *DeployProcessRequest) (*DeployProcessResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeployProcess not implemented")
+}
+func (UnimplementedGatewayServer) ThrowError(context.Context, *ThrowErrorRequest) (*ThrowErrorResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ThrowError not implemented")
+}
+func (UnimplementedGatewayServer) SetVariables(context.Context, *SetVariablesRequest) (*SetVariablesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetVariables not implemented")
+}
+func (UnimplementedGatewayServer) DeleteResource(context.Context, *DeleteResourceRequest) (*DeleteResourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteResource not implemented")
 }
 func (UnimplementedGatewayServer) mustEmbedUnimplementedGatewayServer() {}
 func (UnimplementedGatewayServer) testEmbeddedByValue()                 {}
@@ -514,6 +619,107 @@ func _Gateway_BroadcastSignal_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Gateway_StreamActivatedJobs_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamActivatedJobsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(GatewayServer).StreamActivatedJobs(m, &grpc.GenericServerStream[StreamActivatedJobsRequest, ActivatedJob]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Gateway_StreamActivatedJobsServer = grpc.ServerStreamingServer[ActivatedJob]
+
+func _Gateway_CreateProcessInstanceWithResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateProcessInstanceWithResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).CreateProcessInstanceWithResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_CreateProcessInstanceWithResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).CreateProcessInstanceWithResult(ctx, req.(*CreateProcessInstanceWithResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_DeployProcess_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeployProcessRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).DeployProcess(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_DeployProcess_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).DeployProcess(ctx, req.(*DeployProcessRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_ThrowError_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ThrowErrorRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).ThrowError(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_ThrowError_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).ThrowError(ctx, req.(*ThrowErrorRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_SetVariables_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetVariablesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).SetVariables(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_SetVariables_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).SetVariables(ctx, req.(*SetVariablesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Gateway_DeleteResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GatewayServer).DeleteResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Gateway_DeleteResource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GatewayServer).DeleteResource(ctx, req.(*DeleteResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Gateway_ServiceDesc is the grpc.ServiceDesc for Gateway service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -569,11 +775,36 @@ var Gateway_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "BroadcastSignal",
 			Handler:    _Gateway_BroadcastSignal_Handler,
 		},
+		{
+			MethodName: "CreateProcessInstanceWithResult",
+			Handler:    _Gateway_CreateProcessInstanceWithResult_Handler,
+		},
+		{
+			MethodName: "DeployProcess",
+			Handler:    _Gateway_DeployProcess_Handler,
+		},
+		{
+			MethodName: "ThrowError",
+			Handler:    _Gateway_ThrowError_Handler,
+		},
+		{
+			MethodName: "SetVariables",
+			Handler:    _Gateway_SetVariables_Handler,
+		},
+		{
+			MethodName: "DeleteResource",
+			Handler:    _Gateway_DeleteResource_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "ActivateJobs",
 			Handler:       _Gateway_ActivateJobs_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "StreamActivatedJobs",
+			Handler:       _Gateway_StreamActivatedJobs_Handler,
 			ServerStreams: true,
 		},
 	},

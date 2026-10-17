@@ -73,6 +73,12 @@ service Gateway {
   rpc ModifyProcessInstance(ModifyProcessInstanceRequest) returns (ModifyProcessInstanceResponse);
   rpc UpdateJobRetries(UpdateJobRetriesRequest) returns (UpdateJobRetriesResponse);
   rpc BroadcastSignal(BroadcastSignalRequest) returns (BroadcastSignalResponse);
+  rpc StreamActivatedJobs(StreamActivatedJobsRequest) returns (stream ActivatedJob);
+  rpc CreateProcessInstanceWithResult(CreateProcessInstanceWithResultRequest) returns (CreateProcessInstanceWithResultResponse);
+  rpc DeployProcess(DeployProcessRequest) returns (DeployProcessResponse);
+  rpc ThrowError(ThrowErrorRequest) returns (ThrowErrorResponse);
+  rpc SetVariables(SetVariablesRequest) returns (SetVariablesResponse);
+  rpc DeleteResource(DeleteResourceRequest) returns (DeleteResourceResponse);
 }
 
 // ── Topology ────────────────────────────────────────────────────────────
@@ -364,3 +370,77 @@ message BroadcastSignalRequest {
 message BroadcastSignalResponse {
   int64 key = 1;
 }
+
+// ── StreamActivatedJobs ─────────────────────────────────────────────────
+// Long-lived job push: jobs of `type` are activated and streamed to the
+// worker as they become available, until the client cancels the stream.
+message StreamActivatedJobsRequest {
+  string type = 1;
+  string worker = 2;
+  int64 timeout = 3;
+  repeated string fetchVariable = 5;
+  repeated string tenantIds = 6;
+}
+
+// ── CreateProcessInstanceWithResult ─────────────────────────────────────
+// Starts an instance and waits for it to complete, returning its variables.
+message CreateProcessInstanceWithResultRequest {
+  CreateProcessInstanceRequest request = 1;
+  int64 requestTimeout = 2;
+  repeated string fetchVariables = 3;
+}
+
+message CreateProcessInstanceWithResultResponse {
+  int64 processDefinitionKey = 1;
+  string bpmnProcessId = 2;
+  int32 version = 3;
+  int64 processInstanceKey = 4;
+  string variables = 5;
+  string tenantId = 6;
+}
+
+// ── DeployProcess (deprecated since Zeebe 8, replaced by DeployResource) ─
+message DeployProcessRequest {
+  repeated ProcessRequestObject processes = 1;
+}
+
+message ProcessRequestObject {
+  string name = 1;
+  bytes definition = 2;
+}
+
+message DeployProcessResponse {
+  int64 key = 1;
+  repeated ProcessMetadata processes = 2;
+}
+
+// ── ThrowError ──────────────────────────────────────────────────────────
+// A worker reports a BPMN error for a job; it's caught by the nearest
+// matching error catch event, or raises an incident.
+message ThrowErrorRequest {
+  int64 jobKey = 1;
+  string errorCode = 2;
+  string errorMessage = 3;
+  string variables = 4;
+}
+
+message ThrowErrorResponse {}
+
+// ── SetVariables ────────────────────────────────────────────────────────
+message SetVariablesRequest {
+  int64 elementInstanceKey = 1;
+  string variables = 2;
+  bool local = 3;
+}
+
+message SetVariablesResponse {
+  int64 key = 1;
+}
+
+// ── DeleteResource ──────────────────────────────────────────────────────
+// Deletes a deployed process definition (by its key).
+message DeleteResourceRequest {
+  int64 resourceKey = 1;
+}
+
+message DeleteResourceResponse {}
