@@ -326,6 +326,11 @@ func (s *Server) toActivatedJob(job repository.LockedJob, jobType, worker string
 	if err != nil {
 		return nil, err
 	}
+	// The activity's own key, so SetVariables can target its scope.
+	elementKey, err := s.zeebeKeys.GetOrAssignKey("element_instance", job.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
 
 	customHeaders := "{}"
 	if graph, err := s.engineRepo.GetProcessGraphByInstanceID(job.ProcessInstanceID); err == nil && graph != nil {
@@ -349,7 +354,7 @@ func (s *Server) toActivatedJob(job repository.LockedJob, jobType, worker string
 		ProcessDefinitionVersion: int32(inst.Version),
 		ProcessDefinitionKey:     defKey,
 		ElementId:                job.CurrentElementID,
-		ElementInstanceKey:       instKey,
+		ElementInstanceKey:       elementKey,
 		CustomHeaders:            customHeaders,
 		Worker:                   worker,
 		Retries:                  int32(job.Retries),
@@ -394,9 +399,6 @@ func (s *Server) CompleteJob(ctx context.Context, req *pb.CompleteJobRequest) (*
 		rt := runtime.NewRuntime(result.Graph, s.db, s.dispatcher)
 		if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to resume process execution: %v", err)
-		}
-		if exec, err := s.engineRepo.GetExecutionByID(result.ExecutionID); err == nil && exec != nil && exec.ParentExecutionID != nil {
-			rt.OnMultiInstanceChildCompleted(ctx, exec.ID, map[string]interface{}{})
 		}
 	}
 

@@ -60,13 +60,23 @@ func (r *Runtime) executeBusinessRuleTask(ctx context.Context, engineRepo *repos
 	}
 	variables[resultVar] = result
 
+	outputs := map[string]interface{}{resultVar: result}
+	if len(node.OutputMappings) > 0 {
+		withResult := make(map[string]interface{}, len(evalVars)+1)
+		for k, v := range evalVars {
+			withResult[k] = v
+		}
+		withResult[resultVar] = result
+		outputs = common.EvaluateIOMappings(node.OutputMappings, withResult)
+	}
+
 	tx, err := r.DB.Beginx()
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.UpdateProcessVariablesTx(tx, exec.ProcessInstanceID, variables); err != nil {
+	if err := repository.SetVariablesTx(tx, exec.ProcessInstanceID, outputScope(exec, node), outputs); err != nil {
 		return "", err
 	}
 

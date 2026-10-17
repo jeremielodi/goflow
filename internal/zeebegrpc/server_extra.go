@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -57,7 +56,7 @@ func (s *Server) ThrowError(ctx context.Context, req *pb.ThrowErrorRequest) (*pb
 	}
 
 	if len(vars) > 0 {
-		if err := s.mergeVariables(instanceID, vars, "throwError"); err != nil {
+		if err := s.setVariables(instanceID, uuid.Nil, false, vars, "throwError"); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 	}
@@ -71,19 +70,36 @@ func (s *Server) ThrowError(ctx context.Context, req *pb.ThrowErrorRequest) (*pb
 			return nil, status.Errorf(codes.Internal, "error caught, but continuing the process failed: %v", err)
 		}
 	}
+	if result.PropagateError {
+		rt := runtime.NewRuntime(nil, s.db, s.dispatcher)
+		if _, err := rt.PropagateErrorToCaller(ctx, result.ProcessInstanceID, req.ErrorCode); err != nil {
+			return nil, status.Errorf(codes.Internal, "error caught by the calling process, but continuing it failed: %v", err)
+		}
+	}
 	return &pb.ThrowErrorResponse{}, nil
 }
 
 // ── SetVariables ────────────────────────────────────────────────────────
 
-// SetVariables merges variables into a running process instance. GoFlow
-// keeps one variable scope per instance and exposes the instance key as
-// the element instance key of its jobs, so elementInstanceKey must be a
-// process instance key, and "local" makes no difference.
+// SetVariables sets variables on a scope of a running process instance,
+// as in Camunda 8: elementInstanceKey is a process instance key or an
+// element instance key (an activated job's elementInstanceKey, i.e. its
+// activity's scope). With local, the variables are set on that scope
+// only; otherwise each one propagates outwards from it (see
+// repository.SetVariablesTx).
 func (s *Server) SetVariables(ctx context.Context, req *pb.SetVariablesRequest) (*pb.SetVariablesResponse, error) {
+	scopeID := uuid.Nil
 	instanceID, err := s.zeebeKeys.ResolveKey("process_instance", req.ElementInstanceKey)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "element instance key %d not found", req.ElementInstanceKey)
+		execID, execErr := s.zeebeKeys.ResolveKey("element_instance", req.ElementInstanceKey)
+		if execErr != nil {
+			return nil, status.Errorf(codes.NotFound, "element instance key %d not found", req.ElementInstanceKey)
+		}
+		exec, execErr := s.engineRepo.GetExecutionByID(execID)
+		if execErr != nil || exec == nil {
+			return nil, status.Errorf(codes.NotFound, "element instance key %d not found", req.ElementInstanceKey)
+		}
+		instanceID, scopeID = exec.ProcessInstanceID, execID
 	}
 	vars, err := parseVariables(req.Variables)
 	if err != nil {
@@ -104,7 +120,7 @@ func (s *Server) SetVariables(ctx context.Context, req *pb.SetVariablesRequest) 
 		return nil, status.Error(codes.FailedPrecondition, "SetVariables isn't supported for partitioned-write-path instances")
 	}
 
-	if err := s.mergeVariables(instanceID, vars, "setVariables"); err != nil {
+	if err := s.setVariables(instanceID, scopeID, req.Local, vars, "setVariables"); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	key, err := s.zeebeKeys.GetOrAssignKey("set_variables", uuid.New())
@@ -114,32 +130,20 @@ func (s *Server) SetVariables(ctx context.Context, req *pb.SetVariablesRequest) 
 	return &pb.SetVariablesResponse{Key: key}, nil
 }
 
-// mergeVariables merges vars into the instance's variables under a row
-// lock, so concurrent merges don't overwrite each other.
-func (s *Server) mergeVariables(instanceID uuid.UUID, vars map[string]interface{}, source string) error {
+// setVariables sets vars on scopeID (uuid.Nil: the instance), locally or
+// propagating outwards.
+func (s *Server) setVariables(instanceID, scopeID uuid.UUID, local bool, vars map[string]interface{}, source string) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-
-	current := map[string]interface{}{}
-	var data []byte
-	err = tx.Get(&data, `SELECT data FROM public.variables WHERE process_instance_id = $1 FOR UPDATE`, instanceID)
-	switch {
-	case err == nil:
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &current); err != nil {
-				return fmt.Errorf("stored variables are not a JSON object: %w", err)
-			}
-		}
-	case !errors.Is(err, sql.ErrNoRows):
-		return err
+	if local && scopeID != uuid.Nil {
+		err = repository.SetLocalVariablesTx(tx, instanceID, scopeID, vars)
+	} else {
+		err = repository.SetVariablesTx(tx, instanceID, scopeID, vars)
 	}
-	for k, v := range vars {
-		current[k] = v
-	}
-	if err := s.processInstanceRepo.UpsertVariablesTx(tx, instanceID, current); err != nil {
+	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

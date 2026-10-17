@@ -100,6 +100,14 @@ func (g *ProcessGraph) FindEscalationCatcher(elementID, code string) (catcher *N
 		return catchAll
 	}
 
+	// A boundary event on the element itself: a call activity whose called
+	// process escalated.
+	if b := find(func(n *Node) bool {
+		return n.Type == EscalationBoundaryEventType && n.AttachedToRef == elementID
+	}); b != nil {
+		return b, ""
+	}
+
 	from := elementID
 	if n, ok := g.Nodes[elementID]; ok {
 		scope = n.ParentScope

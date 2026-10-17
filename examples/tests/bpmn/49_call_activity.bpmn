@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_CallActivity"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Call activities, Camunda 8 style (suite 49). -->
+
+  <bpmn:error id="Err_Bad" errorCode="BAD"/>
+  <bpmn:error id="Err_End" errorCode="END_ERR"/>
+  <bpmn:escalation id="Esc_Up" escalationCode="UP"/>
+
+  <!-- ===== called processes ===== -->
+
+  <!-- a job, then a user task -->
+  <bpmn:process id="Child49" isExecutable="true">
+    <bpmn:startEvent id="c_start"/>
+    <bpmn:sequenceFlow id="c1" sourceRef="c_start" targetRef="c_job"/>
+    <bpmn:serviceTask id="c_job">
+      <bpmn:extensionElements><zeebe:taskDefinition type="child49"/></bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="c2" sourceRef="c_job" targetRef="c_end"/>
+    <bpmn:endEvent id="c_end"/>
+  </bpmn:process>
+
+  <!-- ends with an error end event -->
+  <bpmn:process id="ChildErrorEnd49" isExecutable="true">
+    <bpmn:startEvent id="ce_start"/>
+    <bpmn:sequenceFlow id="ce1" sourceRef="ce_start" targetRef="ce_end"/>
+    <bpmn:endEvent id="ce_end"><bpmn:errorEventDefinition errorRef="Err_End"/></bpmn:endEvent>
+  </bpmn:process>
+
+  <!-- escalates, then waits on a user task -->
+  <bpmn:process id="ChildEscalate49" isExecutable="true">
+    <bpmn:startEvent id="cs_start"/>
+    <bpmn:sequenceFlow id="cs1" sourceRef="cs_start" targetRef="cs_throw"/>
+    <bpmn:intermediateThrowEvent id="cs_throw"><bpmn:escalationEventDefinition escalationRef="Esc_Up"/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="cs2" sourceRef="cs_throw" targetRef="cs_after"/>
+    <bpmn:userTask id="cs_after"/>
+    <bpmn:sequenceFlow id="cs3" sourceRef="cs_after" targetRef="cs_end"/>
+    <bpmn:endEvent id="cs_end"/>
+  </bpmn:process>
+
+  <!-- waits on a user task -->
+  <bpmn:process id="ChildWait49" isExecutable="true">
+    <bpmn:startEvent id="cw_start"/>
+    <bpmn:sequenceFlow id="cw1" sourceRef="cw_start" targetRef="cw_task"/>
+    <bpmn:userTask id="cw_task"/>
+    <bpmn:sequenceFlow id="cw2" sourceRef="cw_task" targetRef="cw_end"/>
+    <bpmn:endEvent id="cw_end"/>
+  </bpmn:process>
+
+  <!-- ===== calling processes ===== -->
+
+  <!-- FEEL processId, input mapping, all child variables back -->
+  <bpmn:process id="CallVars49" isExecutable="true">
+    <bpmn:startEvent id="v_start"/>
+    <bpmn:sequenceFlow id="v1" sourceRef="v_start" targetRef="v_call"/>
+    <bpmn:callActivity id="v_call">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="=childId"/>
+        <zeebe:ioMapping><zeebe:input source="=amount * 2" target="doubled"/></zeebe:ioMapping>
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:sequenceFlow id="v2" sourceRef="v_call" targetRef="v_check"/>
+    <bpmn:userTask id="v_check"/>
+    <bpmn:sequenceFlow id="v3" sourceRef="v_check" targetRef="v_end"/>
+    <bpmn:endEvent id="v_end"/>
+  </bpmn:process>
+
+  <!-- no variable propagation, output mapping only -->
+  <bpmn:process id="CallMapped49" isExecutable="true">
+    <bpmn:startEvent id="m_start"/>
+    <bpmn:sequenceFlow id="m1" sourceRef="m_start" targetRef="m_call"/>
+    <bpmn:callActivity id="m_call">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="Child49" propagateAllChildVariables="false" propagateAllParentVariables="false"/>
+        <zeebe:ioMapping>
+          <zeebe:input source="=tag" target="tag"/>
+          <zeebe:output source="=childResult + 1" target="mapped"/>
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:sequenceFlow id="m2" sourceRef="m_call" targetRef="m_check"/>
+    <bpmn:userTask id="m_check"/>
+    <bpmn:sequenceFlow id="m3" sourceRef="m_check" targetRef="m_end"/>
+    <bpmn:endEvent id="m_end"/>
+  </bpmn:process>
+
+  <!-- errors from the called process: thrown by a job, by an error end event -->
+  <bpmn:process id="CallError49" isExecutable="true">
+    <bpmn:startEvent id="e_start"/>
+    <bpmn:sequenceFlow id="e1" sourceRef="e_start" targetRef="e_call"/>
+    <bpmn:callActivity id="e_call">
+      <bpmn:extensionElements><zeebe:calledElement processId="=childId"/></bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:boundaryEvent id="e_bad" attachedToRef="e_call"><bpmn:errorEventDefinition errorRef="Err_Bad"/></bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="e_endErr" attachedToRef="e_call"><bpmn:errorEventDefinition errorRef="Err_End"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="e2" sourceRef="e_call" targetRef="e_ok"/>
+    <bpmn:sequenceFlow id="e3" sourceRef="e_bad" targetRef="e_handled"/>
+    <bpmn:sequenceFlow id="e4" sourceRef="e_endErr" targetRef="e_handled"/>
+    <bpmn:userTask id="e_ok"/>
+    <bpmn:userTask id="e_handled"/>
+    <bpmn:sequenceFlow id="e5" sourceRef="e_ok" targetRef="e_end"/>
+    <bpmn:sequenceFlow id="e6" sourceRef="e_handled" targetRef="e_end2"/>
+    <bpmn:endEvent id="e_end"/>
+    <bpmn:endEvent id="e_end2"/>
+  </bpmn:process>
+
+  <!-- an escalation from the called process, caught without interrupting -->
+  <bpmn:process id="CallEscalation49" isExecutable="true">
+    <bpmn:startEvent id="s_start"/>
+    <bpmn:sequenceFlow id="s1" sourceRef="s_start" targetRef="s_call"/>
+    <bpmn:callActivity id="s_call">
+      <bpmn:extensionElements><zeebe:calledElement processId="ChildEscalate49"/></bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:boundaryEvent id="s_up" attachedToRef="s_call" cancelActivity="false"><bpmn:escalationEventDefinition escalationRef="Esc_Up"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="s2" sourceRef="s_call" targetRef="s_end"/>
+    <bpmn:sequenceFlow id="s3" sourceRef="s_up" targetRef="s_escalated"/>
+    <bpmn:userTask id="s_escalated"/>
+    <bpmn:sequenceFlow id="s4" sourceRef="s_escalated" targetRef="s_end2"/>
+    <bpmn:endEvent id="s_end"/>
+    <bpmn:endEvent id="s_end2"/>
+  </bpmn:process>
+
+  <!-- a boundary timer interrupting the call activity -->
+  <bpmn:process id="CallTimeout49" isExecutable="true">
+    <bpmn:startEvent id="t_start"/>
+    <bpmn:sequenceFlow id="t1" sourceRef="t_start" targetRef="t_call"/>
+    <bpmn:callActivity id="t_call">
+      <bpmn:extensionElements><zeebe:calledElement processId="ChildWait49"/></bpmn:extensionElements>
+    </bpmn:callActivity>
+    <bpmn:boundaryEvent id="t_timeout" attachedToRef="t_call">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT2S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="t2" sourceRef="t_call" targetRef="t_end"/>
+    <bpmn:sequenceFlow id="t3" sourceRef="t_timeout" targetRef="t_late"/>
+    <bpmn:userTask id="t_late"/>
+    <bpmn:sequenceFlow id="t4" sourceRef="t_late" targetRef="t_end2"/>
+    <bpmn:endEvent id="t_end"/>
+    <bpmn:endEvent id="t_end2"/>
+  </bpmn:process>
+
+  <!-- a plain call, for terminating the caller -->
+  <bpmn:process id="CallPlain49" isExecutable="true">
+    <bpmn:startEvent id="p_start"/>
+    <bpmn:sequenceFlow id="p1" sourceRef="p_start" targetRef="p_call"/>
+    <bpmn:callActivity id="p_call" calledElement="ChildWait49"/>
+    <bpmn:sequenceFlow id="p2" sourceRef="p_call" targetRef="p_end"/>
+    <bpmn:endEvent id="p_end"/>
+  </bpmn:process>
+
+  <!-- multi-instance call activity -->
+  <bpmn:process id="CallMulti49" isExecutable="true">
+    <bpmn:startEvent id="mi_start"/>
+    <bpmn:sequenceFlow id="mi1" sourceRef="mi_start" targetRef="mi_call"/>
+    <bpmn:callActivity id="mi_call">
+      <bpmn:extensionElements><zeebe:calledElement processId="Child49"/></bpmn:extensionElements>
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=[1, 2]" inputElement="n" outputCollection="results" outputElement="=childResult"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:callActivity>
+    <bpmn:sequenceFlow id="mi2" sourceRef="mi_call" targetRef="mi_check"/>
+    <bpmn:userTask id="mi_check"/>
+    <bpmn:sequenceFlow id="mi3" sourceRef="mi_check" targetRef="mi_end"/>
+    <bpmn:endEvent id="mi_end"/>
+  </bpmn:process>
+</bpmn:definitions>

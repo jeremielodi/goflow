@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -113,8 +114,8 @@ func (mc *MessageController) Correlate(messageName string, correlationKeys, vari
 		engineRepo := repository.NewEngineRepository(mc.db, mc.dispatcher)
 		graph, err := engineRepo.GetProcessGraphByInstanceID(sub.ProcessInstanceID)
 		if err == nil && graph != nil {
-			if catchNode, ok := graph.Nodes[fromNode]; ok && len(catchNode.Outgoing) > 0 {
-				targetElementID = catchNode.Outgoing[0].TargetRef
+			if catchNode, ok := graph.Nodes[fromNode]; ok {
+				targetElementID, _ = common.ResolveNext(catchNode, nil)
 			}
 		}
 	}

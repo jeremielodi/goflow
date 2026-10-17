@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
@@ -72,11 +73,11 @@ func correlationKeyValue(v interface{}) string {
 
 // messageCorrelationKey evaluates a message catch node's correlation key
 // expression against the instance's variables ("" when it has none).
-func (r *Runtime) messageCorrelationKey(node *engine.Node, instanceID uuid.UUID) string {
+func (r *Runtime) messageCorrelationKey(q sqlx.Queryer, node *engine.Node, instanceID, execID uuid.UUID) string {
 	if strings.TrimSpace(node.MessageCorrelationKey) == "" {
 		return ""
 	}
-	vars, err := repository.NewEngineRepository(r.DB, r.dispatcher).GetProcessVariables(instanceID)
+	vars, err := repository.VariablesForExecution(q, instanceID, repository.VariableScopeOf(q, instanceID, execID))
 	if err != nil {
 		log.Printf("message %q: loading variables for its correlation key: %v", node.MessageRef, err)
 		return ""
@@ -285,23 +286,20 @@ func correlateSubscription(ctx context.Context, db *sqlx.DB, dispatcher *events.
 		`, s.ProcessInstanceID, s.ExecutionID); err != nil {
 			return false, err
 		}
-	} else if graph, err := engineRepo.GetProcessGraphByInstanceID(s.ProcessInstanceID); err == nil {
-		if catchNode, ok := graph.Nodes[fromNode]; ok && len(catchNode.Outgoing) > 0 {
-			target = catchNode.Outgoing[0].TargetRef
-		}
-	}
-
-	if len(vars) > 0 {
-		var data []byte
-		current := map[string]interface{}{}
-		if err := tx.Get(&data, `SELECT data FROM variables WHERE process_instance_id = $1 FOR UPDATE`, s.ProcessInstanceID); err == nil && len(data) > 0 {
-			_ = json.Unmarshal(data, &current)
-		}
-		for k, v := range vars {
-			current[k] = v
-		}
-		if err := engineRepo.UpdateProcessVariablesTx(tx, s.ProcessInstanceID, current); err != nil {
+		// The message's variables, from the waiting element's scope.
+		if err := repository.SetVariablesTx(tx, s.ProcessInstanceID, repository.VariableScopeOf(tx, s.ProcessInstanceID, s.ExecutionID), vars); err != nil {
 			return false, err
+		}
+	} else if graph, err := engineRepo.GetProcessGraphByInstanceID(s.ProcessInstanceID); err == nil {
+		// A catch event or receive task: its output mappings apply, and
+		// without an outgoing flow the token ends in its scope.
+		if catchNode, ok := graph.Nodes[fromNode]; ok {
+			if target, err = common.ResolveNext(catchNode, nil); err != nil {
+				return false, err
+			}
+			if err := service.ApplyActivityOutputTx(tx, s.ProcessInstanceID, s.ExecutionID, catchNode, nonNil(vars)); err != nil {
+				return false, err
+			}
 		}
 	}
 	if target != "" {
@@ -465,6 +463,8 @@ func StartMessageSweeper(ctx context.Context, db *sqlx.DB, dispatcher *events.Ta
 				if err := sweepPublishedMessages(db, dispatcher); err != nil {
 					log.Printf("message sweeper: %v", err)
 				}
+				// Safety net for called processes whose call activity was left.
+				service.TerminateOrphanedCalledInstances(db, dispatcher, nil)
 			}
 		}
 	}()

@@ -10,13 +10,14 @@ import (
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jmoiron/sqlx"
 )
 
 // executeSubProcess enters an embedded sub-process: the current execution
 // parks on the sub-process node (and owns its boundary timers), and a child
 // execution starts at the sub-process's inner start event — the same
 // parent-waits-for-children shape a parallel fork uses.
-func (r *Runtime) executeSubProcess(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, graph *engine.ProcessGraph) error {
+func (r *Runtime) executeSubProcess(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, graph *engine.ProcessGraph, variables map[string]interface{}) error {
 	tx, err := r.DB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -32,6 +33,12 @@ func (r *Runtime) executeSubProcess(ctx context.Context, engineRepo *repository.
 	}
 	if err := r.armEventSubProcessesTx(tx, engineRepo, graph, node.ID, exec.ProcessInstanceID, &exec.ID); err != nil {
 		return err
+	}
+	// Input mappings are the sub-process scope's local variables.
+	if inputs := common.EvaluateIOMappings(node.InputMappings, variables); len(inputs) > 0 {
+		if err := repository.SetLocalVariablesTx(tx, exec.ProcessInstanceID, exec.ID, inputs); err != nil {
+			return fmt.Errorf("sub-process %s: input mappings: %w", node.ID, err)
+		}
 	}
 
 	childID := uuid.New()
@@ -111,6 +118,9 @@ func (r *Runtime) executeSubProcessEnd(ctx context.Context, engineRepo *reposito
 	if err := engineRepo.CloseScopeTx(tx, exec.ProcessInstanceID, scopeID); err != nil {
 		return fmt.Errorf("failed to close sub-process executions: %w", err)
 	}
+	if err := leaveScopeVariablesTx(tx, exec.ProcessInstanceID, scopeID, subNode); err != nil {
+		return fmt.Errorf("leaving sub-process %s: %w", subNode.ID, err)
+	}
 	// The scope execution leaves the sub-process: its boundary events are disarmed.
 	if err := engineRepo.DisarmBoundaryTriggersTx(tx, exec.ProcessInstanceID, scopeID); err != nil {
 		return fmt.Errorf("failed to disarm sub-process boundary events: %w", err)
@@ -142,4 +152,37 @@ func (r *Runtime) logExecutionCompleted(exec *repository.Execution, nodeID strin
 	if p := eventlog.Global(); p != nil {
 		p.ExecutionCompleted(exec.ProcessInstanceID.String(), exec.ID.String(), nodeID)
 	}
+}
+
+// leaveScopeVariablesTx runs as the execution holding an embedded
+// sub-process's scope leaves it: its output mappings, evaluated in that
+// scope, are set from the enclosing scope, and its local variables go —
+// unless it is an inner instance of a multi-instance sub-process, whose
+// scope still serves its outputElement (completeInnerInstance clears it).
+func leaveScopeVariablesTx(tx *sqlx.Tx, instanceID, scopeID uuid.UUID, subNode *engine.Node) error {
+	var mapped map[string]interface{}
+	if len(subNode.OutputMappings) > 0 {
+		view, err := repository.VariablesForExecution(tx, instanceID, scopeID)
+		if err != nil {
+			return err
+		}
+		mapped = common.EvaluateIOMappings(subNode.OutputMappings, view)
+	}
+	if subNode.MultiInstance == nil {
+		if err := repository.ClearLocalVariablesTx(tx, instanceID, scopeID); err != nil {
+			return err
+		}
+	}
+	if len(mapped) == 0 {
+		return nil
+	}
+	var parent *uuid.UUID
+	if err := tx.Get(&parent, `SELECT parent_execution_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, instanceID, scopeID); err != nil {
+		return err
+	}
+	from := uuid.Nil
+	if parent != nil {
+		from = *parent
+	}
+	return repository.SetVariablesTx(tx, instanceID, from, mapped)
 }

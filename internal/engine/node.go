@@ -113,7 +113,10 @@ type Node struct {
 	SignalRef             string `json:"signalRef,omitempty"` // Signal name (resolved from bpmn:signal)
 
 	// Call Activity support
-	CalledElement string `json:"calledElement,omitempty"` // Process key of the called process
+	CalledElement string `json:"calledElement,omitempty"` // Process key of the called process, or a FEEL expression ("=...")
+	// Call activity variable passing (see applyCallActivityExtensions).
+	PropagateAllChildVariables bool `json:"propagateAllChildVariables,omitempty"`
+	NoParentVariables          bool `json:"noParentVariables,omitempty"`
 
 	// Script task support
 	Script       *string `json:"script,omitempty"`
@@ -190,12 +193,12 @@ type IOMapping struct {
 	Target string `json:"target"`
 }
 
-// MultiInstanceConfig holds multi-instance configuration
-type MultiInstanceConfig struct {
-	IsSequential        bool   `json:"isSequential"`
-	LoopCardinality     string `json:"loopCardinality"`
-	CompletionCondition string `json:"completionCondition"`
-	InputDataItem       string `json:"inputDataItem"`
-	OutputDataItem      string `json:"outputDataItem"`
-	ElementVariable     string `json:"elementVariable"`
-}
+// ImplicitEndPrefix marks an execution that left an activity without an
+// outgoing flow (BPMN's implicit end): its current element is
+// ImplicitEnd(activityID), and the runtime ends the token in the
+// activity's scope as an end event there would.
+const ImplicitEndPrefix = "__end__:"
+
+// ImplicitEnd is the element an execution leaving activityID without an
+// outgoing flow moves to.
+func ImplicitEnd(activityID string) string { return ImplicitEndPrefix + activityID }

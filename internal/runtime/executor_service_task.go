@@ -14,10 +14,6 @@ import (
 )
 
 func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
-	if node.MultiInstance != nil && exec.ParentExecutionID == nil {
-		return r.handleMultiInstance(ctx, exec, node, variables)
-	}
-
 	tx, err := r.DB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -41,6 +37,10 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		for k, v := range mapped {
 			payloadVars[k] = v
 		}
+		// Input mappings are the activity's local variables.
+		if err := repository.SetLocalVariablesTx(tx, exec.ProcessInstanceID, exec.ID, mapped); err != nil {
+			return fmt.Errorf("service task %s: input mappings: %w", node.ID, err)
+		}
 	}
 
 	payload, err := json.Marshal(payloadVars)
@@ -57,16 +57,12 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}
 
-	// Boundary events attach to the activity, not to each multi-instance
-	// child execution.
-	if node.MultiInstance == nil {
-		graph, err := engineRepo.GetProcessGraphByInstanceID(exec.ProcessInstanceID)
-		if err != nil {
-			return fmt.Errorf("failed to load process graph: %w", err)
-		}
-		if err := r.armBoundaryEventsTx(tx, engineRepo, graph, exec, node); err != nil {
-			return err
-		}
+	graph, err := engineRepo.GetProcessGraphByInstanceID(exec.ProcessInstanceID)
+	if err != nil {
+		return fmt.Errorf("failed to load process graph: %w", err)
+	}
+	if err := r.armBoundaryEventsTx(tx, engineRepo, graph, exec, node); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {

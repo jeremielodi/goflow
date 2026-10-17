@@ -171,7 +171,7 @@ func (r *HistoricArchiveRepository) InsertVariablesTx(tx *sqlx.Tx, instanceID uu
 func (r *HistoricArchiveRepository) CleanupOrphanExecutionStateTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
 	for _, table := range []string{
 		"gateway_state", "event_subprocesses", "event_subscriptions", "boundary_events",
-		"jobs", "timer_jobs", "audit_logs",
+		"jobs", "timer_jobs", "audit_logs", "scope_variables",
 	} {
 		if _, err := tx.Exec(`DELETE FROM public.`+table+` WHERE process_instance_id = $1`, instanceID); err != nil {
 			return err

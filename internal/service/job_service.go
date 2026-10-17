@@ -44,7 +44,6 @@ type CompleteJobResult struct {
 // normalized to simple (non-typed) map[string]interface{} form.
 func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{}) (*CompleteJobResult, error) {
 	externalTaskRepo := repository.NewExternalTaskRepository(db)
-	processInstanceRepo := repository.NewProcessInstanceRepository(db)
 	auditService := NewAuditService(db)
 
 	tx, err := db.Beginx()
@@ -64,154 +63,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		return nil, fmt.Errorf("%w: current status %s", ErrJobInvalidState, jobWithExec.Status)
 	}
 
-	// zeebe:ioMapping outputs: if the completed activity declares output
-	// mappings, only the mapped (renamed) values propagate to the process
-	// scope instead of the raw job variables.
-	if graphJSON, gerr := externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID); gerr == nil {
-		var g engine.ProcessGraph
-		if json.Unmarshal(graphJSON, &g) == nil {
-			if n, ok := g.Nodes[jobWithExec.CurrentElementID]; ok && len(n.OutputMappings) > 0 {
-				variables = common.EvaluateIOMappings(n.OutputMappings, variables)
-			}
-		}
-	}
-
-	// Merge variables.
-	existingVars, err := processInstanceRepo.GetVariables(jobWithExec.ProcessInstanceID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch variables: %w", err)
-	}
-	for k, v := range variables {
-		existingVars[k] = v
-	}
-	if err := processInstanceRepo.UpsertVariablesTx(tx, jobWithExec.ProcessInstanceID, existingVars); err != nil {
-		return nil, fmt.Errorf("failed to update variables: %w", err)
-	}
-
-	if err := externalTaskRepo.CompleteJobTx(tx, jobID); err != nil {
-		return nil, fmt.Errorf("failed to complete job: %w", err)
-	}
-
 	processInstanceID := jobWithExec.ProcessInstanceID
 	executionID := jobWithExec.ExecutionID
 	currentElementID := jobWithExec.CurrentElementID
 
-	// Check if this is a multi-instance child.
-	var isChild bool
-	var parentExecID uuid.UUID
-	var miParentMoved bool
-	var miParentExecID uuid.UUID
-	var miParentFromNode, miParentToNode string
-
-	err = tx.Get(&isChild, `
-		SELECT EXISTS(SELECT 1 FROM public.multi_instance_children WHERE child_execution_id = $1)
-	`, executionID)
-
-	if err == nil && isChild {
-		log.Printf("📦 Multi-instance child completed: %s", executionID)
-
-		if _, err = tx.Exec(`
-			UPDATE public.multi_instance_children
-			SET status = 'completed', completed_at = NOW()
-			WHERE child_execution_id = $1
-		`, executionID); err != nil {
-			return nil, err
-		}
-
-		if err = tx.Get(&parentExecID, `
-			SELECT parent_execution_id FROM public.multi_instance_children
-			WHERE child_execution_id = $1
-		`, executionID); err != nil {
-			return nil, err
-		}
-
-		if _, err = tx.Exec(`
-			UPDATE public.multi_instance_executions
-			SET completed_count = (
-				SELECT COUNT(*) FROM public.multi_instance_children
-				WHERE parent_execution_id = $1 AND status = 'completed'
-			),
-			updated_at = NOW()
-			WHERE execution_id = $1
-		`, parentExecID); err != nil {
-			log.Printf("Warning: failed to update completed count: %v", err)
-		}
-
-		var completedCount, totalCount int
-		tx.Get(&completedCount, `
-			SELECT COUNT(*) FROM public.multi_instance_children
-			WHERE parent_execution_id = $1 AND status = 'completed'
-		`, parentExecID)
-		tx.Get(&totalCount, `
-			SELECT total_count FROM public.multi_instance_executions
-			WHERE execution_id = $1
-		`, parentExecID)
-
-		log.Printf("📊 Multi-instance progress: %d/%d completed", completedCount, totalCount)
-
-		var isSequential bool
-		tx.Get(&isSequential, `
-			SELECT is_sequential FROM public.multi_instance_executions
-			WHERE execution_id = $1
-		`, parentExecID)
-
-		if isSequential && completedCount < totalCount {
-			log.Printf("🔄 Sequential: Creating next child %d/%d", completedCount+1, totalCount)
-
-			var activityID string
-			tx.Get(&activityID, `
-        SELECT activity_id FROM public.multi_instance_executions
-        WHERE execution_id = $1
-    `, parentExecID)
-
-			if _, err = tx.Exec(`
-        UPDATE public.executions
-        SET current_element_id = $1, status = 'active', updated_at = NOW()
-        WHERE process_instance_id = $2 AND id = $3
-    `, activityID, processInstanceID, parentExecID); err != nil {
-				log.Printf("Warning: failed to update parent: %v", err)
-			}
-
-			if _, err = tx.Exec(`
-        UPDATE public.multi_instance_executions
-        SET loop_counter = $1, updated_at = NOW()
-        WHERE execution_id = $2
-    `, completedCount+1, parentExecID); err != nil {
-				log.Printf("Warning: failed to update loop counter: %v", err)
-			}
-		}
-
-		if completedCount >= totalCount && totalCount > 0 {
-			log.Printf("✅ All %d children completed", totalCount)
-
-			var parentNodeID string
-			tx.Get(&parentNodeID, `SELECT current_element_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, processInstanceID, parentExecID)
-
-			graphJSON, err := externalTaskRepo.GetProcessDefinitionGraphTx(tx, jobWithExec.ProcessInstanceID)
-			if err == nil {
-				var graph engine.ProcessGraph
-				json.Unmarshal(graphJSON, &graph)
-
-				if parentNode, ok := graph.Nodes[parentNodeID]; ok && len(parentNode.Outgoing) > 0 {
-					nextNodeID := parentNode.Outgoing[0].TargetRef
-					if _, err = tx.Exec(`
-						UPDATE public.executions
-						SET current_element_id = $1, status = 'active', updated_at = NOW()
-						WHERE process_instance_id = $2 AND id = $3
-					`, nextNodeID, processInstanceID, parentExecID); err != nil {
-						log.Printf("Warning: failed to move parent: %v", err)
-					} else {
-						miParentMoved = true
-						miParentExecID = parentExecID
-						miParentFromNode = parentNodeID
-						miParentToNode = nextNodeID
-					}
-				}
-			}
-		}
-	}
-
-	// Load process graph for normal flow.
 	graphJSON, err := externalTaskRepo.GetProcessDefinitionGraphTx(tx, processInstanceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load process definition: %w", err)
@@ -220,49 +75,37 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 	if err := json.Unmarshal(graphJSON, &graph); err != nil {
 		return nil, fmt.Errorf("failed to parse process graph: %w", err)
 	}
-
 	currentNode, err := externalTaskRepo.GetNodeByID(&graph, currentElementID)
 	if err != nil {
 		return nil, fmt.Errorf("current node not found: %w", err)
 	}
 
-	var nextNodeID string
+	// The job's variables, with the activity's output mappings, as in
+	// Camunda 8.
+	if err := ApplyActivityOutputTx(tx, processInstanceID, executionID, currentNode, variables); err != nil {
+		return nil, fmt.Errorf("failed to update variables: %w", err)
+	}
 
+	if err := externalTaskRepo.CompleteJobTx(tx, jobID); err != nil {
+		return nil, fmt.Errorf("failed to complete job: %w", err)
+	}
+
+	// Where the token goes next. Without an outgoing flow it ends in the
+	// activity's scope (engine.ImplicitEnd), and the runtime takes it from
+	// there — ending a sub-process, an iteration of a multi-instance
+	// activity (the runtime notices an inner instance leaving its
+	// activity), or the process.
+	var nextNodeID string
 	switch currentNode.Type {
 	case engine.ServiceTaskType:
-		if len(currentNode.Outgoing) == 0 {
-			if err := externalTaskRepo.CompleteProcessInstanceTx(tx, processInstanceID); err != nil {
-				return nil, err
-			}
-			if err := externalTaskRepo.CompleteExecutionTx(tx, processInstanceID, executionID); err != nil {
-				return nil, err
-			}
-			if err := tx.Commit(); err != nil {
-				return nil, err
-			}
-			LogAuditErr("job completed", auditService.LogJobCompleted(jobID, processInstanceID, variables))
-			if len(variables) > 0 {
-				LogAuditErr("variables merged", auditService.LogVariablesMerged(processInstanceID, variables, "jobComplete"))
-			}
-			LogAuditErr("execution completed", auditService.LogExecutionCompleted(executionID, processInstanceID, currentElementID))
-			LogAuditErr("process completed", auditService.LogProcessCompleted(processInstanceID, existingVars))
-			if p := eventlog.Global(); p != nil {
-				p.JobCompleted(processInstanceID.String(), jobID.String())
-				p.ExecutionCompleted(processInstanceID.String(), executionID.String(), currentElementID)
-				p.ProcessCompleted(processInstanceID.String())
-			}
-			return &CompleteJobResult{ProcessInstanceID: processInstanceID, ProcessCompleted: true}, nil
-		}
-		nextNodeID, err = common.ResolveNext(currentNode, existingVars)
-		if err != nil {
+		if nextNodeID, err = common.ResolveNext(currentNode, nil); err != nil {
 			return nil, err
 		}
 
 	case engine.BoundaryTimerEventType:
-		if len(currentNode.Outgoing) == 0 {
-			return nil, fmt.Errorf("boundary event has no outgoing flow")
+		if nextNodeID, err = common.ResolveNext(currentNode, nil); err != nil {
+			return nil, err
 		}
-		nextNodeID = currentNode.Outgoing[0].TargetRef
 
 	default:
 		return nil, fmt.Errorf("node %s is not a service task or boundary event, type: %s", currentNode.ID, currentNode.Type)
@@ -290,16 +133,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 	if len(variables) > 0 {
 		LogAuditErr("variables merged", auditService.LogVariablesMerged(processInstanceID, variables, "jobComplete"))
 	}
-	if miParentMoved {
-		LogAuditErr("execution moved", auditService.LogExecutionMoved(miParentExecID, processInstanceID, miParentFromNode, miParentToNode, nil))
-	}
-	LogAuditErr("execution moved", auditService.LogExecutionMoved(executionID, processInstanceID, currentElementID, nextNodeID, existingVars))
+	LogAuditErr("execution moved", auditService.LogExecutionMoved(executionID, processInstanceID, currentElementID, nextNodeID, variables))
 
 	if p := eventlog.Global(); p != nil {
 		p.JobCompleted(processInstanceID.String(), jobID.String())
-		if miParentMoved {
-			p.ExecutionMoved(processInstanceID.String(), miParentExecID.String(), miParentFromNode, miParentToNode)
-		}
 		p.ExecutionMoved(processInstanceID.String(), executionID.String(), currentElementID, nextNodeID)
 	}
 
@@ -317,6 +154,11 @@ type FailJobResult struct {
 	// matching the original inline behavior.
 	Graph       *engine.ProcessGraph
 	ExecutionID uuid.UUID
+	// PropagateError is set when the BPMN error is caught by a call
+	// activity above ProcessInstanceID: the caller must hand it up with
+	// runtime.PropagateErrorToCaller (no incident was raised).
+	PropagateError    bool
+	ProcessInstanceID uuid.UUID
 }
 
 // FailJob records a job failure — extracted from what used to be the
@@ -436,8 +278,13 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 			}
 		}
 
-		// No boundary event handled the failure — create an incident.
-		if jobErr == nil && jobCtx != nil {
+		// Nothing in this instance catches the error: a call activity that
+		// started it (or one further up) may — the caller then hands it up
+		// (runtime.PropagateErrorToCaller). Otherwise, an incident.
+		if errorCode != "" && jobErr == nil && jobCtx != nil && CallerCatchesError(tx, jobCtx.ProcessInstanceID, errorCode) {
+			result.PropagateError = true
+			result.ProcessInstanceID = jobCtx.ProcessInstanceID
+		} else if jobErr == nil && jobCtx != nil {
 			inc := &models.IncidentCreate{
 				ProcessInstanceID: jobCtx.ProcessInstanceID,
 				JobID:             &jobID,

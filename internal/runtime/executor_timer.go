@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -53,9 +54,9 @@ func (r *Runtime) executeIntermediateTimer(ctx context.Context, engineRepo *repo
 	}
 	defer tx.Rollback()
 
-	var nextNodeID string
-	if len(node.Outgoing) > 0 {
-		nextNodeID = node.Outgoing[0].TargetRef
+	nextNodeID, err := common.ResolveNext(node, nil)
+	if err != nil {
+		return err
 	}
 	if _, err := r.createTimerTx(tx, engineRepo, exec, node.TimerDefinition, nextNodeID, "intermediate"); err != nil {
 		return fmt.Errorf("failed to create timer: %w", err)

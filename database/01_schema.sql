@@ -950,6 +950,15 @@ CREATE TABLE IF NOT EXISTS public.published_message_correlations (
     PRIMARY KEY (published_message_id, process_key)
 );
 
+-- Variables locales aux portées (migration 002).
+CREATE TABLE IF NOT EXISTS public.scope_variables (
+    process_instance_id UUID NOT NULL,
+    scope_id            UUID NOT NULL,      -- exécution qui porte la portée
+    data                JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at          TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (process_instance_id, scope_id)
+);
+
 
 -- Suivi des migrations (voir database/migrations/README.md). Une base neuve
 -- part directement de la baseline 000.
@@ -965,4 +974,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('001', 'published_messages : messages publiés en attente de corrélation (TTL)')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('002', 'scope_variables : variables locales aux portées')
 ON CONFLICT (version) DO NOTHING;

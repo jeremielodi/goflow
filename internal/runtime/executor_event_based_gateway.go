@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/repository"
 )
@@ -28,14 +29,14 @@ func (r *Runtime) executeEventBasedGateway(ctx context.Context, engineRepo *repo
 		}
 
 		// Determine the next node after the catch event
-		var targetElementID string
-		if len(catchNode.Outgoing) > 0 {
-			targetElementID = catchNode.Outgoing[0].TargetRef
+		targetElementID, err := common.ResolveNext(catchNode, nil)
+		if err != nil {
+			return fmt.Errorf("EBG: %w", err)
 		}
 
 		switch catchNode.Type {
 		case engine.IntermediateMessageCatchEventType:
-			err = insertMessageSubscriptionTx(tx, exec.ProcessInstanceID, exec.ID, catchNode.MessageRef, r.messageCorrelationKey(catchNode, exec.ProcessInstanceID), targetElementID)
+			err = insertMessageSubscriptionTx(tx, exec.ProcessInstanceID, exec.ID, catchNode.MessageRef, r.messageCorrelationKey(tx, catchNode, exec.ProcessInstanceID, exec.ID), targetElementID)
 			if err != nil {
 				return fmt.Errorf("EBG: insert message subscription: %w", err)
 			}

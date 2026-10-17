@@ -35,6 +35,15 @@ func isBoundaryTrigger(n *engine.Node) bool {
 // armBoundaryEventsTx arms every timer/message/signal boundary event
 // attached to activity, which exec is now waiting in.
 func (r *Runtime) armBoundaryEventsTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, graph *engine.ProcessGraph, exec *repository.Execution, activity *engine.Node) error {
+	// A multi-instance activity's boundary events attach to its body, not
+	// to each inner instance (whose parent, the body, waits on the same
+	// activity).
+	if activity.MultiInstance != nil && exec.ParentExecutionID != nil {
+		var parentNode string
+		if err := tx.Get(&parentNode, `SELECT current_element_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, exec.ProcessInstanceID, *exec.ParentExecutionID); err == nil && parentNode == activity.ID {
+			return nil
+		}
+	}
 	for _, n := range graph.Nodes {
 		if n.AttachedToRef != activity.ID || !isBoundaryTrigger(n) {
 			continue
@@ -66,7 +75,7 @@ func (r *Runtime) subscribeBoundaryTx(tx *sqlx.Tx, engineRepo *repository.Engine
 	case engine.BoundaryTimerEventType:
 		_, err = r.createTimerTx(tx, engineRepo, trigger, n.TimerDefinition, n.ID, "boundary")
 	case engine.MessageBoundaryEventType:
-		err = insertMessageSubscriptionTx(tx, trigger.ProcessInstanceID, trigger.ID, n.MessageRef, r.messageCorrelationKey(n, trigger.ProcessInstanceID), n.ID)
+		err = insertMessageSubscriptionTx(tx, trigger.ProcessInstanceID, trigger.ID, n.MessageRef, r.messageCorrelationKey(tx, n, trigger.ProcessInstanceID, trigger.ID), n.ID)
 	case engine.SignalBoundaryEventType:
 		_, err = tx.Exec(`
 			INSERT INTO event_subscriptions

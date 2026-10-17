@@ -56,7 +56,7 @@ func (r *Runtime) armTriggerTx(tx *sqlx.Tx, engineRepo *repository.EngineReposit
 	case engine.TriggerTimer:
 		_, err = r.createTimerTx(tx, engineRepo, trigger, node.TimerDefinition, node.ID, "eventSubProcess")
 	case engine.TriggerMessage:
-		err = insertMessageSubscriptionTx(tx, instanceID, trigger.ID, node.MessageRef, r.messageCorrelationKey(node, instanceID), node.ID)
+		err = insertMessageSubscriptionTx(tx, instanceID, trigger.ID, node.MessageRef, r.messageCorrelationKey(tx, node, instanceID, trigger.ID), node.ID)
 	case engine.TriggerSignal:
 		_, err = tx.Exec(`
 			INSERT INTO event_subscriptions

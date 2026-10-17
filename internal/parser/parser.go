@@ -84,9 +84,10 @@ type TerminateEventDefinition struct{}
 // id/name attribute tags.
 type SubProcess struct {
 	Process
-	Incoming         []string `xml:"incoming"`
-	Outgoing         []string `xml:"outgoing"`
-	TriggeredByEvent bool     `xml:"triggeredByEvent,attr"`
+	Incoming         []string           `xml:"incoming"`
+	Outgoing         []string           `xml:"outgoing"`
+	TriggeredByEvent bool               `xml:"triggeredByEvent,attr"`
+	Ext              *ExtensionElements `xml:"extensionElements"`
 }
 
 // Scopes returns p followed by the body of every sub-process nested in it,
@@ -285,6 +286,11 @@ type EndEvent struct {
 	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
 	EscalationCode            string                     `xml:"-"` // resolved
 	CompensateEventDefinition *CompensateEventDefinition `xml:"compensateEventDefinition"`
+
+	// A message end event, worked by a job worker in Camunda 8.
+	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
+	Ext                    *ExtensionElements      `xml:"extensionElements"`
+	CamundaTopic           string                  `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`
 }
 
 // MultiInstanceLoopCharacteristics represents BPMN multi-instance configuration
@@ -480,11 +486,12 @@ type BoundarySignalEvent struct {
 }
 
 type CallActivity struct {
-	ID            string   `xml:"id,attr"`
-	Name          string   `xml:"name,attr"`
-	CalledElement string   `xml:"calledElement,attr"`
-	Incoming      []string `xml:"incoming"`
-	Outgoing      []string `xml:"outgoing"`
+	ID            string                  `xml:"id,attr"`
+	Name          string                  `xml:"name,attr"`
+	CalledElement string                  `xml:"calledElement,attr"`
+	Ext           *CallActivityExtensions `xml:"extensionElements"`
+	Incoming      []string                `xml:"incoming"`
+	Outgoing      []string                `xml:"outgoing"`
 }
 
 type EventBasedGateway struct {
@@ -1028,4 +1035,28 @@ type CompensateEventDefinition struct {
 type ZeebeScript struct {
 	Expression     string `xml:"expression,attr"`
 	ResultVariable string `xml:"resultVariable,attr"`
+}
+
+// ZeebeCalledElement is a call activity's zeebe:calledElement. The
+// propagate flags default to true when absent.
+type ZeebeCalledElement struct {
+	ProcessID                   string `xml:"processId,attr"`
+	PropagateAllChildVariables  string `xml:"propagateAllChildVariables,attr"`
+	PropagateAllParentVariables string `xml:"propagateAllParentVariables,attr"`
+}
+
+// CamundaInOut is a Camunda 7 call activity camunda:in / camunda:out.
+type CamundaInOut struct {
+	Source           string `xml:"source,attr"`
+	SourceExpression string `xml:"sourceExpression,attr"`
+	Target           string `xml:"target,attr"`
+	Variables        string `xml:"variables,attr"` // "all"
+}
+
+// CallActivityExtensions holds a call activity's extension elements.
+type CallActivityExtensions struct {
+	CalledElement *ZeebeCalledElement `xml:"calledElement"`
+	IoMapping     *ZeebeIoMapping     `xml:"ioMapping"`
+	In            []CamundaInOut      `xml:"in"`
+	Out           []CamundaInOut      `xml:"out"`
 }

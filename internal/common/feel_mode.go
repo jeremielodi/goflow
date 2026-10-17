@@ -21,7 +21,10 @@ import (
 //	shadow — (default) both run; the CEL result is still the one used, and
 //	         any disagreement is logged and counted
 //	         (goflow_feel_shadow_mismatches_total), so the switch to "feel"
-//	         can be validated against real traffic first.
+//	         can be validated against real traffic first. Where CEL fails
+//	         and FEEL succeeds (a string literal, decimal arithmetic…), the
+//	         FEEL result is used: nothing CEL evaluates changes, and what
+//	         used to fail now works.
 //	feel   — the native interpreter's result is used.
 //
 // Camunda 7 "${...}" expressions and unprefixed conditions always take the
@@ -165,6 +168,9 @@ func evaluateFEELCondition(expr string, variables map[string]interface{}, celEva
 		celResult, celErr := celEval()
 		feelResult, feelErr := feel.EvaluateBool(src, variables)
 		shadowCompare("condition", expr, celResult, celErr, feelResult, feelErr)
+		if celErr != nil && feelErr == nil {
+			return feelResult, nil, true // CEL can't evaluate it; FEEL can
+		}
 		return celResult, celErr, true
 	}
 	return false, nil, false
@@ -184,6 +190,9 @@ func evaluateFEELValue(expr string, variables map[string]interface{}, celEval fu
 		celResult, celErr := celEval()
 		feelResult, feelErr := feel.Evaluate(src, variables)
 		shadowCompare("value", expr, celResult, celErr, feelResult, feelErr)
+		if celErr != nil && feelErr == nil {
+			return feelResult, nil, true // CEL can't evaluate it; FEEL can
+		}
 		return celResult, celErr, true
 	}
 	return nil, nil, false
@@ -209,6 +218,9 @@ func EvaluateUnaryTests(tests string, input interface{}, variables map[string]in
 		legacyResult, legacyErr := legacy()
 		feelResult, feelErr := feel.EvaluateUnaryTests(tests, input, variables)
 		shadowCompare("unaryTest", tests, legacyResult, legacyErr, feelResult, feelErr)
+		if legacyErr != nil && feelErr == nil {
+			return feelResult, nil
+		}
 		return legacyResult, legacyErr
 	}
 	return legacy()

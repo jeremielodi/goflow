@@ -18,10 +18,6 @@ import (
 )
 
 func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, graph *engine.ProcessGraph, variables map[string]interface{}) error {
-	if node.MultiInstance != nil {
-		return r.handleMultiInstance(ctx, exec, node, variables)
-	}
-
 	tx, err := r.DB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -34,6 +30,18 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 
 	if err := r.armBoundaryEventsTx(tx, engineRepo, graph, exec, node); err != nil {
 		return err
+	}
+	// Input mappings are the activity's local variables (also kept as the
+	// task's form data below).
+	if inputs := common.EvaluateIOMappings(node.InputMappings, variables); len(inputs) > 0 {
+		if err := repository.SetLocalVariablesTx(tx, exec.ProcessInstanceID, exec.ID, inputs); err != nil {
+			return fmt.Errorf("user task %s: input mappings: %w", node.ID, err)
+		}
+		// The assignment expressions below see them too (the execution
+		// stops at this task, so nothing else reads this map).
+		for k, v := range inputs {
+			variables[k] = v
+		}
 	}
 
 	var assignee *string
@@ -141,7 +149,7 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 // definition; when it fires, exec moves to targetNodeID. Returns when it
 // first falls due.
 func (r *Runtime) createTimerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, exec *repository.Execution, timerDefinition, targetNodeID, eventType string) (time.Time, error) {
-	t, err := r.resolveTimer(timerDefinition, exec.ProcessInstanceID)
+	t, err := r.resolveTimer(tx, timerDefinition, exec.ProcessInstanceID, exec.ID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("timer on %s: %w", targetNodeID, err)
 	}

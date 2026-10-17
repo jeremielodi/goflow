@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -66,6 +67,11 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 		FROM process_instances WHERE id = $1
 	`, exec.ProcessInstanceID)
 	row.Scan(&parentInstanceID, &parentExecutionID)
+	// A called process's variables, read before archiving removes them.
+	var childVars map[string]interface{}
+	if parentExecutionID != nil {
+		childVars, _ = engineRepo.GetProcessVariables(exec.ProcessInstanceID)
+	}
 
 	// Archive this instance into historic_* tables and remove its live
 	// rows — see internal/service/archive_service.go. Best-effort: a
@@ -97,10 +103,11 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	if !ok || callNode.Type != engine.CallActivityType {
 		return nil
 	}
-	if len(callNode.Outgoing) == 0 {
-		return nil
+	// Without an outgoing flow the call activity's token ends in its scope.
+	nextNodeID, err := common.ResolveNext(callNode, nil)
+	if err != nil {
+		return fmt.Errorf("callActivity end: %w", err)
 	}
-	nextNodeID := callNode.Outgoing[0].TargetRef
 
 	// Advance parent execution to the next node and reactivate it, disarming
 	// the call activity's boundary events as it leaves.
@@ -111,6 +118,26 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	defer parentTx.Rollback()
 	if err := engineRepo.DisarmBoundaryTriggersTx(parentTx, *parentInstanceID, *parentExecutionID); err != nil {
 		return fmt.Errorf("callActivity end: disarm boundary events: %w", err)
+	}
+	// The child's variables come back as a job's would (scopes, output
+	// mappings): all of them with propagateAllChildVariables, or only what
+	// the output mappings take from them.
+	handBack := map[string]interface{}{}
+	if callNode.PropagateAllChildVariables || len(callNode.OutputMappings) > 0 {
+		for k, v := range childVars {
+			handBack[k] = v
+		}
+	}
+	// A multi-instance call activity's loop variables belong to the loop:
+	// the child only got copies (a stale outputCollection among them, which
+	// would overwrite what other iterations collected).
+	if mi := callNode.MultiInstance; mi != nil {
+		delete(handBack, mi.Output())
+		delete(handBack, mi.Element())
+		delete(handBack, "loopCounter")
+	}
+	if err := service.ApplyActivityOutputTx(parentTx, *parentInstanceID, *parentExecutionID, callNode, handBack); err != nil {
+		return fmt.Errorf("callActivity end: variables: %w", err)
 	}
 	if callNode.CompensationHandler != "" {
 		if err := engineRepo.RecordCompensableTx(parentTx, *parentInstanceID, *parentExecutionID, callNode.ID, callNode.CompensationHandler); err != nil {

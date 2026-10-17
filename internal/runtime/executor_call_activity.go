@@ -3,27 +3,43 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
+	"github.com/jeremielodi/goflow/internal/feel"
 	"github.com/jeremielodi/goflow/internal/repository"
 )
 
 // executeCallActivity starts a child process instance and parks the parent execution.
 func (r *Runtime) executeCallActivity(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
-	if node.CalledElement == "" {
+	calledID := strings.TrimSpace(node.CalledElement)
+	if strings.HasPrefix(calledID, "=") {
+		// zeebe:calledElement processId given as a FEEL expression.
+		v, err := feel.Evaluate(trimFEEL(calledID), variables)
+		if err != nil {
+			return fmt.Errorf("callActivity %s: processId %q: %w", node.ID, calledID, err)
+		}
+		s, ok := v.(string)
+		if !ok || s == "" {
+			return fmt.Errorf("callActivity %s: processId %q is %v, not a process id", node.ID, calledID, v)
+		}
+		calledID = s
+	}
+	if calledID == "" {
 		return fmt.Errorf("callActivity %s has no calledElement", node.ID)
 	}
 
 	// Find the called process definition
-	procDef, err := engineRepo.FindLatestProcessDefinitionByKey(node.CalledElement)
+	procDef, err := engineRepo.FindLatestProcessDefinitionByKey(calledID)
 	if err != nil {
-		return fmt.Errorf("callActivity: cannot find process '%s': %w", node.CalledElement, err)
+		return fmt.Errorf("callActivity: cannot find process '%s': %w", calledID, err)
 	}
 
 	// Build the child process graph
-	childGraph, err := engine.BuildGraphForProcess([]byte(procDef.BpmnXML), node.CalledElement)
+	childGraph, err := engine.BuildGraphForProcess([]byte(procDef.BpmnXML), calledID)
 	if err != nil {
 		return fmt.Errorf("callActivity: build child graph: %w", err)
 	}
@@ -60,11 +76,25 @@ func (r *Runtime) executeCallActivity(ctx context.Context, engineRepo *repositor
 		return fmt.Errorf("callActivity: create child instance: %w", err)
 	}
 
-	// Copy parent variables to child
-	if len(variables) > 0 {
-		if err := engineRepo.CreateVariablesTx(tx, childInstanceID, variables, now); err != nil {
-			return fmt.Errorf("callActivity: copy variables: %w", err)
+	// The child's variables: every variable the call activity sees (unless
+	// propagateAllParentVariables is off), plus its input mappings — which
+	// are also the call activity's local variables, as in Camunda 8.
+	childVars := map[string]interface{}{}
+	if !node.NoParentVariables {
+		for k, v := range variables {
+			childVars[k] = v
 		}
+	}
+	if inputs := common.EvaluateIOMappings(node.InputMappings, variables); len(inputs) > 0 {
+		for k, v := range inputs {
+			childVars[k] = v
+		}
+		if err := repository.SetLocalVariablesTx(tx, exec.ProcessInstanceID, exec.ID, inputs); err != nil {
+			return fmt.Errorf("callActivity: input mappings: %w", err)
+		}
+	}
+	if err := engineRepo.CreateVariablesTx(tx, childInstanceID, childVars, now); err != nil {
+		return fmt.Errorf("callActivity: copy variables: %w", err)
 	}
 
 	// Create child execution at start node

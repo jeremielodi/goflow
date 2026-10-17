@@ -39,7 +39,7 @@ func (r *Runtime) executeScriptTask(ctx context.Context, engineRepo *repository.
 			}
 			defer tx.Rollback()
 
-			if err := engineRepo.UpdateProcessVariablesTx(tx, exec.ProcessInstanceID, variables); err != nil {
+			if err := repository.SetVariablesTx(tx, exec.ProcessInstanceID, outputScope(exec, node), scriptResult); err != nil {
 				return "", err
 			}
 			if err := tx.Commit(); err != nil {

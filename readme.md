@@ -36,7 +36,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | User Task (with assignee / candidateGroups) | ✅ |
 | Script Task (`zeebe:script` FEEL expression, or a job worker) | ✅ |
 | Messages with Camunda 8 semantics: `zeebe:subscription` correlation keys, time to live (buffered messages), `messageId` deduplication, once per process, message start events (one active instance per key) | ✅ |
-| Call Activity (sub-process invocation) | ✅ |
+| Call Activity: `zeebe:calledElement` (processId as FEEL, `propagateAllChildVariables`, `propagateAllParentVariables`), input/output mappings, Camunda 7 `camunda:in`/`camunda:out`; uncaught errors and escalations rise to the call activity; the called instance is terminated with its call activity | ✅ |
 | Exclusive Gateway (XOR) | ✅ |
 | Inclusive Gateway (OR) | ✅ |
 | Parallel Gateway (AND) | ✅ |
@@ -53,12 +53,13 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | Intermediate Conditional Catch Event | ✅ |
 | End Event: terminate, error, signal, escalation, compensation | ✅ |
 | Compensation (boundary + handler, throw with optional `activityRef`) | ✅ |
-| Multi-instance (parallel / sequential) | ✅ |
+| Multi-instance on any activity (every task type, embedded sub-process, call activity), parallel or sequential: `zeebe:loopCharacteristics` (inputCollection, inputElement, outputCollection, outputElement), loop cardinality, completion condition (`numberOf*Instances`), boundary events on the whole loop | ✅ |
+| Variable scopes: local variables per sub-process, multi-instance iteration and activity (input mappings), propagation to the nearest scope that has the variable, output mappings evaluated in the activity scope, `SetVariables` with `local` | ✅ |
 | Business Rule Task (DMN decision table) | ✅ |
 
 Timers (every timer event) take `timeDuration` (ISO 8601, calendar units included: `P1M`, `P1DT2H`), `timeDate` (with offset, `@Zone`/`[Zone]` or local) and `timeCycle` (`R[n]/[start/]duration[/end]` or a Spring cron expression, `L`/`W`/`#` included), or a FEEL expression evaluated against the instance variables when armed; cycles repeat on non-interrupting boundary events and event sub-processes.
 
-Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process); errors and escalations thrown inside a called process don't propagate to the calling call activity.
+Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process).
 
 ### Engine Features
 
@@ -576,7 +577,7 @@ Expressions starting with `=` (Camunda 8 style) and DMN input entries can be eva
 
 `FEEL_MODE` controls the switch:
 
-- `shadow` (default): the legacy path still decides; the native interpreter runs alongside and every disagreement is logged once per expression (`FEEL shadow mismatch …`) and counted in `goflow_feel_shadow_mismatches_total{kind}`.
+- `shadow` (default): the legacy path still decides; the native interpreter runs alongside and every disagreement is logged once per expression (`FEEL shadow mismatch …`) and counted in `goflow_feel_shadow_mismatches_total{kind}`. Where the legacy path fails and the native interpreter succeeds (a string literal, decimal arithmetic, `if … then … else`), the native result is used, so nothing that worked changes and what failed now works.
 - `feel`: the native interpreter decides. Switch once shadow mode shows no unexpected mismatches on real traffic.
 - `cel`: legacy path only.
 

@@ -133,13 +133,15 @@ func checkConditions(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) error 
 	}
 
 	engineRepo := repository.NewEngineRepository(db, dispatcher)
-	varsByInstance := map[uuid.UUID]map[string]interface{}{}
+	varsByScope := map[uuid.UUID]map[string]interface{}{}
 	var fired []conditionalSubscription
 	for _, s := range subs {
-		vars, ok := varsByInstance[s.ProcessInstanceID]
+		// Evaluated in the scope of the waiting element.
+		scope := repository.VariableScopeOf(tx, s.ProcessInstanceID, s.ExecutionID)
+		vars, ok := varsByScope[scope]
 		if !ok {
-			vars, _ = engineRepo.GetProcessVariables(s.ProcessInstanceID)
-			varsByInstance[s.ProcessInstanceID] = vars
+			vars, _ = repository.VariablesForExecution(tx, s.ProcessInstanceID, scope)
+			varsByScope[scope] = vars
 		}
 		now, evalErr := common.EvaluateCondition(s.Condition, vars)
 		if evalErr != nil {

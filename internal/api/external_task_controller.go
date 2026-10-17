@@ -268,12 +268,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 		})
 	}
 
-	engineRepo := repository.NewEngineRepository(ctrl.db, ctrl.dispatcher)
-	if exec, err := engineRepo.GetExecutionByID(result.ExecutionID); err == nil && exec != nil && exec.ParentExecutionID != nil {
-		// This is a multi-instance child - trigger progression
-		rt.OnMultiInstanceChildCompleted(context.Background(), exec.ID, map[string]interface{}{})
-	}
-
 	return c.JSON(fiber.Map{
 		"title":   "Success",
 		"message": "job completed successfully",
@@ -332,6 +326,17 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
 			"title":   "Success",
 			"message": "error boundary event triggered",
+		})
+	}
+
+	if result.PropagateError {
+		rt := runtime.NewRuntime(nil, ctrl.db, ctrl.dispatcher)
+		if _, err := rt.PropagateErrorToCaller(context.Background(), result.ProcessInstanceID, req.ErrorCode); err != nil {
+			log.Printf("Propagating BPMN error %s to the calling process failed: %v", req.ErrorCode, err)
+		}
+		return c.JSON(fiber.Map{
+			"title":   "Success",
+			"message": "error caught by the calling process",
 		})
 	}
 

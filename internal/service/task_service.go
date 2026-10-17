@@ -13,9 +13,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
-	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
-	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -88,106 +86,66 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		return fmt.Errorf("user task node not found")
 	}
 
-	// zeebe:ioMapping outputs: if declared, only the mapped (renamed) values
-	// propagate to the process scope instead of the raw completion variables.
-	if len(userNode.OutputMappings) > 0 {
-		userVars = common.EvaluateIOMappings(userNode.OutputMappings, userVars)
-	}
-
-	// 4. Get current variables & merge user variables
-	currentVars, err := s.instRepo.GetVariables(task.ProcessInstanceID)
+	// 4. Complete the task, set its variables (Camunda 8 scopes and output
+	// mappings, see ApplyActivityOutputTx) and move the token, atomically.
+	sqlTx, err := s.db.Beginx()
 	if err != nil {
 		return err
 	}
-	for k, v := range userVars {
-		currentVars[k] = v
+	defer sqlTx.Rollback()
+
+	res, err := sqlTx.Exec(`
+		UPDATE public.tasks SET status = 'completed', completed_at = NOW()
+		WHERE process_instance_id = $1 AND id = $2 AND status NOT IN ('completed', 'cancelled')
+	`, task.ProcessInstanceID, task.ID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("task already completed or cancelled")
+	}
+	if err := ApplyActivityOutputTx(sqlTx, task.ProcessInstanceID, *task.ExecutionID, userNode, userVars); err != nil {
+		return fmt.Errorf("failed to update variables: %w", err)
 	}
 
-	// Use common.ResolveNext to find the next node
-	nextID, err := common.ResolveNext(userNode, currentVars)
+	// Without an outgoing flow the token ends in the task's scope
+	// (engine.ImplicitEnd); the runtime takes it from there.
+	nextID, err := common.ResolveNext(userNode, nil)
 	if err != nil {
-		fmt.Println(err.Error())
+		return err
+	}
+	if _, err := sqlTx.Exec(`
+		UPDATE public.executions SET current_element_id = $3, status = 'active', updated_at = NOW()
+		WHERE process_instance_id = $1 AND id = $2
+	`, task.ProcessInstanceID, *task.ExecutionID, nextID); err != nil {
 		return err
 	}
 
-	// node has no outgoing flows
-	if nextID == "" {
-		return s.completeProcessAndTask(task, currentVars, taskBefore, userVars)
+	// The task can now be compensated.
+	if userNode.CompensationHandler != "" {
+		if err := repository.NewEngineRepository(s.db, nil).RecordCompensableTx(sqlTx, task.ProcessInstanceID, *task.ExecutionID, userNode.ID, userNode.CompensationHandler); err != nil {
+			return fmt.Errorf("failed to record compensation: %w", err)
+		}
 	}
-	// 5. Start transaction (move token, complete task, update variables)
-	tx := database.NewTransaction(s.db)
 
-	// a. Move execution token
-	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
-		{Key: "current_element_id", Value: nextID},
-		{Key: "updated_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "id", Value: *task.ExecutionID},
-	})
-
-	// b. Mark task as completed
-	tx.AddUpdateQuery("public.tasks", []database.QueryParameter{
-		{Key: "status", Value: "completed"},
-		{Key: "completed_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "id", Value: task.ID},
-	})
-
-	// c. Merge variables (upsert)
-	varJSON, _ := json.Marshal(currentVars)
-	tx.AddDeleteQuery("public.variables", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-	})
-	tx.AddInsertQuery("public.variables", []database.QueryParameter{
-		{Key: "id", Value: uuid.New().String()},
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "data", Value: varJSON},
-		{Key: "updated_at", Value: time.Now()},
-	})
-
-	// d. Reactivate execution (if status was 'waiting')
-	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
-		{Key: "status", Value: "active"},
-		{Key: "updated_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "id", Value: task.ExecutionID},
-	})
-
-	eventPayload := map[string]interface{}{
+	currentVars, err := repository.VariablesForExecution(sqlTx, task.ProcessInstanceID, uuid.Nil)
+	if err != nil {
+		return err
+	}
+	eventPayloadJson, _ := json.Marshal(map[string]interface{}{
 		"task_id":      task.ID,
 		"task_key":     task.TaskDefinitionKey,
 		"assignee":     task.Assignee,
 		"variables":    currentVars,
 		"next_element": nextID,
 		"completed_at": time.Now(),
-	}
-
-	// The task can now be compensated (in the same transaction as its
-	// completion, see repository.RecordCompensableTx).
-	if userNode.CompensationHandler != "" {
-		tx.AddInsertQuery("public.event_subscriptions", []database.QueryParameter{
-			{Key: "process_instance_id", Value: task.ProcessInstanceID},
-			{Key: "execution_id", Value: *task.ExecutionID},
-			{Key: "event_type", Value: "compensable"},
-			{Key: "event_name", Value: userNode.ID},
-			{Key: "target_element_id", Value: userNode.CompensationHandler},
-		})
-	}
-
-	eventPayloadJson, _ := json.Marshal(eventPayload)
-
-	tx.AddInsertQuery("public.process_outbox", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "event_type", Value: "TaskComplete"},
-		{Key: "payload", Value: eventPayloadJson},
 	})
-
-	// Execute all
-	_, success, err := tx.Execute()
-	if err != nil || !success {
+	if _, err := sqlTx.Exec(`
+		INSERT INTO public.process_outbox (process_instance_id, event_type, payload) VALUES ($1, 'TaskComplete', $2)
+	`, task.ProcessInstanceID, eventPayloadJson); err != nil {
+		return err
+	}
+	if err := sqlTx.Commit(); err != nil {
 		return fmt.Errorf("transaction failed: %w", err)
 	}
 	s.disarmBoundaryEvents(task.ProcessInstanceID, *task.ExecutionID)
@@ -241,119 +199,6 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	}
 
 	return fmt.Errorf("resume executor not set")
-}
-
-// Helper to finish process when no next node exists
-func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[string]interface{}, taskBefore models.Task, userVars map[string]interface{}) error {
-	tx := database.NewTransaction(s.db)
-
-	// Mark task as completed
-	tx.AddUpdateQuery("public.tasks", []database.QueryParameter{
-		{Key: "status", Value: "completed"},
-		{Key: "completed_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "id", Value: task.ID},
-	})
-
-	// Save final variables
-	varJSON, _ := json.Marshal(currentVars)
-	tx.AddDeleteQuery("public.variables", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-	})
-	tx.AddInsertQuery("public.variables", []database.QueryParameter{
-		{Key: "id", Value: uuid.New().String()},
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "data", Value: varJSON},
-		{Key: "updated_at", Value: time.Now()},
-	})
-
-	// End process instance
-	tx.AddUpdateQuery("public.process_instances", []database.QueryParameter{
-		{Key: "status", Value: "completed"},
-		{Key: "ended_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "id", Value: task.ProcessInstanceID},
-	})
-
-	// Mark execution as completed
-	tx.AddUpdateQuery("public.executions", []database.QueryParameter{
-		{Key: "status", Value: "completed"},
-		{Key: "is_active", Value: false},
-		{Key: "updated_at", Value: time.Now()},
-	}, []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID},
-		{Key: "id", Value: *task.ExecutionID},
-	})
-
-	eventPayload := map[string]interface{}{
-		"task_id":      task.ID,
-		"task_key":     task.TaskDefinitionKey,
-		"assignee":     task.Assignee,
-		"variables":    currentVars,
-		"completed_at": time.Now(),
-	}
-
-	eventPayloadJson, _ := json.Marshal(eventPayload)
-
-	tx.AddInsertQuery("public.process_outbox", []database.QueryParameter{
-		{Key: "process_instance_id", Value: task.ProcessInstanceID.String()},
-		{Key: "event_type", Value: "TaskComplete"},
-		{Key: "payload", Value: eventPayloadJson},
-	})
-
-	_, success, err := tx.Execute()
-	if err != nil || !success {
-		return fmt.Errorf("transaction failed while ending process: %w", err)
-	}
-	LogAuditErr("task completed", s.auditService.LogTaskCompleted(task.ID, task.ProcessInstanceID, nil, userVars))
-	if len(userVars) > 0 {
-		LogAuditErr("variables merged", s.auditService.LogVariablesMerged(task.ProcessInstanceID, userVars, "taskComplete"))
-	}
-	LogAuditErr("execution completed", s.auditService.LogExecutionCompleted(*task.ExecutionID, task.ProcessInstanceID, task.TaskDefinitionKey))
-	LogAuditErr("process completed", s.auditService.LogProcessCompleted(task.ProcessInstanceID, currentVars))
-	if p := eventlog.Global(); p != nil {
-		p.TaskCompleted(task.ProcessInstanceID.String(), task.ID.String())
-		p.ExecutionCompleted(task.ProcessInstanceID.String(), task.ExecutionID.String(), task.TaskDefinitionKey)
-		p.ProcessCompleted(task.ProcessInstanceID.String())
-	}
-
-	// Dispatch TASK_COMPLETED event for final task
-	if s.dispatcher != nil {
-		assignee := ""
-		if taskBefore.Assignee != nil {
-			assignee = *taskBefore.Assignee
-		}
-
-		processKey := ""
-		if defID, err := s.instRepo.GetProcessDefinitionID(task.ProcessInstanceID); err == nil {
-			if procDef, err := s.procRepo.FindProcessDefinitionByID(defID); err == nil {
-				processKey = procDef.ProcessKey
-			}
-		}
-
-		event := &events.TaskEvent{
-			ID:                uuid.New().String(),
-			EventType:         events.TaskCompleted,
-			TaskID:            task.ID.String(),
-			ProcessInstanceID: task.ProcessInstanceID.String(),
-			ExecutionID:       task.ExecutionID.String(),
-			TaskName:          task.TaskName,
-			Assignee:          &assignee,
-			OldStatus:         &taskBefore.Status,
-			NewStatus:         "completed",
-			Timestamp:         time.Now(),
-			ProcessKey:        processKey,
-			Variables: map[string]interface{}{
-				"process_ended": true,
-				"final_vars":    currentVars,
-			},
-		}
-
-		go s.dispatcher.Dispatch(context.Background(), event)
-	}
-
-	return nil
 }
 
 // disarmBoundaryEvents removes the boundary event triggers of the user task

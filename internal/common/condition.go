@@ -309,7 +309,8 @@ func setCachedProgram(key string, prog *cachedProgram) {
 // ResolveNext resolves the next node based on node type and conditions
 func ResolveNext(node *engine.Node, variables map[string]interface{}) (string, error) {
 	if len(node.Outgoing) == 0 {
-		return "", fmt.Errorf("node %s has no outgoing flows", node.ID)
+		// BPMN's implicit end: the token ends in the node's scope.
+		return engine.ImplicitEnd(node.ID), nil
 	}
 
 	// For UserTask and ServiceTask, filter out boundary event flows
@@ -323,7 +324,7 @@ func ResolveNext(node *engine.Node, variables map[string]interface{}) (string, e
 		}
 
 		if len(normalFlows) == 0 {
-			return "", fmt.Errorf("task %s has no normal outgoing flows (only boundary events)", node.ID)
+			return engine.ImplicitEnd(node.ID), nil
 		}
 
 		if len(normalFlows) > 1 {

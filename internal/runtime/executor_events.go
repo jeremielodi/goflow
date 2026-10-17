@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -114,6 +115,9 @@ func (r *Runtime) executeTerminateEnd(ctx context.Context, engineRepo *repositor
 	if err := engineRepo.DisarmBoundaryTriggersTx(tx, exec.ProcessInstanceID, scopeID); err != nil {
 		return fmt.Errorf("failed to disarm sub-process boundary events: %w", err)
 	}
+	if err := leaveScopeVariablesTx(tx, exec.ProcessInstanceID, scopeID, subNode); err != nil {
+		return fmt.Errorf("leaving sub-process %s: %w", subNode.ID, err)
+	}
 	// The sub-process completed: it can now be compensated.
 	if subNode.CompensationHandler != "" {
 		if err := engineRepo.RecordCompensableTx(tx, exec.ProcessInstanceID, scopeID, subNode.ID, subNode.CompensationHandler); err != nil {
@@ -135,84 +139,149 @@ func (r *Runtime) executeTerminateEnd(ctx context.Context, engineRepo *repositor
 	return r.ExecuteExecution(ctx, scopeID)
 }
 
-// executeErrorEnd throws node's BPMN error. The nearest enclosing
-// sub-process with a matching error boundary event catches it: everything
-// inside that sub-process is interrupted and the token leaves through the
-// boundary. With no catcher, the token stops and an incident is raised,
-// like Camunda 8's unhandled error event.
+// executeErrorEnd throws node's BPMN error. The nearest catcher — an error
+// boundary event or error event sub-process, here or (through call
+// activities) in a calling process — handles it. With no catcher, the
+// token stops and an incident is raised, like Camunda 8's unhandled error
+// event.
 func (r *Runtime) executeErrorEnd(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, node *engine.Node, graph *engine.ProcessGraph) error {
-	boundary, scope := graph.FindErrorCatcher(node.ID, node.ErrorCode)
+	if catcher, scope := graph.FindErrorCatcher(node.ID, node.ErrorCode); catcher != nil {
+		return r.catchError(ctx, engineRepo, graph, exec, node.ID, catcher, scope, "BPMN error "+node.ErrorCode+" thrown by "+node.ID)
+	}
+	if handled, err := r.PropagateErrorToCaller(ctx, exec.ProcessInstanceID, node.ErrorCode); handled || err != nil {
+		return err
+	}
 
 	tx, err := r.DB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
+		return fmt.Errorf("failed to park execution: %w", err)
+	}
+	if _, err := repository.NewIncidentRepository(r.DB).CreateIncidentTx(tx, &models.IncidentCreate{
+		ProcessInstanceID: exec.ProcessInstanceID,
+		IncidentType:      "unhandledErrorEvent",
+		ActivityID:        node.ID,
+		ErrorMessage:      fmt.Sprintf("BPMN error %q thrown by end event %s was not caught by any error boundary event", node.ErrorCode, node.ID),
+		ErrorCode:         node.ErrorCode,
+	}); err != nil {
+		return fmt.Errorf("failed to create incident: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit unhandled error: %w", err)
+	}
+	log.Printf("⚠️ unhandled BPMN error %q at %s (instance %s) — incident raised", node.ErrorCode, node.ID, exec.ProcessInstanceID)
+	return nil
+}
 
-	if boundary != nil && boundary.Type == engine.EventSubProcessType {
-		// Caught by an error event sub-process: its trigger execution
-		// interrupts the scope and runs the body.
-		if err := engineRepo.CompleteExecutionTx(tx, exec.ProcessInstanceID, exec.ID); err != nil {
+// catchError hands a BPMN error thrown by thrower (at element throwerID)
+// to catcher, found by engine.ProcessGraph.FindErrorCatcher in scope:
+//
+//   - an error event sub-process: its trigger execution interrupts the
+//     scope and runs the body;
+//   - an error boundary event on the throwing activity itself (scope ""
+//     and the boundary attached to throwerID — a call activity whose
+//     called process threw): the activity's execution leaves through it;
+//   - an error boundary event on an enclosing sub-process: everything in
+//     it is interrupted and its execution leaves through the boundary.
+func (r *Runtime) catchError(ctx context.Context, engineRepo *repository.EngineRepository, graph *engine.ProcessGraph, thrower *repository.Execution, throwerID string, catcher *engine.Node, scope string, reason string) error {
+	instanceID := thrower.ProcessInstanceID
+	tx, err := r.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if catcher.Type == engine.EventSubProcessType {
+		if err := engineRepo.DisarmBoundaryTriggersTx(tx, instanceID, thrower.ID); err != nil {
+			return err
+		}
+		if err := engineRepo.CompleteExecutionTx(tx, instanceID, thrower.ID); err != nil {
 			return fmt.Errorf("failed to complete execution: %w", err)
 		}
-		triggerID, err := engineRepo.CreateErrorTriggerTx(tx, exec.ProcessInstanceID, exec.ID, boundary.ID, scope)
+		triggerID, err := engineRepo.CreateErrorTriggerTx(tx, instanceID, thrower.ID, catcher.ID, scope)
 		if err != nil {
-			return fmt.Errorf("error end event %s: %w", node.ID, err)
+			return fmt.Errorf("%s: %w", reason, err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit error end event: %w", err)
+			return fmt.Errorf("failed to commit caught error: %w", err)
 		}
-		r.logExecutionCompleted(exec, node.ID)
+		r.logExecutionCompleted(thrower, throwerID)
 		return r.ExecuteExecution(ctx, triggerID)
 	}
 
-	if boundary == nil {
-		if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
-			return fmt.Errorf("failed to park execution: %w", err)
+	catchingID, fromNode := thrower.ID, throwerID
+	var tasks, jobs []uuid.UUID
+	if catcher.AttachedToRef != throwerID {
+		if catchingID, err = engineRepo.FindScopeExecutionTx(tx, instanceID, thrower.ID, scope); err != nil {
+			return fmt.Errorf("%s: %w", reason, err)
 		}
-		if _, err := repository.NewIncidentRepository(r.DB).CreateIncidentTx(tx, &models.IncidentCreate{
-			ProcessInstanceID: exec.ProcessInstanceID,
-			IncidentType:      "unhandledErrorEvent",
-			ActivityID:        node.ID,
-			ErrorMessage:      fmt.Sprintf("BPMN error %q thrown by end event %s was not caught by any error boundary event", node.ErrorCode, node.ID),
-			ErrorCode:         node.ErrorCode,
-		}); err != nil {
-			return fmt.Errorf("failed to create incident: %w", err)
+		fromNode = scope
+		if tasks, jobs, err = engineRepo.CancelScopeTx(tx, instanceID, catchingID, uuid.Nil); err != nil {
+			return fmt.Errorf("%s: %w", reason, err)
 		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit unhandled error: %w", err)
-		}
-		log.Printf("⚠️ unhandled BPMN error %q at %s (instance %s) — incident raised", node.ErrorCode, node.ID, exec.ProcessInstanceID)
-		return nil
 	}
-
-	scopeID, err := engineRepo.FindScopeExecutionTx(tx, exec.ProcessInstanceID, exec.ID, scope)
-	if err != nil {
-		return fmt.Errorf("error end event %s: %w", node.ID, err)
+	if err := engineRepo.DisarmBoundaryTriggersTx(tx, instanceID, catchingID); err != nil {
+		return fmt.Errorf("failed to disarm boundary events: %w", err)
 	}
-	tasks, jobs, err := engineRepo.CancelScopeTx(tx, exec.ProcessInstanceID, scopeID, uuid.Nil)
-	if err != nil {
-		return fmt.Errorf("error end event %s: %w", node.ID, err)
+	if err := repository.ClearLocalVariablesTx(tx, instanceID, catchingID); err != nil {
+		return err
 	}
-	if err := engineRepo.DisarmBoundaryTriggersTx(tx, exec.ProcessInstanceID, scopeID); err != nil {
-		return fmt.Errorf("failed to disarm sub-process boundary events: %w", err)
-	}
-	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, scopeID, "active", boundary.ID); err != nil {
+	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, instanceID, catchingID, "active", catcher.ID); err != nil {
 		return fmt.Errorf("failed to move execution to error boundary: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit error end event: %w", err)
+		return fmt.Errorf("failed to commit caught error: %w", err)
 	}
 
-	r.logCancelled(exec.ProcessInstanceID, tasks, jobs, "BPMN error "+node.ErrorCode+" thrown by "+node.ID)
-	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(scopeID, exec.ProcessInstanceID, scope, boundary.ID, nil))
+	r.logCancelled(instanceID, tasks, jobs, reason)
+	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(catchingID, instanceID, fromNode, catcher.ID, nil))
 	if p := eventlog.Global(); p != nil {
-		p.ExecutionMoved(exec.ProcessInstanceID.String(), scopeID.String(), scope, boundary.ID)
+		p.ExecutionMoved(instanceID.String(), catchingID.String(), fromNode, catcher.ID)
 	}
-	return r.ExecuteExecution(ctx, scopeID)
+	return r.ExecuteExecution(ctx, catchingID)
 }
 
+// PropagateErrorToCaller hands BPMN error errorCode, which nothing in
+// instanceID catches, to the call activity that started it — and on up
+// the chain of calling processes — as in Camunda 8: the called instance
+// is terminated and the error is caught as if the call activity had
+// thrown it. False when no caller catches it.
+func (r *Runtime) PropagateErrorToCaller(ctx context.Context, instanceID uuid.UUID, errorCode string) (bool, error) {
+	caller := service.CallerOf(r.DB, instanceID)
+	if caller == nil {
+		return false, nil
+	}
+	catcher, scope := caller.Graph.FindErrorCatcher(caller.Node.ID, errorCode)
+	if catcher == nil {
+		// Not here: maybe further up. If so, the caller's own instance gets
+		// terminated by its caller, taking this one with it.
+		if !service.CallerCatchesError(r.DB, caller.InstanceID, errorCode) {
+			return false, nil
+		}
+		return r.PropagateErrorToCaller(ctx, caller.InstanceID, errorCode)
+	}
+
+	reason := fmt.Sprintf("BPMN error %s propagated to call activity %s", errorCode, caller.Node.ID)
+	if err := service.TerminateProcessInstance(r.DB, r.dispatcher, instanceID, reason); err != nil && !errors.Is(err, service.ErrProcessInstanceNotFound) {
+		return true, fmt.Errorf("terminating the called instance: %w", err)
+	}
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
+	callExec, err := engineRepo.GetExecutionByID(caller.ExecID)
+	if err != nil || callExec == nil {
+		return true, fmt.Errorf("call activity execution %s: %v", caller.ExecID, err)
+	}
+	parentRT := NewRuntime(caller.Graph, r.DB, r.dispatcher)
+	return true, parentRT.catchError(ctx, engineRepo, caller.Graph, callExec, caller.Node.ID, catcher, scope, reason)
+}
+
+// logCancelled records what an interruption cancelled. It also
+// terminates the processes started by call activities the interruption
+// left (see service.TerminateOrphanedCalledInstances).
 func (r *Runtime) logCancelled(instanceID uuid.UUID, tasks, jobs []uuid.UUID, reason string) {
+	service.TerminateOrphanedCalledInstances(r.DB, r.dispatcher, &instanceID)
 	for _, id := range tasks {
 		service.LogAuditErr("task cancelled", r.auditService.LogTaskCancelled(id, instanceID, reason))
 	}

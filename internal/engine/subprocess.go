@@ -18,6 +18,9 @@ type subProcessInfo struct {
 	// which carry the trigger.
 	Event       bool
 	EventStarts []parser.StartEvent
+
+	// zeebe:ioMapping of an embedded sub-process.
+	IoMapping *parser.ZeebeIoMapping
 }
 
 // flattenSubProcesses returns a copy of process whose element lists also
@@ -41,6 +44,9 @@ func flattenSubProcesses(process *parser.Process) (*parser.Process, map[string]s
 		for i := range sps {
 			sp := &sps[i]
 			info := subProcessInfo{ID: sp.ID, Name: sp.Name, ParentScope: parentScope}
+			if sp.Ext != nil {
+				info.IoMapping = sp.Ext.ZeebeIoMapping
+			}
 			if sp.TriggeredByEvent {
 				info.Event = true
 				info.EventStarts = sp.StartEvents

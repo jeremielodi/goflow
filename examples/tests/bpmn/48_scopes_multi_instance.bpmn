@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_Scopes"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Variable scopes and multi-instance, Camunda 8 style (suite 48). -->
+
+  <!-- parallel multi-instance service task over a collection -->
+  <bpmn:process id="MiParallel48" isExecutable="true">
+    <bpmn:startEvent id="mp_start"/>
+    <bpmn:sequenceFlow id="mp1" sourceRef="mp_start" targetRef="mp_task"/>
+    <bpmn:serviceTask id="mp_task">
+      <bpmn:extensionElements><zeebe:taskDefinition type="mi48-parallel"/></bpmn:extensionElements>
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=items" inputElement="item" outputCollection="results" outputElement="=result"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="mp2" sourceRef="mp_task" targetRef="mp_check"/>
+    <bpmn:userTask id="mp_check"/>
+    <bpmn:sequenceFlow id="mp3" sourceRef="mp_check" targetRef="mp_end"/>
+    <bpmn:endEvent id="mp_end"/>
+  </bpmn:process>
+
+  <!-- sequential multi-instance by cardinality -->
+  <bpmn:process id="MiSequential48" isExecutable="true">
+    <bpmn:startEvent id="ms_start"/>
+    <bpmn:sequenceFlow id="ms1" sourceRef="ms_start" targetRef="ms_task"/>
+    <bpmn:serviceTask id="ms_task">
+      <bpmn:extensionElements><zeebe:taskDefinition type="mi48-sequential"/></bpmn:extensionElements>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="true">
+        <bpmn:loopCardinality>=count</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="ms2" sourceRef="ms_task" targetRef="ms_check"/>
+    <bpmn:userTask id="ms_check"/>
+    <bpmn:sequenceFlow id="ms3" sourceRef="ms_check" targetRef="ms_end"/>
+    <bpmn:endEvent id="ms_end"/>
+  </bpmn:process>
+
+  <!-- parallel multi-instance user tasks with a completion condition -->
+  <bpmn:process id="MiCondition48" isExecutable="true">
+    <bpmn:startEvent id="mc_start"/>
+    <bpmn:sequenceFlow id="mc1" sourceRef="mc_start" targetRef="mc_review"/>
+    <bpmn:userTask id="mc_review">
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=reviewers" inputElement="reviewer"/>
+        </bpmn:extensionElements>
+        <bpmn:completionCondition>=numberOfCompletedInstances &gt;= 2</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="mc2" sourceRef="mc_review" targetRef="mc_done"/>
+    <bpmn:userTask id="mc_done"/>
+    <bpmn:sequenceFlow id="mc3" sourceRef="mc_done" targetRef="mc_end"/>
+    <bpmn:endEvent id="mc_end"/>
+  </bpmn:process>
+
+  <!-- multi-instance embedded sub-process with input mappings -->
+  <bpmn:process id="MiSubProcess48" isExecutable="true">
+    <bpmn:startEvent id="msp_start"/>
+    <bpmn:sequenceFlow id="msp1" sourceRef="msp_start" targetRef="msp_sub"/>
+    <bpmn:subProcess id="msp_sub">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping><zeebe:input source="=item * 2" target="double"/></zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=items" inputElement="item" outputCollection="doubles" outputElement="=double + bonus"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+      <bpmn:startEvent id="msp_in_start"/>
+      <bpmn:sequenceFlow id="msp2" sourceRef="msp_in_start" targetRef="msp_work"/>
+      <bpmn:serviceTask id="msp_work">
+        <bpmn:extensionElements><zeebe:taskDefinition type="mi48-sub"/></bpmn:extensionElements>
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="msp3" sourceRef="msp_work" targetRef="msp_in_end"/>
+      <bpmn:endEvent id="msp_in_end"/>
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="msp4" sourceRef="msp_sub" targetRef="msp_check"/>
+    <bpmn:userTask id="msp_check"/>
+    <bpmn:sequenceFlow id="msp5" sourceRef="msp_check" targetRef="msp_end"/>
+    <bpmn:endEvent id="msp_end"/>
+  </bpmn:process>
+
+  <!-- sub-process local scope and output mappings -->
+  <bpmn:process id="Scopes48" isExecutable="true">
+    <bpmn:startEvent id="sc_start"/>
+    <bpmn:sequenceFlow id="sc1" sourceRef="sc_start" targetRef="sc_sub"/>
+    <bpmn:subProcess id="sc_sub">
+      <bpmn:extensionElements>
+        <zeebe:ioMapping>
+          <zeebe:input source="=&quot;inner&quot;" target="tmp"/>
+          <zeebe:output source="=tmp" target="tmpSeen"/>
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:startEvent id="sc_in_start"/>
+      <bpmn:sequenceFlow id="sc2" sourceRef="sc_in_start" targetRef="sc_work"/>
+      <bpmn:serviceTask id="sc_work">
+        <bpmn:extensionElements><zeebe:taskDefinition type="scopes48"/></bpmn:extensionElements>
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="sc3" sourceRef="sc_work" targetRef="sc_in_end"/>
+      <bpmn:endEvent id="sc_in_end"/>
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="sc4" sourceRef="sc_sub" targetRef="sc_mapped"/>
+    <bpmn:serviceTask id="sc_mapped">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="scopes48-mapped"/>
+        <zeebe:ioMapping><zeebe:output source="=raw + 1" target="cooked"/></zeebe:ioMapping>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:sequenceFlow id="sc5" sourceRef="sc_mapped" targetRef="sc_check"/>
+    <bpmn:userTask id="sc_check"/>
+    <bpmn:sequenceFlow id="sc6" sourceRef="sc_check" targetRef="sc_end"/>
+    <bpmn:endEvent id="sc_end"/>
+  </bpmn:process>
+
+  <!-- implicit end: a branch ending on a task without outgoing flow -->
+  <bpmn:process id="ImplicitEnd48" isExecutable="true">
+    <bpmn:startEvent id="ie_start"/>
+    <bpmn:sequenceFlow id="ie1" sourceRef="ie_start" targetRef="ie_fork"/>
+    <bpmn:parallelGateway id="ie_fork"/>
+    <bpmn:sequenceFlow id="ie2" sourceRef="ie_fork" targetRef="ie_dead_end"/>
+    <bpmn:sequenceFlow id="ie3" sourceRef="ie_fork" targetRef="ie_other"/>
+    <bpmn:serviceTask id="ie_dead_end">
+      <bpmn:extensionElements><zeebe:taskDefinition type="implicit48"/></bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="ie_other"/>
+    <bpmn:sequenceFlow id="ie4" sourceRef="ie_other" targetRef="ie_end"/>
+    <bpmn:endEvent id="ie_end"/>
+  </bpmn:process>
+
+  <!-- empty collection; boundary timer interrupting the whole loop -->
+  <bpmn:process id="MiEdges48" isExecutable="true">
+    <bpmn:startEvent id="me_start"/>
+    <bpmn:sequenceFlow id="me1" sourceRef="me_start" targetRef="me_none"/>
+    <bpmn:userTask id="me_none">
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=[]" inputElement="x" outputCollection="nothing" outputElement="=x"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="me2" sourceRef="me_none" targetRef="me_loop"/>
+    <bpmn:userTask id="me_loop">
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=[1, 2]" inputElement="x"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="me_timeout" attachedToRef="me_loop">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT2S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="me3" sourceRef="me_loop" targetRef="me_end"/>
+    <bpmn:sequenceFlow id="me4" sourceRef="me_timeout" targetRef="me_late"/>
+    <bpmn:userTask id="me_late"/>
+    <bpmn:sequenceFlow id="me5" sourceRef="me_late" targetRef="me_end2"/>
+    <bpmn:endEvent id="me_end"/>
+    <bpmn:endEvent id="me_end2"/>
+  </bpmn:process>
+</bpmn:definitions>

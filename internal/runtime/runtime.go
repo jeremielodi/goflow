@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -17,7 +16,6 @@ import (
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/eventlog"
-	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
@@ -370,7 +368,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 	}
 
 	// Get variables
-	variables, err := engineRepo.GetProcessVariables(exec.ProcessInstanceID)
+	variables, err := repository.VariablesForExecution(r.DB, exec.ProcessInstanceID, repository.VariableScopeOf(r.DB, exec.ProcessInstanceID, exec.ID))
 	if err != nil {
 		return fmt.Errorf("failed to load variables: %w", err)
 	}
@@ -381,15 +379,40 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		return fmt.Errorf("failed to load process graph: %w", err)
 	}
 
+	inner, err := lookupInnerInstance(r.DB, exec.ProcessInstanceID, exec.ID)
+	if err != nil {
+		return err
+	}
+
 	currentID := exec.CurrentElementID
 	for {
+		// An inner instance of a multi-instance activity that has left the
+		// activity — whatever kind it is — has finished its iteration.
+		if inner != nil && currentID != inner.ActivityID {
+			return r.completeInnerInstance(ctx, engineRepo, exec, inner, graph)
+		}
+		// Left an activity without an outgoing flow: the token ends in the
+		// activity's scope, as at an end event there.
+		if strings.HasPrefix(currentID, engine.ImplicitEndPrefix) {
+			activity, ok := graph.Nodes[strings.TrimPrefix(currentID, engine.ImplicitEndPrefix)]
+			if !ok {
+				return fmt.Errorf("implicit end of unknown element %s", currentID)
+			}
+			exec.CurrentElementID = currentID
+			end := &engine.Node{ID: currentID, Type: engine.EndEventType, ParentScope: activity.ParentScope}
+			return r.executeEnd(ctx, engineRepo, exec, end, graph, variables)
+		}
+
 		node, err := engineRepo.GetNodeByID(graph, currentID)
 		if err != nil {
 			return err
 		}
 
-		// log.Printf("🔍 ExecuteExecution loop: currentID=%s, node.Type=%s, node.MultiInstance=%v",
-		// 	currentID, node.Type, node.MultiInstance != nil)
+		// Reaching a multi-instance activity: this execution becomes its
+		// body and runs the inner instances.
+		if node.MultiInstance != nil && (inner == nil || inner.ActivityID != node.ID) {
+			return r.startMultiInstanceBody(ctx, engineRepo, exec, node, graph, variables)
+		}
 
 		switch node.Type {
 		case engine.StartEventType, engine.StartTimerEventType, engine.ExclusiveGatewayType:
@@ -424,9 +447,6 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			}
 
 		case engine.ServiceTaskType:
-			if node.MultiInstance != nil && exec.ParentExecutionID != nil {
-				log.Printf("📦 Multi-instance child %s processing service task %s", exec.ID, node.ID)
-			}
 			return r.executeServiceTask(ctx, engineRepo, exec, node, variables)
 
 		case engine.UserTaskType:
@@ -678,7 +698,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return r.executeErrorEnd(ctx, engineRepo, exec, node, graph)
 
 		case engine.SubProcessType:
-			return r.executeSubProcess(ctx, engineRepo, exec, node, graph)
+			return r.executeSubProcess(ctx, engineRepo, exec, node, graph, variables)
 
 		case engine.EventSubProcessType:
 			return r.executeEventSubProcess(ctx, engineRepo, exec, node)
@@ -793,220 +813,3 @@ func resolveExpression(expr string, vars map[string]interface{}) string {
 	}
 	return fmt.Sprintf("%v", value)
 }
-
-// internal/runtime/runtime.go
-
-// internal/runtime/runtime.go
-
-func (r *Runtime) handleMultiInstance(ctx context.Context, exec *repository.Execution, node *engine.Node, variables map[string]interface{}) error {
-	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
-	miHandler := NewMultiInstanceHandler(r.DB)
-
-	// Check if multi-instance already exists
-	var miExec models.MultiInstanceExecution
-	query := `SELECT * FROM public.multi_instance_executions WHERE execution_id = $1 AND status = 'active'`
-	err := r.DB.Get(&miExec, query, exec.ID)
-
-	if err != nil {
-		// First time - create multi-instance
-		totalCount := 1 // Default
-		if node.MultiInstance != nil && node.MultiInstance.LoopCardinality != "" {
-			totalCount, err = miHandler.ParseLoopCardinality(node.MultiInstance.LoopCardinality, variables)
-			if err != nil {
-				log.Printf("Warning: failed to parse loop cardinality: %v", err)
-				totalCount = 1
-			}
-		}
-
-		// Get input collection if specified
-		var inputItems []interface{}
-		if node.MultiInstance != nil && node.MultiInstance.InputDataItem != "" {
-			inputItems, err = miHandler.GetInputCollection(node.MultiInstance.InputDataItem, variables)
-			if err == nil && len(inputItems) > 0 {
-				totalCount = len(inputItems)
-			}
-		}
-
-		isSequential := false
-		if node.MultiInstance != nil {
-			isSequential = node.MultiInstance.IsSequential
-		}
-
-		tx, err := r.DB.Beginx()
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-
-		// Create multi-instance record
-		miExecID := uuid.New()
-		_, err = tx.Exec(`
-            INSERT INTO public.multi_instance_executions 
-            (id, process_instance_id, execution_id, activity_id, is_sequential, total_count, 
-             completed_count, status, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, 0, 'active', NOW(), NOW())
-        `, miExecID, exec.ProcessInstanceID, exec.ID, node.ID, isSequential, totalCount)
-		if err != nil {
-			return err
-		}
-
-		// Set parent execution to waiting
-		err = engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting")
-		if err != nil {
-			return err
-		}
-
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-
-		// Get the created miExec record
-		err = r.DB.Get(&miExec, query, exec.ID)
-		if err != nil {
-			return err
-		}
-
-		if isSequential {
-			// Sequential: create only first child
-			return r.createSequentialChild(ctx, exec.ID, &miExec, node, node.ID, 0, variables, inputItems)
-		} else {
-			// Parallel: create all children at once
-			return r.createParallelChildren(ctx, exec.ID, &miExec, node, node.ID, totalCount, variables, inputItems)
-		}
-	}
-	return r.checkMultiInstanceCompletion(ctx, exec, node, &miExec, variables)
-}
-
-// internal/runtime/runtime.go
-// In runtime.go - update createSequentialChild
-func (r *Runtime) createSequentialChild(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, taskNodeID string, loopIndex int, variables map[string]interface{}, inputItems []interface{}) error {
-	if loopIndex >= miExec.TotalCount {
-		log.Printf("✅ Sequential: All children created, completing multi-instance")
-		return r.completeMultiInstance(ctx, parentExecID, miExec, node, variables)
-	}
-
-	log.Printf("📝 createSequentialChild: parentExecID=%s, loopIndex=%d, totalCount=%d", parentExecID, loopIndex, miExec.TotalCount)
-
-	// Get element value for this iteration
-	var elementValue interface{}
-	if len(inputItems) > loopIndex && inputItems[loopIndex] != nil {
-		elementValue = inputItems[loopIndex]
-	} else {
-		elementValue = fmt.Sprintf("%d", loopIndex+1)
-	}
-
-	log.Printf("📦 Creating sequential child %d/%d with value: %v", loopIndex+1, miExec.TotalCount, elementValue)
-
-	tx, err := r.DB.Beginx()
-	if err != nil {
-		log.Printf("❌ Failed to begin transaction: %v", err)
-		return err
-	}
-	defer tx.Rollback()
-
-	// Update loop counter FIRST
-	_, err = tx.Exec(`
-        UPDATE public.multi_instance_executions
-        SET loop_counter = $1, updated_at = NOW()
-        WHERE process_instance_id = $2 AND id = $3
-    `, loopIndex+1, miExec.ProcessInstanceID, miExec.ID)
-	if err != nil {
-		log.Printf("❌ Failed to update loop counter: %v", err)
-		return err
-	}
-
-	// Create child execution
-	childExecID := uuid.New()
-	_, err = tx.Exec(`
-        INSERT INTO public.executions 
-        (id, process_instance_id, current_element_id, status, is_active, parent_execution_id, created_at, updated_at)
-        VALUES ($1, $2, $3, 'active', true, $4, NOW(), NOW())
-    `, childExecID, miExec.ProcessInstanceID, taskNodeID, parentExecID)
-	if err != nil {
-		log.Printf("❌ Failed to create child execution: %v", err)
-		return err
-	}
-
-	// Record child relationship
-	_, err = tx.Exec(`
-        INSERT INTO public.multi_instance_children 
-        (parent_execution_id, child_execution_id, loop_index, element_value, status, created_at)
-        VALUES ($1, $2, $3, $4, 'active', NOW())
-    `, parentExecID, childExecID, loopIndex, fmt.Sprintf("%v", elementValue))
-	if err != nil {
-		log.Printf("❌ Failed to record child relationship: %v", err)
-		return err
-	}
-
-	miHandler := NewMultiInstanceHandler(r.DB)
-
-	// Set element variable if specified
-	if node.MultiInstance != nil && node.MultiInstance.ElementVariable != "" {
-		err = miHandler.SetProcessVariable(tx, miExec.ProcessInstanceID, node.MultiInstance.ElementVariable, elementValue)
-		if err != nil {
-			log.Printf("⚠️ Warning: failed to set element variable: %v", err)
-		}
-	}
-
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		log.Printf("❌ Failed to commit transaction: %v", err)
-		return err
-	}
-
-	log.Printf("✅ Successfully created child %d/%d with ID: %s", loopIndex+1, miExec.TotalCount, childExecID)
-
-	// Execute child
-	rt := NewRuntime(r.Graph, r.DB, r.dispatcher)
-	go func() {
-		if err := rt.ExecuteExecution(context.Background(), childExecID); err != nil {
-			log.Printf("❌ Sequential child %d failed: %v", loopIndex+1, err)
-		}
-	}()
-
-	return nil
-}
-
-// func (r *Runtime) completeMultiInstance(ctx context.Context, parentExecID uuid.UUID, miExec *models.MultiInstanceExecution, node *engine.Node, variables map[string]interface{}) error {
-// 	engineRepo := repository.NewEngineRepository(r.DB)
-
-// 	log.Printf("🏁 Completing multi-instance task %s", node.ID)
-
-// 	tx, err := r.DB.Beginx()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer tx.Rollback()
-
-// 	// Mark multi-instance as completed
-// 	_, err = tx.Exec(`
-//         UPDATE public.multi_instance_executions
-//         SET status = 'completed', updated_at = NOW()
-//         WHERE id = $1
-//     `, miExec.ID)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	// Get next node after the multi-instance task
-// 	var nextNodeID string
-// 	if len(node.Outgoing) > 0 {
-// 		nextNodeID = node.Outgoing[0].TargetRef
-// 	}
-
-// 	log.Printf("Parent moving from %s to %s", node.ID, nextNodeID)
-
-// 	// Update parent execution to move to next node
-// 	err = engineRepo.UpdateExecutionStatusAndNodeTx(tx, parentExecID, "active", nextNodeID)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	if err := tx.Commit(); err != nil {
-// 		return err
-// 	}
-
-// 	// Resume parent execution
-// 	rt := NewRuntime(r.Graph, r.DB)
-// 	return rt.ExecuteExecution(ctx, parentExecID)
-// }

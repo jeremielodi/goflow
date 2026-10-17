@@ -9,9 +9,10 @@ func TestFEELModes(t *testing.T) {
 	// FEEL-only syntax: CEL rejects it, the native interpreter doesn't.
 	const ifExpr = `= if amount > 100 then "high" else "low"`
 
+	// Shadow mode: where CEL fails and FEEL succeeds, FEEL's result is used.
 	setFEELMode(feelModeShadow)
-	if _, err := EvaluateValue(ifExpr, vars); err == nil {
-		t.Error("shadow mode must still return the CEL result (an error here)")
+	if v, err := EvaluateValue(ifExpr, vars); err != nil || v != "high" {
+		t.Errorf("shadow mode should fall back to FEEL when CEL fails: got %v, %v", v, err)
 	}
 
 	setFEELMode(feelModeFEEL)

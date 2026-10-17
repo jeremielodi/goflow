@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -42,26 +43,21 @@ func BroadcastSignal(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, name s
 			// Regular signal catch: advance to catchNode's outgoing
 			graph, err := engineRepo.GetProcessGraphByInstanceID(sub.ProcessInstanceID)
 			if err == nil && graph != nil {
-				if catchNode, ok := graph.Nodes[currentNodeID]; ok && len(catchNode.Outgoing) > 0 {
-					targetElementID = catchNode.Outgoing[0].TargetRef
+				if catchNode, ok := graph.Nodes[currentNodeID]; ok {
+					targetElementID, _ = common.ResolveNext(catchNode, nil)
 				}
 			}
 		}
 
 		// Merge variables
 		if len(variables) > 0 {
-			existing, _ := engineRepo.GetProcessVariables(sub.ProcessInstanceID)
-			merged := existing
-			if merged == nil {
-				merged = make(map[string]interface{})
-			}
-			for k, v := range variables {
-				merged[k] = v
-			}
+			// From the waiting element's scope, as in Camunda 8.
 			tx, err := db.Beginx()
 			if err == nil {
-				engineRepo.UpdateProcessVariablesTx(tx, sub.ProcessInstanceID, merged)
-				if err := tx.Commit(); err == nil {
+				scope := repository.VariableScopeOf(tx, sub.ProcessInstanceID, sub.ExecutionID)
+				if err := repository.SetVariablesTx(tx, sub.ProcessInstanceID, scope, variables); err != nil {
+					tx.Rollback()
+				} else if err := tx.Commit(); err == nil {
 					service.LogAuditErr("variables merged", auditService.LogVariablesMerged(sub.ProcessInstanceID, variables, "signal"))
 				}
 			}

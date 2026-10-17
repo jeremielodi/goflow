@@ -112,18 +112,6 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
 
-		// ✅ Add multi-instance support
-		if t.MultiInstance != nil {
-			node.MultiInstance = &MultiInstanceConfig{
-				IsSequential:        t.MultiInstance.IsSequential,
-				LoopCardinality:     t.MultiInstance.LoopCardinality,
-				CompletionCondition: t.MultiInstance.CompletionCondition,
-				InputDataItem:       t.MultiInstance.InputDataItem,
-				OutputDataItem:      t.MultiInstance.OutputDataItem,
-				ElementVariable:     t.MultiInstance.ElementVariable,
-			}
-		}
-
 		register(node)
 	}
 
@@ -152,17 +140,6 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			applyIoMapping(node, t.Ext.ZeebeIoMapping)
 		}
 
-		// ✅ Add multi-instance support
-		if t.MultiInstance != nil {
-			node.MultiInstance = &MultiInstanceConfig{
-				IsSequential:        t.MultiInstance.IsSequential,
-				LoopCardinality:     t.MultiInstance.LoopCardinality,
-				CompletionCondition: t.MultiInstance.CompletionCondition,
-				InputDataItem:       t.MultiInstance.InputDataItem,
-				OutputDataItem:      t.MultiInstance.OutputDataItem,
-				ElementVariable:     t.MultiInstance.ElementVariable,
-			}
-		}
 		register(node)
 	}
 
@@ -250,6 +227,28 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		case e.CompensateEventDefinition != nil:
 			node.Type = CompensationEndEventType
 			node.CompensateActivity = e.CompensateEventDefinition.ActivityRef
+		case e.MessageEventDefinition != nil:
+			// Camunda 8: a message end event with a job type is worked by a
+			// job worker; once the job completes, the token ends here (the
+			// node has no outgoing flow: an implicit end in its scope).
+			// Without one it is a plain end event.
+			if e.CamundaTopic != "" {
+				node.Type = ServiceTaskType
+				node.JobType = &e.CamundaTopic
+			}
+			if e.Ext != nil {
+				if td := e.Ext.ZeebeTaskDefinition; td != nil && td.Type != "" {
+					node.Type = ServiceTaskType
+					node.JobType = &td.Type
+				}
+				if th := e.Ext.ZeebeTaskHeaders; th != nil && len(th.Headers) > 0 {
+					node.TaskHeaders = make(map[string]string, len(th.Headers))
+					for _, h := range th.Headers {
+						node.TaskHeaders[h.Key] = h.Value
+					}
+				}
+				applyIoMapping(node, e.Ext.ZeebeIoMapping)
+			}
 		}
 		register(node)
 	}
@@ -504,12 +503,14 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 
 	// ---- Call Activities ----
 	for _, ca := range process.CallActivities {
-		register(&Node{
+		node := &Node{
 			ID:            ca.ID,
 			Name:          ca.Name,
 			Type:          CallActivityType,
 			CalledElement: ca.CalledElement,
-		})
+		}
+		applyCallActivityExtensions(node, ca.Ext)
+		register(node)
 	}
 
 	// ---- Embedded Sub-Processes ----
@@ -518,11 +519,13 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		if sp.Event {
 			nodeType = EventSubProcessType
 		}
-		register(&Node{
+		node := &Node{
 			ID:   sp.ID,
 			Name: sp.Name,
 			Type: nodeType,
-		})
+		}
+		applyIoMapping(node, sp.IoMapping)
+		register(node)
 	}
 
 	// ---- Add incoming/outgoing edges from Sequence Flows ----
@@ -877,7 +880,14 @@ func BuildGraphForProcess(bpmnBytes []byte, processKey string) (*ProcessGraph, e
 	if targetProcess == nil {
 		return nil, fmt.Errorf("process with ID %q not found", processKey)
 	}
-	return BuildGraphFromProcess(targetProcess)
+	graph, err := BuildGraphFromProcess(targetProcess)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyMultiInstance(bpmnBytes, graph); err != nil {
+		return nil, err
+	}
+	return graph, nil
 }
 
 // linkThrowEvents gives each link throw event a flow to the link catch event
@@ -949,4 +959,46 @@ func linkCompensationHandlers(graph *ProcessGraph, associations []parser.Associa
 		end.Incoming = append(end.Incoming, handler.ID)
 	}
 	return nil
+}
+
+// applyCallActivityExtensions reads a call activity's variable passing.
+// Camunda 8 (zeebe:calledElement): all parent variables go to the child
+// and all child variables come back, unless switched off; zeebe:ioMapping
+// applies. Camunda 7 (camunda:in / camunda:out): every parent variable
+// still goes to the child (GoFlow's behavior so far), camunda:in
+// source/target add input mappings, camunda:out variables="all" brings
+// every child variable back and camunda:out source/target are output
+// mappings.
+func applyCallActivityExtensions(node *Node, ext *parser.CallActivityExtensions) {
+	if ext == nil {
+		return
+	}
+	if ce := ext.CalledElement; ce != nil {
+		node.CalledElement = strings.TrimSpace(ce.ProcessID)
+		node.PropagateAllChildVariables = !strings.EqualFold(strings.TrimSpace(ce.PropagateAllChildVariables), "false")
+		node.NoParentVariables = strings.EqualFold(strings.TrimSpace(ce.PropagateAllParentVariables), "false")
+	}
+	applyIoMapping(node, ext.IoMapping)
+	camundaMapping := func(m parser.CamundaInOut) (IOMapping, bool) {
+		source := strings.TrimSpace(m.Source)
+		if source == "" {
+			source = stripJUEL(m.SourceExpression)
+		}
+		if source == "" || strings.TrimSpace(m.Target) == "" {
+			return IOMapping{}, false
+		}
+		return IOMapping{Source: "=" + source, Target: strings.TrimSpace(m.Target)}, true
+	}
+	for _, in := range ext.In {
+		if mapping, ok := camundaMapping(in); ok {
+			node.InputMappings = append(node.InputMappings, mapping)
+		}
+	}
+	for _, out := range ext.Out {
+		if strings.EqualFold(strings.TrimSpace(out.Variables), "all") {
+			node.PropagateAllChildVariables = true
+		} else if mapping, ok := camundaMapping(out); ok {
+			node.OutputMappings = append(node.OutputMappings, mapping)
+		}
+	}
 }
