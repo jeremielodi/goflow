@@ -887,7 +887,7 @@ func (r *EngineRepository) CreateProcessInstanceWithVariables(processKey string,
 	// Find start node
 	var startNodeID string
 	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
+		if node.IsProcessStart() {
 			startNodeID = node.ID
 			break
 		}

@@ -287,6 +287,16 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, p
 		return "", nil, fmt.Errorf("failed to cancel user task: %w", err)
 	}
 
+	// An interrupting boundary timer on an embedded sub-process fires on the
+	// execution parked on the sub-process node: interrupt everything still
+	// running inside it. No-op for a timer on a plain activity, whose
+	// execution has no children.
+	scopeTasks, scopeJobs, err := engineRepo.CancelScopeTx(tx, processInstanceID, execID, uuid.Nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to interrupt sub-process: %w", err)
+	}
+	cancelledTaskIDs = append(cancelledTaskIDs, scopeTasks...)
+
 	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, processInstanceID, execID, "active", targetNodeID); err != nil {
 		return "", nil, fmt.Errorf("failed to update execution: %w", err)
 	}
@@ -302,6 +312,9 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, p
 	// way this function used to (see architecture/citus-distributed-storage-design.md).
 	for _, taskID := range cancelledTaskIDs {
 		LogAuditErr("task cancelled", auditService.LogTaskCancelled(taskID, processInstanceID, "boundary timer fired"))
+	}
+	for _, jobID := range scopeJobs {
+		LogAuditErr("job cancelled", auditService.LogJobFailed(jobID, processInstanceID, "cancelled: sub-process interrupted by boundary timer", 0))
 	}
 	LogAuditErr("execution moved", auditService.LogExecutionMoved(execID, processInstanceID, fromNodeID, targetNodeID, nil))
 	if p := eventlog.Global(); p != nil {

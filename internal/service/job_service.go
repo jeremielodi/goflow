@@ -268,6 +268,10 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		return nil, fmt.Errorf("node %s is not a service task or boundary event, type: %s", currentNode.ID, currentNode.Type)
 	}
 
+	// The job's activity is left: its boundary events can no longer fire.
+	if err := repository.NewEngineRepository(db, nil).DisarmBoundaryTriggersTx(tx, processInstanceID, executionID); err != nil {
+		return nil, fmt.Errorf("failed to disarm boundary events: %w", err)
+	}
 	if err := externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, processInstanceID, executionID, nextNodeID); err != nil {
 		return nil, err
 	}
@@ -350,29 +354,75 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 			if graphErr == nil {
 				var graph engine.ProcessGraph
 				if jsonErr := json.Unmarshal(graphJSON, &graph); jsonErr == nil {
-					for _, node := range graph.Nodes {
-						if node.Type == engine.ErrorBoundaryEventType &&
-							node.AttachedToRef == jobCtx.CurrentElementID &&
-							node.ErrorCode == errorCode {
-							if _, execErr := tx.Exec(`
-								UPDATE public.executions
-								SET current_element_id = $1, status = 'active', updated_at = NOW()
-								WHERE process_instance_id = $2 AND id = $3
-							`, node.ID, jobCtx.ProcessInstanceID, jobCtx.ExecutionID); execErr == nil {
-								if commitErr := tx.Commit(); commitErr == nil {
-									LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, errorMessage, 0))
-									LogAuditErr("execution moved", auditService.LogExecutionMoved(jobCtx.ExecutionID, jobCtx.ProcessInstanceID, jobCtx.CurrentElementID, node.ID, nil))
-									if p := eventlog.Global(); p != nil {
-										p.JobFailed(jobCtx.ProcessInstanceID.String(), jobID.String(), errorMessage, 0, false)
-										p.ExecutionMoved(jobCtx.ProcessInstanceID.String(), jobCtx.ExecutionID.String(), jobCtx.CurrentElementID, node.ID)
-									}
-									result.BoundaryTriggered = true
-									result.Graph = &graph
-									result.ExecutionID = jobCtx.ExecutionID
-								}
-								return result, nil
+					node, scope := graph.FindErrorCatcher(jobCtx.CurrentElementID, errorCode)
+					if node != nil && node.Type == engine.EventSubProcessType {
+						// Caught by an error event sub-process: the caller
+						// runs its trigger execution, which interrupts the
+						// scope (this job's execution included) and starts
+						// the event sub-process.
+						engineRepo := repository.NewEngineRepository(db, nil)
+						triggerID, trigErr := engineRepo.CreateErrorTriggerTx(tx, jobCtx.ProcessInstanceID, jobCtx.ExecutionID, node.ID, scope)
+						if trigErr != nil {
+							log.Printf("error event sub-process %s: %v", node.ID, trigErr)
+						} else if commitErr := tx.Commit(); commitErr == nil {
+							LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, errorMessage, 0))
+							if p := eventlog.Global(); p != nil {
+								p.JobFailed(jobCtx.ProcessInstanceID.String(), jobID.String(), errorMessage, 0, false)
 							}
-							break
+							result.BoundaryTriggered = true
+							result.Graph = &graph
+							result.ExecutionID = triggerID
+							return result, nil
+						} else {
+							return nil, fmt.Errorf("failed to commit transaction: %w", commitErr)
+						}
+					} else if node != nil {
+						// Caught on the task itself, the job's execution
+						// moves to the boundary. Caught on an enclosing
+						// sub-process, the execution parked on that
+						// sub-process moves instead, and everything still
+						// running inside it is interrupted.
+						catchingExecID, fromNodeID := jobCtx.ExecutionID, jobCtx.CurrentElementID
+						var scopeTasks, scopeJobs []uuid.UUID
+						var scopeErr error
+						if scope != "" {
+							engineRepo := repository.NewEngineRepository(db, nil)
+							catchingExecID, scopeErr = engineRepo.FindScopeExecutionTx(tx, jobCtx.ProcessInstanceID, jobCtx.ExecutionID, scope)
+							if scopeErr == nil {
+								fromNodeID = scope
+								scopeTasks, scopeJobs, scopeErr = engineRepo.CancelScopeTx(tx, jobCtx.ProcessInstanceID, catchingExecID, uuid.Nil)
+							}
+						}
+						if scopeErr == nil {
+							// The catching activity is left through its error
+							// boundary: its other boundary events are disarmed.
+							scopeErr = repository.NewEngineRepository(db, nil).DisarmBoundaryTriggersTx(tx, jobCtx.ProcessInstanceID, catchingExecID)
+						}
+						if scopeErr != nil {
+							log.Printf("error boundary %s on sub-process %s: %v", node.ID, scope, scopeErr)
+						} else if _, execErr := tx.Exec(`
+							UPDATE public.executions
+							SET current_element_id = $1, status = 'active', updated_at = NOW()
+							WHERE process_instance_id = $2 AND id = $3
+						`, node.ID, jobCtx.ProcessInstanceID, catchingExecID); execErr == nil {
+							if commitErr := tx.Commit(); commitErr == nil {
+								LogAuditErr("job failed", auditService.LogJobFailed(jobID, jobCtx.ProcessInstanceID, errorMessage, 0))
+								for _, taskID := range scopeTasks {
+									LogAuditErr("task cancelled", auditService.LogTaskCancelled(taskID, jobCtx.ProcessInstanceID, "sub-process interrupted by error boundary"))
+								}
+								for _, cancelledJobID := range scopeJobs {
+									LogAuditErr("job cancelled", auditService.LogJobFailed(cancelledJobID, jobCtx.ProcessInstanceID, "cancelled: sub-process interrupted by error boundary", 0))
+								}
+								LogAuditErr("execution moved", auditService.LogExecutionMoved(catchingExecID, jobCtx.ProcessInstanceID, fromNodeID, node.ID, nil))
+								if p := eventlog.Global(); p != nil {
+									p.JobFailed(jobCtx.ProcessInstanceID.String(), jobID.String(), errorMessage, 0, false)
+									p.ExecutionMoved(jobCtx.ProcessInstanceID.String(), catchingExecID.String(), fromNodeID, node.ID)
+								}
+								result.BoundaryTriggered = true
+								result.Graph = &graph
+								result.ExecutionID = catchingExecID
+							}
+							return result, nil
 						}
 					}
 				}

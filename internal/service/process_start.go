@@ -78,7 +78,7 @@ func startProcessInstance(
 ) error {
 	var startNodeID string
 	for _, node := range graph.Nodes {
-		if node.Type == engine.StartEventType {
+		if node.IsProcessStart() {
 			startNodeID = node.ID
 			break
 		}

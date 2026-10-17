@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_BoundaryEvents"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Boundary events (suite 38). -->
+
+  <bpmn:message id="Msg_BeEscalate" name="BeEscalate"/>
+  <bpmn:message id="Msg_BeLate" name="BeLate"/>
+  <bpmn:signal id="Sig_BeNotify" name="BeNotify"/>
+
+  <!-- the boundary timer of a task completed in time must never fire -->
+  <bpmn:process id="BeStaleTimer" isExecutable="true">
+    <bpmn:startEvent id="bst_start"/>
+    <bpmn:sequenceFlow id="bst1" sourceRef="bst_start" targetRef="bst_a"/>
+    <bpmn:userTask id="bst_a" name="Quick Task"/>
+    <bpmn:boundaryEvent id="bst_timer" attachedToRef="bst_a" cancelActivity="true">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT4S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bst2" sourceRef="bst_a" targetRef="bst_b"/>
+    <bpmn:userTask id="bst_b" name="Next Task"/>
+    <bpmn:sequenceFlow id="bst3" sourceRef="bst_b" targetRef="bst_end"/>
+    <bpmn:endEvent id="bst_end"/>
+    <bpmn:sequenceFlow id="bst4" sourceRef="bst_timer" targetRef="bst_timeout"/>
+    <bpmn:userTask id="bst_timeout" name="Timed Out"/>
+    <bpmn:sequenceFlow id="bst5" sourceRef="bst_timeout" targetRef="bst_timeout_end"/>
+    <bpmn:endEvent id="bst_timeout_end"/>
+  </bpmn:process>
+
+  <!-- interrupting message boundary on a user task -->
+  <bpmn:process id="BeMessageBoundary" isExecutable="true">
+    <bpmn:startEvent id="bm_start"/>
+    <bpmn:sequenceFlow id="bm1" sourceRef="bm_start" targetRef="bm_task"/>
+    <bpmn:userTask id="bm_task" name="Review"/>
+    <bpmn:boundaryEvent id="bm_escalate" attachedToRef="bm_task" cancelActivity="true">
+      <bpmn:messageEventDefinition messageRef="Msg_BeEscalate"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bm2" sourceRef="bm_task" targetRef="bm_end"/>
+    <bpmn:endEvent id="bm_end"/>
+    <bpmn:sequenceFlow id="bm3" sourceRef="bm_escalate" targetRef="bm_escalated"/>
+    <bpmn:userTask id="bm_escalated" name="Escalated Review"/>
+    <bpmn:sequenceFlow id="bm4" sourceRef="bm_escalated" targetRef="bm_escalated_end"/>
+    <bpmn:endEvent id="bm_escalated_end"/>
+  </bpmn:process>
+
+  <!-- non-interrupting signal boundary on a user task -->
+  <bpmn:process id="BeSignalNonInterrupting" isExecutable="true">
+    <bpmn:startEvent id="bs_start"/>
+    <bpmn:sequenceFlow id="bs1" sourceRef="bs_start" targetRef="bs_task"/>
+    <bpmn:userTask id="bs_task" name="Long Work"/>
+    <bpmn:boundaryEvent id="bs_notify" attachedToRef="bs_task" cancelActivity="false">
+      <bpmn:signalEventDefinition signalRef="Sig_BeNotify"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bs2" sourceRef="bs_task" targetRef="bs_end"/>
+    <bpmn:endEvent id="bs_end"/>
+    <bpmn:sequenceFlow id="bs3" sourceRef="bs_notify" targetRef="bs_notified"/>
+    <bpmn:userTask id="bs_notified" name="Read Notification"/>
+    <bpmn:sequenceFlow id="bs4" sourceRef="bs_notified" targetRef="bs_notified_end"/>
+    <bpmn:endEvent id="bs_notified_end"/>
+  </bpmn:process>
+
+  <!-- non-interrupting timer boundary (a reminder) on a user task -->
+  <bpmn:process id="BeTimerNonInterrupting" isExecutable="true">
+    <bpmn:startEvent id="bt_start"/>
+    <bpmn:sequenceFlow id="bt1" sourceRef="bt_start" targetRef="bt_task"/>
+    <bpmn:userTask id="bt_task" name="Slow Work"/>
+    <bpmn:boundaryEvent id="bt_remind" attachedToRef="bt_task" cancelActivity="false">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT3S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bt2" sourceRef="bt_task" targetRef="bt_end"/>
+    <bpmn:endEvent id="bt_end"/>
+    <bpmn:sequenceFlow id="bt3" sourceRef="bt_remind" targetRef="bt_reminder"/>
+    <bpmn:userTask id="bt_reminder" name="Reminder"/>
+    <bpmn:sequenceFlow id="bt4" sourceRef="bt_reminder" targetRef="bt_reminder_end"/>
+    <bpmn:endEvent id="bt_reminder_end"/>
+  </bpmn:process>
+
+  <!-- interrupting timer boundary on a service task -->
+  <bpmn:process id="BeServiceTimer" isExecutable="true">
+    <bpmn:startEvent id="bsv_start"/>
+    <bpmn:sequenceFlow id="bsv1" sourceRef="bsv_start" targetRef="bsv_job"/>
+    <bpmn:serviceTask id="bsv_job" name="Slow Job" camunda:type="external" camunda:topic="be_slow"/>
+    <bpmn:boundaryEvent id="bsv_timer" attachedToRef="bsv_job" cancelActivity="true">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT3S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bsv2" sourceRef="bsv_job" targetRef="bsv_end"/>
+    <bpmn:endEvent id="bsv_end"/>
+    <bpmn:sequenceFlow id="bsv3" sourceRef="bsv_timer" targetRef="bsv_timeout"/>
+    <bpmn:userTask id="bsv_timeout" name="Job Timed Out"/>
+    <bpmn:sequenceFlow id="bsv4" sourceRef="bsv_timeout" targetRef="bsv_timeout_end"/>
+    <bpmn:endEvent id="bsv_timeout_end"/>
+  </bpmn:process>
+
+  <!-- the message boundary of a task completed in time must not correlate -->
+  <bpmn:process id="BeStaleMessage" isExecutable="true">
+    <bpmn:startEvent id="bsm_start"/>
+    <bpmn:sequenceFlow id="bsm1" sourceRef="bsm_start" targetRef="bsm_a"/>
+    <bpmn:userTask id="bsm_a" name="First Task"/>
+    <bpmn:boundaryEvent id="bsm_late" attachedToRef="bsm_a" cancelActivity="true">
+      <bpmn:messageEventDefinition messageRef="Msg_BeLate"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bsm2" sourceRef="bsm_a" targetRef="bsm_b"/>
+    <bpmn:userTask id="bsm_b" name="Second Task"/>
+    <bpmn:sequenceFlow id="bsm3" sourceRef="bsm_b" targetRef="bsm_end"/>
+    <bpmn:endEvent id="bsm_end"/>
+    <bpmn:sequenceFlow id="bsm4" sourceRef="bsm_late" targetRef="bsm_late_end"/>
+    <bpmn:endEvent id="bsm_late_end"/>
+  </bpmn:process>
+</bpmn:definitions>

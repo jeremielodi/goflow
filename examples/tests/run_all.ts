@@ -122,6 +122,10 @@ async function main() {
     '32_partition_timer.test.ts',
     '33_partition_terminate_modify.test.ts',
     '34_partition_parallel.test.ts',
+    '35_subprocess.test.ts',
+    '36_bpmn_elements.test.ts',
+    '37_event_subprocess.test.ts',
+    '38_boundary_events.test.ts',
   ];
 
   const exitCodes: number[] = [];

@@ -57,6 +57,18 @@ func (r *Runtime) executeServiceTask(ctx context.Context, engineRepo *repository
 		return fmt.Errorf("failed to update execution status: %w", err)
 	}
 
+	// Boundary events attach to the activity, not to each multi-instance
+	// child execution.
+	if node.MultiInstance == nil {
+		graph, err := engineRepo.GetProcessGraphByInstanceID(exec.ProcessInstanceID)
+		if err != nil {
+			return fmt.Errorf("failed to load process graph: %w", err)
+		}
+		if err := r.armBoundaryEventsTx(tx, engineRepo, graph, exec, node); err != nil {
+			return err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}

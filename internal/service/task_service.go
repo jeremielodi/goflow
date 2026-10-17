@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,6 +59,10 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	}
 	if task.Status == "completed" {
 		return fmt.Errorf("task already completed")
+	}
+	if task.Status == "cancelled" {
+		// e.g. interrupted by a boundary event: its token has already moved on.
+		return fmt.Errorf("task was cancelled")
 	}
 
 	// Store task before completion for event
@@ -173,6 +178,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 	if err != nil || !success {
 		return fmt.Errorf("transaction failed: %w", err)
 	}
+	s.disarmBoundaryEvents(task.ProcessInstanceID, *task.ExecutionID)
 	LogAuditErr("task completed", s.auditService.LogTaskCompleted(task.ID, task.ProcessInstanceID, nil, userVars))
 	if len(userVars) > 0 {
 		LogAuditErr("variables merged", s.auditService.LogVariablesMerged(task.ProcessInstanceID, userVars, "taskComplete"))
@@ -336,4 +342,23 @@ func (s *TaskService) completeProcessAndTask(task models.Task, currentVars map[s
 	}
 
 	return nil
+}
+
+// disarmBoundaryEvents removes the boundary event triggers of the user task
+// its execution just left. Best-effort: a trigger that survives a failure
+// here is discarded when it fires, since its task is no longer active.
+func (s *TaskService) disarmBoundaryEvents(instanceID, execID uuid.UUID) {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		log.Printf("disarming boundary events of execution %s: %v", execID, err)
+		return
+	}
+	defer tx.Rollback()
+	if err := repository.NewEngineRepository(s.db, nil).DisarmBoundaryTriggersTx(tx, instanceID, execID); err != nil {
+		log.Printf("disarming boundary events of execution %s: %v", execID, err)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("disarming boundary events of execution %s: %v", execID, err)
+	}
 }

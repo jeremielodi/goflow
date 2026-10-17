@@ -240,17 +240,20 @@ async function run() {
           await client.pollExternalTask('check-inventory', async () => ({ checked: true }), 15000, instanceId);
           await sleep(500);
 
-          const before = (await fetchRecent()).filter((e) => e.type === 'SignalBroadcast').length;
+          // Compare event IDs, not counts: /eventlog/recent is a 500-entry
+          // ring buffer, so once it's full a new event pushes an old one out
+          // and the count of SignalBroadcast entries can stay flat.
+          const seen = new Set((await fetchRecent()).filter((e) => e.type === 'SignalBroadcast').map((e) => e.eventId));
           await client.api.post('/engine-rest/signal', { name: 'RestockAlert' });
 
           const deadline = Date.now() + 15000;
           let found = false;
           while (Date.now() < deadline) {
-            const broadcasts = (await fetchRecent()).filter((e) => e.type === 'SignalBroadcast');
-            if (broadcasts.length > before) {
+            const fresh = (await fetchRecent()).filter((e) => e.type === 'SignalBroadcast' && !seen.has(e.eventId));
+            if (fresh.length > 0) {
               found = true;
               // SignalBroadcast has no owning instance — confirmed empty here.
-              assert(broadcasts[broadcasts.length - 1].processInstanceId === '', 'expected SignalBroadcast to have an empty processInstanceId');
+              assert(fresh[fresh.length - 1].processInstanceId === '', 'expected SignalBroadcast to have an empty processInstanceId');
               break;
             }
             await sleep(500);

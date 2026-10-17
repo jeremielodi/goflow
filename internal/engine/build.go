@@ -28,6 +28,15 @@ func applyIoMapping(node *Node, io *parser.ZeebeIoMapping) {
 // Build a graph from a single parser.Process (core builder)
 // ============================================================
 func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
+	process, scopeOf, subProcesses, err := flattenSubProcesses(process)
+	if err != nil {
+		return nil, err
+	}
+	// A send task runs exactly like a service task (a job for a worker).
+	// flattenSubProcesses returned a copy, so this never touches the parsed
+	// process.
+	process.ServiceTasks = append(process.ServiceTasks, process.SendTasks...)
+
 	graph := &ProcessGraph{Nodes: map[string]*Node{}}
 	nodeMap := map[string]*Node{}
 
@@ -188,10 +197,73 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	}
 	// ---- End Events ----
 	for _, e := range process.EndEvents {
-		register(&Node{
+		node := &Node{
 			ID:   e.ID,
+			Name: e.Name,
 			Type: EndEventType,
+		}
+		switch {
+		case e.TerminateEventDefinition != nil:
+			node.Type = TerminateEndEventType
+		case e.ErrorEventDefinition != nil:
+			node.Type = ErrorEndEventType
+			node.ErrorCode = e.ErrorCode
+		case e.SignalEventDefinition != nil:
+			node.Type = SignalEndEventType
+			node.SignalRef = e.SignalName
+		}
+		register(node)
+	}
+
+	// ---- Manual Tasks (pass-through) ----
+	for _, t := range process.ManualTasks {
+		register(&Node{
+			ID:   t.ID,
+			Name: t.Name,
+			Type: ManualTaskType,
 		})
+	}
+
+	// ---- Receive Tasks (wait for a message, like a message catch event) ----
+	for _, t := range process.ReceiveTasks {
+		register(&Node{
+			ID:         t.ID,
+			Name:       t.Name,
+			Type:       IntermediateMessageCatchEventType,
+			MessageRef: t.MessageName,
+		})
+	}
+
+	// ---- Intermediate Throw Events ----
+	for _, ev := range process.IntermediateThrowEvents {
+		node := &Node{
+			ID:   ev.ID,
+			Name: ev.Name,
+			Type: IntermediateThrowEventType,
+		}
+		switch {
+		case ev.SignalEventDefinition != nil:
+			node.Type = IntermediateSignalThrowEventType
+			node.SignalRef = ev.SignalName
+		case ev.LinkEventDefinition != nil:
+			node.LinkName = ev.LinkEventDefinition.Name
+		case ev.MessageEventDefinition != nil:
+			// Camunda 8 style: a message throw event with a job type is
+			// worked by a job worker, like a service task. Without one
+			// there is nothing to run, so it passes straight through.
+			if ev.CamundaTopic != "" {
+				node.Type = ServiceTaskType
+				node.JobType = &ev.CamundaTopic
+			}
+			if ev.Ext != nil {
+				if td := ev.Ext.ZeebeTaskDefinition; td != nil && td.Type != "" {
+					node.Type = ServiceTaskType
+					node.JobType = &td.Type
+				}
+				applyIoMapping(node, ev.Ext.ZeebeIoMapping)
+			}
+		}
+		register(node)
 	}
 
 	// ---- Exclusive Gateways ----
@@ -272,6 +344,13 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 				Type:      IntermediateSignalCatchEventType,
 				SignalRef: ev.SignalName,
 			})
+		} else if ev.LinkEventDefinition != nil {
+			register(&Node{
+				ID:       ev.ID,
+				Name:     ev.Name,
+				Type:     LinkCatchEventType,
+				LinkName: ev.LinkEventDefinition.Name,
+			})
 		}
 		// Note: timer events are handled via process.IntermediateTimerEvents (already registered above)
 	}
@@ -326,6 +405,19 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			Name:          ca.Name,
 			Type:          CallActivityType,
 			CalledElement: ca.CalledElement,
+		})
+	}
+
+	// ---- Embedded Sub-Processes ----
+	for _, sp := range subProcesses {
+		nodeType := SubProcessType
+		if sp.Event {
+			nodeType = EventSubProcessType
+		}
+		register(&Node{
+			ID:   sp.ID,
+			Name: sp.Name,
+			Type: nodeType,
 		})
 	}
 
@@ -607,6 +699,13 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		}
 	}
 
+	if err := finishSubProcesses(graph, scopeOf, subProcesses); err != nil {
+		return nil, err
+	}
+	if err := linkThrowEvents(graph); err != nil {
+		return nil, err
+	}
+
 	// Validate parallel gateways
 	for _, node := range graph.Nodes {
 		if node.Type == ParallelGatewayType {
@@ -672,4 +771,36 @@ func BuildGraphForProcess(bpmnBytes []byte, processKey string) (*ProcessGraph, e
 		return nil, fmt.Errorf("process with ID %q not found", processKey)
 	}
 	return BuildGraphFromProcess(targetProcess)
+}
+
+// linkThrowEvents gives each link throw event a flow to the link catch event
+// with the same name in the same scope — BPMN's "off-page connector".
+func linkThrowEvents(graph *ProcessGraph) error {
+	type key struct{ scope, name string }
+	catches := map[key]*Node{}
+	for _, n := range graph.Nodes {
+		if n.Type != LinkCatchEventType {
+			continue
+		}
+		k := key{n.ParentScope, n.LinkName}
+		if other, dup := catches[k]; dup {
+			return fmt.Errorf("link catch events %s and %s share the link name %q in the same scope", other.ID, n.ID, n.LinkName)
+		}
+		catches[k] = n
+	}
+	for _, n := range graph.Nodes {
+		if n.Type != IntermediateThrowEventType || n.LinkName == "" {
+			continue
+		}
+		target, ok := catches[key{n.ParentScope, n.LinkName}]
+		if !ok {
+			return fmt.Errorf("link throw event %s: no link catch event named %q in the same scope", n.ID, n.LinkName)
+		}
+		if len(n.Outgoing) > 0 {
+			return fmt.Errorf("link throw event %s must not have outgoing sequence flows", n.ID)
+		}
+		n.Outgoing = append(n.Outgoing, Flow{ID: n.ID + "_link", SourceRef: n.ID, TargetRef: target.ID})
+		target.Incoming = append(target.Incoming, n.ID)
+	}
+	return nil
 }

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_SubProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!--
+    Embedded sub-processes (suite 35).
+
+    SubProcessOrder: start -> [Payment sub-process: charge (service) ->
+      parallel fork -> review (user) + notify (service) -> join -> end]
+      -> after_payment (user) -> end.
+      Error boundary PAYMENT_FAILED on the sub-process -> handle_failure.
+
+    SubProcessTimeout: start -> [sub-process: wait_inside (user) -> end]
+      -> end. Interrupting timer boundary (PT3S) on the sub-process
+      -> after_timeout (user).
+
+    SubProcessNested: start -> [outer: [inner: inner_job (service) -> end]
+      -> end] -> end.
+  -->
+
+  <bpmn:error id="Error_PaymentFailed" name="Payment Failed" errorCode="PAYMENT_FAILED"/>
+
+  <bpmn:process id="SubProcessOrder" isExecutable="true">
+    <bpmn:startEvent id="order_start"/>
+    <bpmn:sequenceFlow id="o1" sourceRef="order_start" targetRef="payment"/>
+
+    <bpmn:subProcess id="payment" name="Payment">
+      <bpmn:startEvent id="payment_start"/>
+      <bpmn:sequenceFlow id="p1" sourceRef="payment_start" targetRef="charge"/>
+      <bpmn:serviceTask id="charge" name="Charge Card" camunda:type="external" camunda:topic="sp_charge"/>
+      <bpmn:sequenceFlow id="p2" sourceRef="charge" targetRef="payment_fork"/>
+      <bpmn:parallelGateway id="payment_fork"/>
+      <bpmn:sequenceFlow id="p3" sourceRef="payment_fork" targetRef="review"/>
+      <bpmn:sequenceFlow id="p4" sourceRef="payment_fork" targetRef="notify"/>
+      <bpmn:userTask id="review" name="Review Payment"/>
+      <bpmn:serviceTask id="notify" name="Notify Customer" camunda:type="external" camunda:topic="sp_notify"/>
+      <bpmn:sequenceFlow id="p5" sourceRef="review" targetRef="payment_join"/>
+      <bpmn:sequenceFlow id="p6" sourceRef="notify" targetRef="payment_join"/>
+      <bpmn:parallelGateway id="payment_join"/>
+      <bpmn:sequenceFlow id="p7" sourceRef="payment_join" targetRef="payment_end"/>
+      <bpmn:endEvent id="payment_end"/>
+    </bpmn:subProcess>
+
+    <bpmn:boundaryEvent id="payment_failed" attachedToRef="payment" cancelActivity="true">
+      <bpmn:errorEventDefinition errorRef="Error_PaymentFailed"/>
+    </bpmn:boundaryEvent>
+
+    <bpmn:sequenceFlow id="o2" sourceRef="payment" targetRef="after_payment"/>
+    <bpmn:userTask id="after_payment" name="Ship Order"/>
+    <bpmn:sequenceFlow id="o3" sourceRef="after_payment" targetRef="order_end"/>
+    <bpmn:endEvent id="order_end"/>
+
+    <bpmn:sequenceFlow id="o4" sourceRef="payment_failed" targetRef="handle_failure"/>
+    <bpmn:userTask id="handle_failure" name="Handle Payment Failure"/>
+    <bpmn:sequenceFlow id="o5" sourceRef="handle_failure" targetRef="order_failed_end"/>
+    <bpmn:endEvent id="order_failed_end"/>
+  </bpmn:process>
+
+  <bpmn:process id="SubProcessTimeout" isExecutable="true">
+    <bpmn:startEvent id="timeout_start"/>
+    <bpmn:sequenceFlow id="t1" sourceRef="timeout_start" targetRef="waiting_block"/>
+
+    <bpmn:subProcess id="waiting_block" name="Waiting Block">
+      <bpmn:startEvent id="waiting_start"/>
+      <bpmn:sequenceFlow id="w1" sourceRef="waiting_start" targetRef="wait_inside"/>
+      <bpmn:userTask id="wait_inside" name="Wait Inside"/>
+      <bpmn:sequenceFlow id="w2" sourceRef="wait_inside" targetRef="waiting_end"/>
+      <bpmn:endEvent id="waiting_end"/>
+    </bpmn:subProcess>
+
+    <bpmn:boundaryEvent id="block_timeout" attachedToRef="waiting_block" cancelActivity="true">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>PT3S</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:sequenceFlow id="t2" sourceRef="waiting_block" targetRef="timeout_end"/>
+    <bpmn:endEvent id="timeout_end"/>
+
+    <bpmn:sequenceFlow id="t3" sourceRef="block_timeout" targetRef="after_timeout"/>
+    <bpmn:userTask id="after_timeout" name="Handle Timeout"/>
+    <bpmn:sequenceFlow id="t4" sourceRef="after_timeout" targetRef="timeout_handled_end"/>
+    <bpmn:endEvent id="timeout_handled_end"/>
+  </bpmn:process>
+
+  <bpmn:process id="SubProcessNested" isExecutable="true">
+    <bpmn:startEvent id="nested_start"/>
+    <bpmn:sequenceFlow id="n1" sourceRef="nested_start" targetRef="outer"/>
+
+    <bpmn:subProcess id="outer" name="Outer">
+      <bpmn:startEvent id="outer_start"/>
+      <bpmn:sequenceFlow id="u1" sourceRef="outer_start" targetRef="inner"/>
+      <bpmn:subProcess id="inner" name="Inner">
+        <bpmn:startEvent id="inner_start"/>
+        <bpmn:sequenceFlow id="i1" sourceRef="inner_start" targetRef="inner_job"/>
+        <bpmn:serviceTask id="inner_job" name="Inner Job" camunda:type="external" camunda:topic="sp_inner"/>
+        <bpmn:sequenceFlow id="i2" sourceRef="inner_job" targetRef="inner_end"/>
+        <bpmn:endEvent id="inner_end"/>
+      </bpmn:subProcess>
+      <bpmn:sequenceFlow id="u2" sourceRef="inner" targetRef="outer_end"/>
+      <bpmn:endEvent id="outer_end"/>
+    </bpmn:subProcess>
+
+    <bpmn:sequenceFlow id="n2" sourceRef="outer" targetRef="nested_end"/>
+    <bpmn:endEvent id="nested_end"/>
+  </bpmn:process>
+</bpmn:definitions>

@@ -33,14 +33,8 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 		return fmt.Errorf("failed to update execution: %w", err)
 	}
 
-	// Schedule boundary timer if one is attached to this task
-	for _, n := range graph.Nodes {
-		if n.Type == engine.BoundaryTimerEventType && n.AttachedToRef == node.ID {
-			if err := r.scheduleBoundaryTimerTx(tx, engineRepo, exec, n); err != nil {
-				return err
-			}
-			break
-		}
+	if err := r.armBoundaryEventsTx(tx, engineRepo, graph, exec, node); err != nil {
+		return err
 	}
 
 	var assignee *string
@@ -144,10 +138,11 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 	return nil
 }
 
-func (r *Runtime) scheduleBoundaryTimerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, exec *repository.Execution, attachedTimer *engine.Node) error {
-	if attachedTimer.TimerDefinition == "" {
-		return nil
-	}
+// createTimerTx creates a timer job on exec from a raw BPMN timer
+// definition; when it fires, exec moves to targetNodeID. Returns when it
+// first falls due.
+func (r *Runtime) createTimerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, exec *repository.Execution, timerDefinition, targetNodeID, eventType string) (time.Time, error) {
+	attachedTimer := &engine.Node{TimerDefinition: timerDefinition}
 
 	var totalCycles int = 1
 	var repeatInterval string
@@ -170,14 +165,9 @@ func (r *Runtime) scheduleBoundaryTimerTx(tx *sqlx.Tx, engineRepo *repository.En
 
 	dueAt := time.Now().Add(timerDuration)
 
-	var nextNodeID string
-	if len(attachedTimer.Outgoing) > 0 {
-		nextNodeID = attachedTimer.Outgoing[0].TargetRef
-	}
-
 	payload := map[string]interface{}{
-		"target_node_id":    nextNodeID,
-		"event_type":        "boundary",
+		"target_node_id":    targetNodeID,
+		"event_type":        eventType,
 		"is_cycle":          totalCycles != 1 || repeatInterval != "",
 		"total_cycles":      totalCycles,
 		"repeat_interval":   repeatInterval,
@@ -187,11 +177,10 @@ func (r *Runtime) scheduleBoundaryTimerTx(tx *sqlx.Tx, engineRepo *repository.En
 	payloadBytes, _ := json.Marshal(payload)
 
 	timerID := uuid.New()
-	if err := engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt, "boundary", payloadBytes, 0, totalCycles, repeatInterval); err != nil {
-		return fmt.Errorf("failed to create boundary timer: %w", err)
+	if err := engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt, eventType, payloadBytes, 0, totalCycles, repeatInterval); err != nil {
+		return time.Time{}, err
 	}
 
-	log.Printf("⏰ [CREATE TIMER] Task: %s, Duration: %v, DueAt: %s", attachedTimer.AttachedToRef, timerDuration, dueAt.Format("15:04:05.000"))
-	r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, "boundary")
-	return nil
+	r.auditService.LogTimerCreated(exec.ProcessInstanceID, &exec.ID, dueAt, eventType)
+	return dueAt, nil
 }

@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_EventSubProcess"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Event sub-processes and implicit end (suite 37). -->
+
+  <bpmn:message id="Msg_EsCancel" name="EsCancel"/>
+  <bpmn:signal id="Sig_EsPing" name="EsPing"/>
+  <bpmn:error id="Err_Es" errorCode="ES_ERR"/>
+
+  <!-- process-level interrupting message event sub-process -->
+  <bpmn:process id="EsInterruptMsg" isExecutable="true">
+    <bpmn:startEvent id="im_start"/>
+    <bpmn:sequenceFlow id="im1" sourceRef="im_start" targetRef="es_work"/>
+    <bpmn:userTask id="es_work" name="Work"/>
+    <bpmn:sequenceFlow id="im2" sourceRef="es_work" targetRef="im_end"/>
+    <bpmn:endEvent id="im_end"/>
+    <bpmn:subProcess id="im_on_cancel" triggeredByEvent="true">
+      <bpmn:startEvent id="im_cancel_start"><bpmn:messageEventDefinition messageRef="Msg_EsCancel"/></bpmn:startEvent>
+      <bpmn:sequenceFlow id="imc1" sourceRef="im_cancel_start" targetRef="es_cancelled"/>
+      <bpmn:userTask id="es_cancelled" name="Handle Cancellation"/>
+      <bpmn:sequenceFlow id="imc2" sourceRef="es_cancelled" targetRef="im_cancel_end"/>
+      <bpmn:endEvent id="im_cancel_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+
+  <!-- process-level non-interrupting signal event sub-process -->
+  <bpmn:process id="EsNonInterruptSignal" isExecutable="true">
+    <bpmn:startEvent id="ns_start"/>
+    <bpmn:sequenceFlow id="ns1" sourceRef="ns_start" targetRef="nis_work"/>
+    <bpmn:userTask id="nis_work" name="Work"/>
+    <bpmn:sequenceFlow id="ns2" sourceRef="nis_work" targetRef="ns_end"/>
+    <bpmn:endEvent id="ns_end"/>
+    <bpmn:subProcess id="ns_on_ping" triggeredByEvent="true">
+      <bpmn:startEvent id="ns_ping_start" isInterrupting="false"><bpmn:signalEventDefinition signalRef="Sig_EsPing"/></bpmn:startEvent>
+      <bpmn:sequenceFlow id="nsp1" sourceRef="ns_ping_start" targetRef="nis_ping"/>
+      <bpmn:userTask id="nis_ping" name="Answer Ping"/>
+      <bpmn:sequenceFlow id="nsp2" sourceRef="nis_ping" targetRef="ns_ping_end"/>
+      <bpmn:endEvent id="ns_ping_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+
+  <!-- interrupting timer event sub-process inside an embedded sub-process -->
+  <bpmn:process id="EsTimerInSub" isExecutable="true">
+    <bpmn:startEvent id="ts_start"/>
+    <bpmn:sequenceFlow id="ts1" sourceRef="ts_start" targetRef="ts_block"/>
+    <bpmn:subProcess id="ts_block">
+      <bpmn:startEvent id="tsb_start"/>
+      <bpmn:sequenceFlow id="tsb1" sourceRef="tsb_start" targetRef="tsb_wait"/>
+      <bpmn:userTask id="tsb_wait" name="Wait"/>
+      <bpmn:sequenceFlow id="tsb2" sourceRef="tsb_wait" targetRef="tsb_end"/>
+      <bpmn:endEvent id="tsb_end"/>
+      <bpmn:subProcess id="tsb_on_timeout" triggeredByEvent="true">
+        <bpmn:startEvent id="tsb_timer_start">
+          <bpmn:timerEventDefinition><bpmn:timeDuration>PT3S</bpmn:timeDuration></bpmn:timerEventDefinition>
+        </bpmn:startEvent>
+        <bpmn:sequenceFlow id="tst1" sourceRef="tsb_timer_start" targetRef="tsb_timeout"/>
+        <bpmn:userTask id="tsb_timeout" name="Handle Timeout"/>
+        <bpmn:sequenceFlow id="tst2" sourceRef="tsb_timeout" targetRef="tsb_timeout_end"/>
+        <bpmn:endEvent id="tsb_timeout_end"/>
+      </bpmn:subProcess>
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="ts2" sourceRef="ts_block" targetRef="after_block"/>
+    <bpmn:userTask id="after_block" name="After Block"/>
+    <bpmn:sequenceFlow id="ts3" sourceRef="after_block" targetRef="ts_end"/>
+    <bpmn:endEvent id="ts_end"/>
+  </bpmn:process>
+
+  <!-- process-level error event sub-process catching a job's BPMN error -->
+  <bpmn:process id="EsError" isExecutable="true">
+    <bpmn:startEvent id="er_start"/>
+    <bpmn:sequenceFlow id="er1" sourceRef="er_start" targetRef="es_job"/>
+    <bpmn:serviceTask id="es_job" name="Risky Job" camunda:type="external" camunda:topic="es_job"/>
+    <bpmn:sequenceFlow id="er2" sourceRef="es_job" targetRef="er_end"/>
+    <bpmn:endEvent id="er_end"/>
+    <bpmn:subProcess id="er_on_error" triggeredByEvent="true">
+      <bpmn:startEvent id="er_error_start"><bpmn:errorEventDefinition errorRef="Err_Es"/></bpmn:startEvent>
+      <bpmn:sequenceFlow id="ere1" sourceRef="er_error_start" targetRef="es_err_handler"/>
+      <bpmn:userTask id="es_err_handler" name="Handle Error"/>
+      <bpmn:sequenceFlow id="ere2" sourceRef="es_err_handler" targetRef="er_error_end"/>
+      <bpmn:endEvent id="er_error_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+
+  <!-- parallel branches ending on separate end events, no join -->
+  <bpmn:process id="ImplicitEnd" isExecutable="true">
+    <bpmn:startEvent id="ie_start"/>
+    <bpmn:sequenceFlow id="ie1" sourceRef="ie_start" targetRef="ie_fork"/>
+    <bpmn:parallelGateway id="ie_fork"/>
+    <bpmn:sequenceFlow id="ie2" sourceRef="ie_fork" targetRef="ie_a"/>
+    <bpmn:sequenceFlow id="ie3" sourceRef="ie_fork" targetRef="ie_b"/>
+    <bpmn:userTask id="ie_a" name="Branch A"/>
+    <bpmn:sequenceFlow id="ie4" sourceRef="ie_a" targetRef="ie_end_a"/>
+    <bpmn:endEvent id="ie_end_a"/>
+    <bpmn:userTask id="ie_b" name="Branch B"/>
+    <bpmn:sequenceFlow id="ie5" sourceRef="ie_b" targetRef="ie_end_b"/>
+    <bpmn:endEvent id="ie_end_b"/>
+  </bpmn:process>
+</bpmn:definitions>

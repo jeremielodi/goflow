@@ -31,7 +31,7 @@ func (r *Runtime) executeCallActivity(ctx context.Context, engineRepo *repositor
 	// Find start node in child graph
 	var startNodeID string
 	for _, n := range childGraph.Nodes {
-		if n.Type == engine.StartEventType || n.Type == engine.MessageStartEventType {
+		if n.IsProcessStart() || n.Type == engine.MessageStartEventType {
 			startNodeID = n.ID
 			break
 		}
@@ -83,6 +83,14 @@ func (r *Runtime) executeCallActivity(ctx context.Context, engineRepo *repositor
 	`, exec.ProcessInstanceID, exec.ID)
 	if err != nil {
 		return fmt.Errorf("callActivity: park parent: %w", err)
+	}
+
+	parentGraph, err := engineRepo.GetProcessGraphByInstanceID(exec.ProcessInstanceID)
+	if err != nil {
+		return fmt.Errorf("callActivity: load process graph: %w", err)
+	}
+	if err := r.armBoundaryEventsTx(tx, engineRepo, parentGraph, exec, node); err != nil {
+		return fmt.Errorf("callActivity: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

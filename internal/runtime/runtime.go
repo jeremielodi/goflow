@@ -449,7 +449,12 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		// 	currentID, node.Type, node.MultiInstance != nil)
 
 		switch node.Type {
-		case engine.StartEventType, engine.ExclusiveGatewayType:
+		case engine.StartEventType, engine.StartTimerEventType, engine.ExclusiveGatewayType:
+			if node.Type != engine.ExclusiveGatewayType && node.ParentScope == "" {
+				if err := r.armProcessEventSubProcesses(ctx, engineRepo, graph, exec); err != nil {
+					return err
+				}
+			}
 			next, err := common.ResolveNext(node, variables)
 			if err != nil {
 				return err
@@ -500,13 +505,25 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			currentID = next
 			continue
 
-		case engine.BoundaryTimerEventType:
-			next, err := r.executeBoundaryTimerNode(ctx, engineRepo, exec, node)
+		case engine.BoundaryTimerEventType, engine.MessageBoundaryEventType, engine.SignalBoundaryEventType:
+			// A boundary trigger whose event came, or a token already
+			// leaving through the boundary.
+			if _, isTrigger := repository.ParseBoundaryTriggerPathID(exec.PathID); isTrigger && currentID == exec.CurrentElementID {
+				return r.fireBoundary(ctx, engineRepo, exec, node, graph)
+			}
+			if node.Type == engine.BoundaryTimerEventType {
+				next, err := r.executeBoundaryTimerNode(ctx, engineRepo, exec, node)
+				if err != nil {
+					return err
+				}
+				currentID = next
+				continue
+			}
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
 			if err != nil {
 				return err
 			}
 			currentID = next
-			continue
 
 		case engine.ErrorBoundaryEventType:
 			next, err := r.executeErrorBoundaryNode(ctx, engineRepo, exec, node)
@@ -673,22 +690,52 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			return nil
 
 		case engine.EndEventType:
-			return r.executeEndEvent(ctx, engineRepo, exec)
+			return r.executeEnd(ctx, engineRepo, exec, node, graph, variables)
+
+		case engine.SignalEndEventType:
+			r.broadcastSignal(node)
+			return r.executeEnd(ctx, engineRepo, exec, node, graph, variables)
+
+		case engine.TerminateEndEventType:
+			return r.executeTerminateEnd(ctx, engineRepo, exec, node, graph, variables)
+
+		case engine.ErrorEndEventType:
+			return r.executeErrorEnd(ctx, engineRepo, exec, node, graph)
+
+		case engine.SubProcessType:
+			return r.executeSubProcess(ctx, engineRepo, exec, node, graph)
+
+		case engine.EventSubProcessType:
+			return r.executeEventSubProcess(ctx, engineRepo, exec, node)
+
+		case engine.ManualTaskType, engine.IntermediateThrowEventType, engine.LinkCatchEventType:
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
+
+		case engine.IntermediateSignalThrowEventType:
+			r.broadcastSignal(node)
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
 
 		case engine.IntermediateMessageCatchEventType:
 			return r.executeMessageCatchEvent(ctx, engineRepo, exec, node)
 
-		case engine.MessageBoundaryEventType:
-			return r.executeMessageBoundaryEvent(ctx, engineRepo, exec, node)
-
 		case engine.IntermediateSignalCatchEventType:
 			return r.executeSignalCatchEvent(ctx, engineRepo, exec, node)
 
-		case engine.SignalBoundaryEventType:
-			return r.executeSignalBoundaryEvent(ctx, engineRepo, exec, node)
-
 		case engine.MessageStartEventType:
 			// Message start event: advance past it immediately (started via message endpoint)
+			if node.ParentScope == "" {
+				if err := r.armProcessEventSubProcesses(ctx, engineRepo, graph, exec); err != nil {
+					return err
+				}
+			}
 			next, err := common.ResolveNext(node, variables)
 			if err != nil {
 				return err

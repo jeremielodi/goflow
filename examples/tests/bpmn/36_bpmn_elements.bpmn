@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_Elements"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- BPMN element coverage (suite 36): manual task, none/link throw and
+       catch events, send and receive tasks, signal throw and end events,
+       terminate end events, error end events. -->
+
+  <bpmn:message id="Msg_Paid" name="ElemOrderPaid"/>
+  <bpmn:signal id="Sig_Go" name="ElemGo"/>
+  <bpmn:signal id="Sig_Go2" name="ElemGo2"/>
+  <bpmn:error id="Err_Elem" errorCode="ELEM_ERR"/>
+  <bpmn:error id="Err_Uncaught" errorCode="ELEM_UNCAUGHT"/>
+
+  <!-- manual task -> none throw -> link throw ... link catch -> user task -->
+  <bpmn:process id="ElemPassThrough" isExecutable="true">
+    <bpmn:startEvent id="pt_start"/>
+    <bpmn:sequenceFlow id="pt1" sourceRef="pt_start" targetRef="pt_manual"/>
+    <bpmn:manualTask id="pt_manual" name="Check Paperwork"/>
+    <bpmn:sequenceFlow id="pt2" sourceRef="pt_manual" targetRef="pt_none"/>
+    <bpmn:intermediateThrowEvent id="pt_none" name="Milestone"/>
+    <bpmn:sequenceFlow id="pt3" sourceRef="pt_none" targetRef="pt_link_throw"/>
+    <bpmn:intermediateThrowEvent id="pt_link_throw">
+      <bpmn:linkEventDefinition name="ToFinish"/>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="pt_link_catch">
+      <bpmn:linkEventDefinition name="ToFinish"/>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="pt4" sourceRef="pt_link_catch" targetRef="pt_done"/>
+    <bpmn:userTask id="pt_done" name="Done"/>
+    <bpmn:sequenceFlow id="pt5" sourceRef="pt_done" targetRef="pt_end"/>
+    <bpmn:endEvent id="pt_end"/>
+  </bpmn:process>
+
+  <!-- receive task -> send task -> end -->
+  <bpmn:process id="ElemSendReceive" isExecutable="true">
+    <bpmn:startEvent id="sr_start"/>
+    <bpmn:sequenceFlow id="sr1" sourceRef="sr_start" targetRef="sr_receive"/>
+    <bpmn:receiveTask id="sr_receive" name="Wait For Payment" messageRef="Msg_Paid"/>
+    <bpmn:sequenceFlow id="sr2" sourceRef="sr_receive" targetRef="sr_send"/>
+    <bpmn:sendTask id="sr_send" name="Send Receipt" camunda:type="external" camunda:topic="elem_send"/>
+    <bpmn:sequenceFlow id="sr3" sourceRef="sr_send" targetRef="sr_end"/>
+    <bpmn:endEvent id="sr_end"/>
+  </bpmn:process>
+
+  <!-- waits for ElemGo, then ElemGo2 -->
+  <bpmn:process id="ElemSignalCatcher" isExecutable="true">
+    <bpmn:startEvent id="sc_start"/>
+    <bpmn:sequenceFlow id="sc1" sourceRef="sc_start" targetRef="sc_go"/>
+    <bpmn:intermediateCatchEvent id="sc_go"><bpmn:signalEventDefinition signalRef="Sig_Go"/></bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="sc2" sourceRef="sc_go" targetRef="sc_go2"/>
+    <bpmn:intermediateCatchEvent id="sc_go2"><bpmn:signalEventDefinition signalRef="Sig_Go2"/></bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="sc3" sourceRef="sc_go2" targetRef="sc_caught"/>
+    <bpmn:userTask id="sc_caught" name="Both Signals Caught"/>
+    <bpmn:sequenceFlow id="sc4" sourceRef="sc_caught" targetRef="sc_end"/>
+    <bpmn:endEvent id="sc_end"/>
+  </bpmn:process>
+
+  <!-- throws ElemGo, then ends with a signal end event throwing ElemGo2 -->
+  <bpmn:process id="ElemSignalThrower" isExecutable="true">
+    <bpmn:startEvent id="st_start"/>
+    <bpmn:sequenceFlow id="st1" sourceRef="st_start" targetRef="st_throw"/>
+    <bpmn:intermediateThrowEvent id="st_throw"><bpmn:signalEventDefinition signalRef="Sig_Go"/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="st2" sourceRef="st_throw" targetRef="st_end"/>
+    <bpmn:endEvent id="st_end"><bpmn:signalEventDefinition signalRef="Sig_Go2"/></bpmn:endEvent>
+  </bpmn:process>
+
+  <!-- fork: one branch waits, the other ends with terminate -->
+  <bpmn:process id="ElemTerminate" isExecutable="true">
+    <bpmn:startEvent id="te_start"/>
+    <bpmn:sequenceFlow id="te1" sourceRef="te_start" targetRef="te_fork"/>
+    <bpmn:parallelGateway id="te_fork"/>
+    <bpmn:sequenceFlow id="te2" sourceRef="te_fork" targetRef="te_wait"/>
+    <bpmn:sequenceFlow id="te3" sourceRef="te_fork" targetRef="te_quit"/>
+    <bpmn:userTask id="te_wait" name="Would Wait Forever"/>
+    <bpmn:sequenceFlow id="te4" sourceRef="te_wait" targetRef="te_wait_end"/>
+    <bpmn:endEvent id="te_wait_end"/>
+    <bpmn:userTask id="te_quit" name="Quit"/>
+    <bpmn:sequenceFlow id="te5" sourceRef="te_quit" targetRef="te_terminate"/>
+    <bpmn:endEvent id="te_terminate"><bpmn:terminateEventDefinition/></bpmn:endEvent>
+  </bpmn:process>
+
+  <!-- terminate inside a sub-process ends only the sub-process -->
+  <bpmn:process id="ElemTerminateSub" isExecutable="true">
+    <bpmn:startEvent id="ts_start"/>
+    <bpmn:sequenceFlow id="ts1" sourceRef="ts_start" targetRef="ts_sub"/>
+    <bpmn:subProcess id="ts_sub">
+      <bpmn:startEvent id="ts_sub_start"/>
+      <bpmn:sequenceFlow id="tss1" sourceRef="ts_sub_start" targetRef="ts_fork"/>
+      <bpmn:parallelGateway id="ts_fork"/>
+      <bpmn:sequenceFlow id="tss2" sourceRef="ts_fork" targetRef="ts_wait"/>
+      <bpmn:sequenceFlow id="tss3" sourceRef="ts_fork" targetRef="ts_quit"/>
+      <bpmn:userTask id="ts_wait" name="Inner Wait"/>
+      <bpmn:sequenceFlow id="tss4" sourceRef="ts_wait" targetRef="ts_wait_end"/>
+      <bpmn:endEvent id="ts_wait_end"/>
+      <bpmn:userTask id="ts_quit" name="Inner Quit"/>
+      <bpmn:sequenceFlow id="tss5" sourceRef="ts_quit" targetRef="ts_terminate"/>
+      <bpmn:endEvent id="ts_terminate"><bpmn:terminateEventDefinition/></bpmn:endEvent>
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="ts2" sourceRef="ts_sub" targetRef="ts_after"/>
+    <bpmn:userTask id="ts_after" name="After Sub-Process"/>
+    <bpmn:sequenceFlow id="ts3" sourceRef="ts_after" targetRef="ts_end"/>
+    <bpmn:endEvent id="ts_end"/>
+  </bpmn:process>
+
+  <!-- error end event inside a sub-process, caught by its boundary -->
+  <bpmn:process id="ElemErrorEnd" isExecutable="true">
+    <bpmn:startEvent id="ee_start"/>
+    <bpmn:sequenceFlow id="ee1" sourceRef="ee_start" targetRef="ee_sub"/>
+    <bpmn:subProcess id="ee_sub">
+      <bpmn:startEvent id="ee_sub_start"/>
+      <bpmn:sequenceFlow id="ees1" sourceRef="ee_sub_start" targetRef="ee_step"/>
+      <bpmn:userTask id="ee_step" name="Step That Fails"/>
+      <bpmn:sequenceFlow id="ees2" sourceRef="ee_step" targetRef="ee_throw"/>
+      <bpmn:endEvent id="ee_throw"><bpmn:errorEventDefinition errorRef="Err_Elem"/></bpmn:endEvent>
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="ee_caught" attachedToRef="ee_sub">
+      <bpmn:errorEventDefinition errorRef="Err_Elem"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="ee2" sourceRef="ee_sub" targetRef="ee_normal_end"/>
+    <bpmn:endEvent id="ee_normal_end"/>
+    <bpmn:sequenceFlow id="ee3" sourceRef="ee_caught" targetRef="ee_handled"/>
+    <bpmn:userTask id="ee_handled" name="Handle Error"/>
+    <bpmn:sequenceFlow id="ee4" sourceRef="ee_handled" targetRef="ee_handled_end"/>
+    <bpmn:endEvent id="ee_handled_end"/>
+  </bpmn:process>
+
+  <!-- error end event with nothing to catch it -->
+  <bpmn:process id="ElemErrorUncaught" isExecutable="true">
+    <bpmn:startEvent id="eu_start"/>
+    <bpmn:sequenceFlow id="eu1" sourceRef="eu_start" targetRef="eu_throw"/>
+    <bpmn:endEvent id="eu_throw"><bpmn:errorEventDefinition errorRef="Err_Uncaught"/></bpmn:endEvent>
+  </bpmn:process>
+</bpmn:definitions>

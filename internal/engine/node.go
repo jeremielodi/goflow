@@ -34,6 +34,26 @@ const (
 
 	// Call Activity (sub-process invocation)
 	CallActivityType NodeType = "callActivity"
+
+	// Embedded sub-process: its body is flattened into the same graph, each
+	// inner node carrying the sub-process's ID in ParentScope.
+	SubProcessType NodeType = "subProcess"
+
+	// Event sub-process (triggeredByEvent): started by its start event's
+	// trigger while its enclosing scope is active. TriggerType says which
+	// field holds the trigger (TimerDefinition, MessageRef, SignalRef or
+	// ErrorCode); CancelActivity holds the start event's isInterrupting.
+	EventSubProcessType NodeType = "eventSubProcess"
+
+	// Pass-through elements: the token moves straight on.
+	ManualTaskType             NodeType = "manualTask"
+	IntermediateThrowEventType NodeType = "intermediateThrowEvent" // none or link throw
+	LinkCatchEventType         NodeType = "linkIntermediateCatchEvent"
+
+	// End event variants (a plain end event stays EndEventType).
+	TerminateEndEventType NodeType = "terminateEndEvent"
+	ErrorEndEventType     NodeType = "errorEndEvent"
+	SignalEndEventType    NodeType = "signalEndEvent"
 )
 
 type Flow struct {
@@ -83,6 +103,42 @@ type Node struct {
 	// Business Rule Task support (zeebe:calledDecision)
 	DecisionKey    string `json:"decisionKey,omitempty"`
 	ResultVariable string `json:"resultVariable,omitempty"`
+
+	// Embedded sub-process support. ParentScope is the ID of the
+	// sub-process this node sits in ("" = the process itself);
+	// StartNodeID is set on a SubProcessType node to its inner start event.
+	ParentScope string `json:"parentScope,omitempty"`
+	StartNodeID string `json:"startNodeId,omitempty"`
+
+	// Link events: a link throw event jumps to the link catch event with
+	// the same name in the same scope.
+	LinkName string `json:"linkName,omitempty"`
+
+	// Event sub-process trigger: "timer", "message", "signal" or "error".
+	TriggerType string `json:"triggerType,omitempty"`
+}
+
+// Event sub-process trigger types.
+const (
+	TriggerTimer   = "timer"
+	TriggerMessage = "message"
+	TriggerSignal  = "signal"
+	TriggerError   = "error"
+)
+
+// IsEndEvent reports whether n is an end event of any kind.
+func (n *Node) IsEndEvent() bool {
+	switch n.Type {
+	case EndEventType, TerminateEndEventType, ErrorEndEventType, SignalEndEventType:
+		return true
+	}
+	return false
+}
+
+// IsProcessStart reports whether n is a start event of the process itself,
+// as opposed to the start event of an embedded sub-process.
+func (n *Node) IsProcessStart() bool {
+	return n.Type == StartEventType && n.ParentScope == ""
 }
 
 // IOMapping is a zeebe:ioMapping input or output entry. Source is a FEEL

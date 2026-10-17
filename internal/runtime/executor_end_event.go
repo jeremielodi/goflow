@@ -11,18 +11,38 @@ import (
 	"github.com/jeremielodi/goflow/internal/service"
 )
 
-func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution) error {
+// executeEndEvent ends a token at an end event outside any sub-process. The
+// process instance completes only once no other token is still running
+// (BPMN's implicit end): a parallel branch that ends on its own end event
+// must not cut off a sibling branch that is still working.
+func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.EngineRepository, exec *repository.Execution, ignoreNodes map[string]bool) error {
 	tx, err := r.DB.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	if err := engineRepo.CompleteProcessInstanceTx(tx, exec.ProcessInstanceID); err != nil {
-		return fmt.Errorf("failed to complete process instance: %w", err)
+	// Tokens reaching end events at the same moment take turns, so exactly
+	// one of them sees that nothing else is running.
+	if err := engineRepo.LockProcessInstanceTx(tx, exec.ProcessInstanceID); err != nil {
+		return fmt.Errorf("failed to lock process instance: %w", err)
 	}
 	if err := engineRepo.CompleteExecutionTx(tx, exec.ProcessInstanceID, exec.ID); err != nil {
 		return fmt.Errorf("failed to complete execution: %w", err)
+	}
+	live, err := engineRepo.HasLiveWorkInInstanceTx(tx, exec.ProcessInstanceID, ignoreNodes)
+	if err != nil {
+		return fmt.Errorf("failed to check remaining tokens: %w", err)
+	}
+	if live {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		r.logExecutionCompleted(exec, exec.CurrentElementID)
+		return nil
+	}
+	if err := engineRepo.CompleteProcessInstanceTx(tx, exec.ProcessInstanceID); err != nil {
+		return fmt.Errorf("failed to complete process instance: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
@@ -82,14 +102,25 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	}
 	nextNodeID := callNode.Outgoing[0].TargetRef
 
-	// Advance parent execution to the next node and reactivate it
-	_, err = r.DB.Exec(`
+	// Advance parent execution to the next node and reactivate it, disarming
+	// the call activity's boundary events as it leaves.
+	parentTx, err := r.DB.BeginTxx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("callActivity end: begin tx: %w", err)
+	}
+	defer parentTx.Rollback()
+	if err := engineRepo.DisarmBoundaryTriggersTx(parentTx, *parentInstanceID, *parentExecutionID); err != nil {
+		return fmt.Errorf("callActivity end: disarm boundary events: %w", err)
+	}
+	if _, err = parentTx.Exec(`
 		UPDATE executions
 		SET current_element_id = $1, status = 'active', is_active = true, updated_at = NOW()
 		WHERE process_instance_id = $2 AND id = $3
-	`, nextNodeID, *parentInstanceID, *parentExecutionID)
-	if err != nil {
+	`, nextNodeID, *parentInstanceID, *parentExecutionID); err != nil {
 		return fmt.Errorf("callActivity end: reactivate parent: %w", err)
+	}
+	if err := parentTx.Commit(); err != nil {
+		return fmt.Errorf("callActivity end: commit: %w", err)
 	}
 	service.LogAuditErr("execution moved", r.auditService.LogExecutionMoved(*parentExecutionID, *parentInstanceID, parentExec.CurrentElementID, nextNodeID, nil))
 	if p := eventlog.Global(); p != nil {
