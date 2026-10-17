@@ -26,7 +26,7 @@ import (
 
 func isBoundaryTrigger(n *engine.Node) bool {
 	switch n.Type {
-	case engine.BoundaryTimerEventType, engine.MessageBoundaryEventType, engine.SignalBoundaryEventType:
+	case engine.BoundaryTimerEventType, engine.MessageBoundaryEventType, engine.SignalBoundaryEventType, engine.ConditionalBoundaryEventType:
 		return true
 	}
 	return false
@@ -77,6 +77,8 @@ func (r *Runtime) subscribeBoundaryTx(tx *sqlx.Tx, engineRepo *repository.Engine
 			  (process_instance_id, execution_id, event_type, event_name, target_element_id)
 			VALUES ($1, $2, 'signal', $3, $4)
 		`, trigger.ProcessInstanceID, trigger.ID, n.SignalRef, n.ID)
+	case engine.ConditionalBoundaryEventType:
+		err = insertConditionalSubscriptionTx(tx, trigger.ProcessInstanceID, trigger.ID, n.Condition, n.ID, false)
 	}
 	return err
 }
@@ -128,7 +130,14 @@ func (r *Runtime) fireBoundary(ctx context.Context, engineRepo *repository.Engin
 		if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, instanceID, trigger.ID, "waiting", node.ID); err != nil {
 			return fmt.Errorf("failed to re-arm boundary trigger: %w", err)
 		}
-		if node.Type != engine.BoundaryTimerEventType {
+		switch node.Type {
+		case engine.BoundaryTimerEventType:
+		case engine.ConditionalBoundaryEventType:
+			// Fires again only once its condition has been false in between.
+			if err := insertConditionalSubscriptionTx(tx, instanceID, trigger.ID, node.Condition, node.ID, true); err != nil {
+				return fmt.Errorf("failed to re-arm boundary trigger: %w", err)
+			}
+		default:
 			if err := r.subscribeBoundaryTx(tx, engineRepo, trigger, node); err != nil {
 				return fmt.Errorf("failed to re-arm boundary trigger: %w", err)
 			}

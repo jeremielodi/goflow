@@ -99,7 +99,7 @@ func TestBuildGraph_SubProcessErrors(t *testing.T) {
 		},
 		"event sub-process": {
 			`<bpmn:subProcess id="sub" triggeredByEvent="true"><bpmn:startEvent id="s"/></bpmn:subProcess>`,
-			"needs a timer, message, signal or error trigger",
+			"needs a timer, message, signal, error, escalation or conditional trigger",
 		},
 		"two start events": {
 			`<bpmn:subProcess id="sub"><bpmn:startEvent id="a"/><bpmn:startEvent id="b"/></bpmn:subProcess>`,
@@ -222,5 +222,107 @@ func TestBuildGraph_EventSubProcess(t *testing.T) {
 		if n.IsProcessStart() && n.ID != "start" {
 			t.Errorf("%s inside an event sub-process counts as the process start", n.ID)
 		}
+	}
+}
+
+// Camunda Modeler omits cancelActivity on interrupting boundary events: the
+// BPMN default (true) must apply.
+func TestBuildGraph_BoundaryDefaultsToInterrupting(t *testing.T) {
+	xml := `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d">
+	  <bpmn:message id="M" name="Go"/>
+	  <bpmn:process id="p" isExecutable="true">
+	    <bpmn:startEvent id="s"/>
+	    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="t"/>
+	    <bpmn:userTask id="t"/>
+	    <bpmn:boundaryEvent id="dflt" attachedToRef="t"><bpmn:messageEventDefinition messageRef="M"/></bpmn:boundaryEvent>
+	    <bpmn:boundaryEvent id="nonint" attachedToRef="t" cancelActivity="false">
+	      <bpmn:timerEventDefinition><bpmn:timeDuration>PT1M</bpmn:timeDuration></bpmn:timerEventDefinition>
+	    </bpmn:boundaryEvent>
+	    <bpmn:sequenceFlow id="f2" sourceRef="t" targetRef="e"/>
+	    <bpmn:sequenceFlow id="f3" sourceRef="dflt" targetRef="e"/>
+	    <bpmn:sequenceFlow id="f4" sourceRef="nonint" targetRef="e"/>
+	    <bpmn:endEvent id="e"/>
+	  </bpmn:process></bpmn:definitions>`
+	g, err := BuildGraphForProcess([]byte(xml), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.Nodes["dflt"].CancelActivity {
+		t.Error("a boundary event without cancelActivity must be interrupting")
+	}
+	if g.Nodes["nonint"].CancelActivity {
+		t.Error(`cancelActivity="false" must be non-interrupting`)
+	}
+}
+
+func TestFindEscalationCatcher(t *testing.T) {
+	xml := `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d">
+	  <bpmn:escalation id="E1" escalationCode="LATE"/>
+	  <bpmn:escalation id="E2" escalationCode="NOTE"/>
+	  <bpmn:process id="p" isExecutable="true">
+	    <bpmn:startEvent id="s"/>
+	    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="sub"/>
+	    <bpmn:subProcess id="sub">
+	      <bpmn:startEvent id="ss"/>
+	      <bpmn:sequenceFlow id="i1" sourceRef="ss" targetRef="throwLate"/>
+	      <bpmn:intermediateThrowEvent id="throwLate"><bpmn:escalationEventDefinition escalationRef="E1"/></bpmn:intermediateThrowEvent>
+	      <bpmn:sequenceFlow id="i2" sourceRef="throwLate" targetRef="throwNote"/>
+	      <bpmn:intermediateThrowEvent id="throwNote"><bpmn:escalationEventDefinition escalationRef="E2"/></bpmn:intermediateThrowEvent>
+	      <bpmn:sequenceFlow id="i3" sourceRef="throwNote" targetRef="se"/>
+	      <bpmn:endEvent id="se"/>
+	    </bpmn:subProcess>
+	    <bpmn:boundaryEvent id="catchLate" attachedToRef="sub"><bpmn:escalationEventDefinition escalationRef="E1"/></bpmn:boundaryEvent>
+	    <bpmn:boundaryEvent id="catchAll" attachedToRef="sub" cancelActivity="false"><bpmn:escalationEventDefinition/></bpmn:boundaryEvent>
+	    <bpmn:sequenceFlow id="f2" sourceRef="sub" targetRef="e"/>
+	    <bpmn:sequenceFlow id="f3" sourceRef="catchLate" targetRef="e"/>
+	    <bpmn:sequenceFlow id="f4" sourceRef="catchAll" targetRef="e"/>
+	    <bpmn:endEvent id="e"/>
+	  </bpmn:process></bpmn:definitions>`
+	g, err := BuildGraphForProcess([]byte(xml), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, scope := g.FindEscalationCatcher("throwLate", "LATE"); c == nil || c.ID != "catchLate" || scope != "sub" {
+		t.Errorf("LATE should be caught by catchLate (exact code beats catch-all), got %v", c)
+	}
+	if c, _ := g.FindEscalationCatcher("throwNote", "NOTE"); c == nil || c.ID != "catchAll" || c.CancelActivity {
+		t.Errorf("NOTE should be caught by the non-interrupting catch-all, got %+v", c)
+	}
+	if c, _ := g.FindEscalationCatcher("e", "LATE"); c != nil {
+		t.Errorf("nothing outside the sub-process catches, got %v", c.ID)
+	}
+}
+
+func TestBuildGraph_CompensationHandlers(t *testing.T) {
+	xml := `<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d">
+	  <bpmn:process id="p" isExecutable="true">
+	    <bpmn:startEvent id="s"/>
+	    <bpmn:sequenceFlow id="f1" sourceRef="s" targetRef="book"/>
+	    <bpmn:userTask id="book"/>
+	    <bpmn:boundaryEvent id="bookComp" attachedToRef="book"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+	    <bpmn:userTask id="unbook" isForCompensation="true"/>
+	    <bpmn:association id="a1" sourceRef="bookComp" targetRef="unbook"/>
+	    <bpmn:sequenceFlow id="f2" sourceRef="book" targetRef="undo"/>
+	    <bpmn:intermediateThrowEvent id="undo"><bpmn:compensateEventDefinition activityRef="book"/></bpmn:intermediateThrowEvent>
+	    <bpmn:sequenceFlow id="f3" sourceRef="undo" targetRef="e"/>
+	    <bpmn:endEvent id="e"/>
+	  </bpmn:process></bpmn:definitions>`
+	g, err := BuildGraphForProcess([]byte(xml), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Nodes["book"].CompensationHandler != "unbook" {
+		t.Errorf("book's handler = %q, want unbook", g.Nodes["book"].CompensationHandler)
+	}
+	if out := g.Nodes["unbook"].Outgoing; len(out) != 1 || g.Nodes[out[0].TargetRef].Type != CompensationHandlerEndType {
+		t.Errorf("handler should flow to a synthetic end node, got %+v", out)
+	}
+	if u := g.Nodes["undo"]; u.Type != IntermediateCompensationThrowEventType || u.CompensateActivity != "book" {
+		t.Errorf("unexpected throw node: %+v", u)
+	}
+
+	missing := strings.Replace(xml, `<bpmn:association id="a1" sourceRef="bookComp" targetRef="unbook"/>`, "", 1)
+	if _, err := BuildGraphForProcess([]byte(missing), "p"); err == nil || !strings.Contains(err.Error(), "no associated compensation handler") {
+		t.Errorf("a compensation boundary without handler should be rejected, got %v", err)
 	}
 }

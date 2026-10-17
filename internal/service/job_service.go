@@ -268,9 +268,16 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		return nil, fmt.Errorf("node %s is not a service task or boundary event, type: %s", currentNode.ID, currentNode.Type)
 	}
 
-	// The job's activity is left: its boundary events can no longer fire.
-	if err := repository.NewEngineRepository(db, nil).DisarmBoundaryTriggersTx(tx, processInstanceID, executionID); err != nil {
+	// The job's activity is left: its boundary events can no longer fire,
+	// and it can now be compensated.
+	completionRepo := repository.NewEngineRepository(db, nil)
+	if err := completionRepo.DisarmBoundaryTriggersTx(tx, processInstanceID, executionID); err != nil {
 		return nil, fmt.Errorf("failed to disarm boundary events: %w", err)
+	}
+	if currentNode.CompensationHandler != "" {
+		if err := completionRepo.RecordCompensableTx(tx, processInstanceID, executionID, currentNode.ID, currentNode.CompensationHandler); err != nil {
+			return nil, fmt.Errorf("failed to record compensation: %w", err)
+		}
 	}
 	if err := externalTaskRepo.UpdateExecutionCurrentNodeTx(tx, processInstanceID, executionID, nextNodeID); err != nil {
 		return nil, err

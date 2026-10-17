@@ -145,7 +145,7 @@ func deleteWaitStateTx(tx *sqlx.Tx, instanceID uuid.UUID, execIDs interface{}) e
 	}
 	_, err := tx.Exec(`
 		DELETE FROM public.event_subscriptions
-		WHERE process_instance_id = $1 AND execution_id = ANY($2::uuid[]) AND consumed_at IS NULL
+		WHERE process_instance_id = $1 AND execution_id = ANY($2::uuid[]) AND consumed_at IS NULL AND event_type <> 'compensable'
 	`, instanceID, execIDs)
 	return err
 }
@@ -243,7 +243,7 @@ func (r *EngineRepository) TerminateOtherWorkTx(tx *sqlx.Tx, instanceID, keepExe
 	}
 	if _, err = tx.Exec(`
 		DELETE FROM public.event_subscriptions
-		WHERE process_instance_id = $1 AND consumed_at IS NULL
+		WHERE process_instance_id = $1 AND consumed_at IS NULL AND event_type <> 'compensable'
 		  AND (execution_id IS NULL OR execution_id <> $2)
 	`, instanceID, keepExecID); err != nil {
 		return nil, nil, err

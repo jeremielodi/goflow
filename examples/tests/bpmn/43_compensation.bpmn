@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_Compensation"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Compensation (suite 43). -->
+
+  <bpmn:error id="Err_Pay" errorCode="PAY_FAIL"/>
+  <bpmn:error id="Err_Pay2" errorCode="PAY2_FAIL"/>
+
+  <!-- book hotel + flight, payment fails -> compensate both, then report -->
+  <bpmn:process id="CompBooking" isExecutable="true">
+    <bpmn:startEvent id="cb_start"/>
+    <bpmn:sequenceFlow id="cb1" sourceRef="cb_start" targetRef="book_hotel"/>
+    <bpmn:serviceTask id="book_hotel" name="Book Hotel" camunda:type="external" camunda:topic="comp_hotel"/>
+    <bpmn:boundaryEvent id="book_hotel_comp" attachedToRef="book_hotel"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:serviceTask id="cancel_hotel" name="Cancel Hotel" isForCompensation="true" camunda:type="external" camunda:topic="comp_cancel_hotel"/>
+    <bpmn:association id="cba1" sourceRef="book_hotel_comp" targetRef="cancel_hotel"/>
+    <bpmn:sequenceFlow id="cb2" sourceRef="book_hotel" targetRef="book_flight"/>
+    <bpmn:userTask id="book_flight" name="Book Flight"/>
+    <bpmn:boundaryEvent id="book_flight_comp" attachedToRef="book_flight"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:userTask id="cancel_flight" name="Cancel Flight" isForCompensation="true"/>
+    <bpmn:association id="cba2" sourceRef="book_flight_comp" targetRef="cancel_flight"/>
+    <bpmn:sequenceFlow id="cb3" sourceRef="book_flight" targetRef="charge"/>
+    <bpmn:serviceTask id="charge" name="Charge" camunda:type="external" camunda:topic="comp_charge"/>
+    <bpmn:boundaryEvent id="charge_failed" attachedToRef="charge"><bpmn:errorEventDefinition errorRef="Err_Pay"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="cb4" sourceRef="charge" targetRef="cb_end"/>
+    <bpmn:endEvent id="cb_end"/>
+    <bpmn:sequenceFlow id="cb5" sourceRef="charge_failed" targetRef="undo_all"/>
+    <bpmn:intermediateThrowEvent id="undo_all"><bpmn:compensateEventDefinition/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="cb6" sourceRef="undo_all" targetRef="booking_failed"/>
+    <bpmn:userTask id="booking_failed" name="Booking Failed"/>
+    <bpmn:sequenceFlow id="cb7" sourceRef="booking_failed" targetRef="cb_failed_end"/>
+    <bpmn:endEvent id="cb_failed_end"/>
+  </bpmn:process>
+
+  <!-- compensate only one activity (activityRef) -->
+  <bpmn:process id="CompSpecific" isExecutable="true">
+    <bpmn:startEvent id="cs_start"/>
+    <bpmn:sequenceFlow id="cs1" sourceRef="cs_start" targetRef="step_one"/>
+    <bpmn:userTask id="step_one" name="Step One"/>
+    <bpmn:boundaryEvent id="step_one_comp" attachedToRef="step_one"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:userTask id="undo_one" name="Undo One" isForCompensation="true"/>
+    <bpmn:association id="csa1" sourceRef="step_one_comp" targetRef="undo_one"/>
+    <bpmn:sequenceFlow id="cs2" sourceRef="step_one" targetRef="step_two"/>
+    <bpmn:userTask id="step_two" name="Step Two"/>
+    <bpmn:boundaryEvent id="step_two_comp" attachedToRef="step_two"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:userTask id="undo_two" name="Undo Two" isForCompensation="true"/>
+    <bpmn:association id="csa2" sourceRef="step_two_comp" targetRef="undo_two"/>
+    <bpmn:sequenceFlow id="cs3" sourceRef="step_two" targetRef="undo_only_two"/>
+    <bpmn:endEvent id="undo_only_two"><bpmn:compensateEventDefinition activityRef="step_two"/></bpmn:endEvent>
+  </bpmn:process>
+
+  <!-- compensation thrown from an error event sub-process -->
+  <bpmn:process id="CompEventSub" isExecutable="true">
+    <bpmn:startEvent id="ce_start"/>
+    <bpmn:sequenceFlow id="ce1" sourceRef="ce_start" targetRef="reserve"/>
+    <bpmn:userTask id="reserve" name="Reserve"/>
+    <bpmn:boundaryEvent id="reserve_comp" attachedToRef="reserve"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:userTask id="unreserve" name="Unreserve" isForCompensation="true"/>
+    <bpmn:association id="cea1" sourceRef="reserve_comp" targetRef="unreserve"/>
+    <bpmn:sequenceFlow id="ce2" sourceRef="reserve" targetRef="pay"/>
+    <bpmn:serviceTask id="pay" name="Pay" camunda:type="external" camunda:topic="comp_pay2"/>
+    <bpmn:sequenceFlow id="ce3" sourceRef="pay" targetRef="ce_end"/>
+    <bpmn:endEvent id="ce_end"/>
+    <bpmn:subProcess id="ce_on_error" triggeredByEvent="true">
+      <bpmn:startEvent id="ce_error_start"><bpmn:errorEventDefinition errorRef="Err_Pay2"/></bpmn:startEvent>
+      <bpmn:sequenceFlow id="cee1" sourceRef="ce_error_start" targetRef="ce_undo"/>
+      <bpmn:intermediateThrowEvent id="ce_undo"><bpmn:compensateEventDefinition/></bpmn:intermediateThrowEvent>
+      <bpmn:sequenceFlow id="cee2" sourceRef="ce_undo" targetRef="comp_failed"/>
+      <bpmn:userTask id="comp_failed" name="Payment Failed"/>
+      <bpmn:sequenceFlow id="cee3" sourceRef="comp_failed" targetRef="ce_error_end"/>
+      <bpmn:endEvent id="ce_error_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+</bpmn:definitions>

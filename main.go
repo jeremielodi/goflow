@@ -321,6 +321,7 @@ func main() {
 
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher, timerRouter)
 	go timerScheduler.Start(context.Background())
+	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher)
 	defer timerScheduler.Stop()
 
 	// ============================================================

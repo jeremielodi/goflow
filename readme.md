@@ -43,12 +43,19 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | Intermediate Timer Catch Event | ✅ |
 | Intermediate Message Catch Event | ✅ |
 | Intermediate Signal Catch Event | ✅ |
-| Boundary Timer Event (interrupting) | ✅ |
-| Boundary Error Event | ✅ |
-| Boundary Message Event | ✅ |
-| Boundary Signal Event | ✅ |
+| Boundary Timer / Message / Signal / Conditional Event (interrupting and non-interrupting) | ✅ |
+| Boundary Error / Escalation Event | ✅ |
+| Embedded Sub-Process (nested, with boundary events) | ✅ |
+| Event Sub-Process (timer, message, signal, error, escalation, conditional; interrupting or not) | ✅ |
+| Manual / Send / Receive Task | ✅ |
+| Intermediate Throw Event (none, signal, escalation, compensation, link) and Link Catch Event | ✅ |
+| Intermediate Conditional Catch Event | ✅ |
+| End Event: terminate, error, signal, escalation, compensation | ✅ |
+| Compensation (boundary + handler, throw with optional `activityRef`) | ✅ |
 | Multi-instance (parallel / sequential) | ✅ |
 | Business Rule Task (DMN decision table) | ✅ |
+
+Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process); errors and escalations thrown inside a called process don't propagate to the calling call activity; a non-interrupting timer-cycle event sub-process fires only once per arming.
 
 ### Engine Features
 
@@ -56,7 +63,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 |---|---|
 | Process definition versioning | ✅ |
 | Process variables (JSONB) | ✅ |
-| CEL expression evaluation on flows (FEEL-*like*, not full FEEL) | ✅ |
+| FEEL expressions: native interpreter (`FEEL_MODE`, shadow by default) alongside the legacy FEEL-to-CEL path | ✅ |
 | External task worker pattern (fetchAndLock) | ✅ |
 | Job retries with exponential back-off | ✅ |
 | Incident management | ✅ |

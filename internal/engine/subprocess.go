@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 	"slices"
 
 	"github.com/jeremielodi/goflow/internal/parser"
@@ -88,6 +89,7 @@ func cloneLists(p *parser.Process) {
 	p.SendTasks = slices.Clone(p.SendTasks)
 	p.ReceiveTasks = slices.Clone(p.ReceiveTasks)
 	p.IntermediateThrowEvents = slices.Clone(p.IntermediateThrowEvents)
+	p.Associations = slices.Clone(p.Associations)
 }
 
 // appendScope appends every element of body to flat, recording scope as
@@ -174,6 +176,7 @@ func appendScope(flat, body *parser.Process, scope string, scopeOf map[string]st
 	flat.SendTasks = append(flat.SendTasks, body.SendTasks...)
 	flat.ReceiveTasks = append(flat.ReceiveTasks, body.ReceiveTasks...)
 	flat.IntermediateThrowEvents = append(flat.IntermediateThrowEvents, body.IntermediateThrowEvents...)
+	flat.Associations = append(flat.Associations, body.Associations...)
 }
 
 // finishSubProcesses stamps ParentScope on every inner node and links each
@@ -239,8 +242,14 @@ func finishEventSubProcess(node *Node, sp subProcessInfo) error {
 		}
 		node.TriggerType = TriggerError
 		node.ErrorCode = s.ErrorCode
+	case s.EscalationEventDefinition != nil:
+		node.TriggerType = TriggerEscalation
+		node.EscalationCode = s.EscalationCode
+	case s.ConditionalEventDefinition != nil:
+		node.TriggerType = TriggerConditional
+		node.Condition = strings.TrimSpace(s.ConditionalEventDefinition.Condition)
 	default:
-		return fmt.Errorf("event sub-process %s: start event %s needs a timer, message, signal or error trigger", sp.ID, s.ID)
+		return fmt.Errorf("event sub-process %s: start event %s needs a timer, message, signal, error, escalation or conditional trigger", sp.ID, s.ID)
 	}
 	return nil
 }

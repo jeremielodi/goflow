@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_Conditional"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Conditional events (suite 42). -->
+
+  <!-- intermediate conditional catch event -->
+  <bpmn:process id="CondIntermediate" isExecutable="true">
+    <bpmn:startEvent id="ci_start"/>
+    <bpmn:sequenceFlow id="ci1" sourceRef="ci_start" targetRef="cond_prepare"/>
+    <bpmn:userTask id="cond_prepare" name="Prepare"/>
+    <bpmn:sequenceFlow id="ci2" sourceRef="cond_prepare" targetRef="ci_wait"/>
+    <bpmn:intermediateCatchEvent id="ci_wait" name="In stock">
+      <bpmn:conditionalEventDefinition><bpmn:condition>${stock > 0}</bpmn:condition></bpmn:conditionalEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="ci3" sourceRef="ci_wait" targetRef="cond_ship"/>
+    <bpmn:userTask id="cond_ship" name="Ship"/>
+    <bpmn:sequenceFlow id="ci4" sourceRef="cond_ship" targetRef="ci_end"/>
+    <bpmn:endEvent id="ci_end"/>
+  </bpmn:process>
+
+  <!-- non-interrupting conditional boundary event -->
+  <bpmn:process id="CondBoundary" isExecutable="true">
+    <bpmn:startEvent id="cb_start"/>
+    <bpmn:sequenceFlow id="cb1" sourceRef="cb_start" targetRef="cond_long"/>
+    <bpmn:userTask id="cond_long" name="Long Work"/>
+    <bpmn:boundaryEvent id="cb_high" attachedToRef="cond_long" cancelActivity="false">
+      <bpmn:conditionalEventDefinition><bpmn:condition>= priority = "high"</bpmn:condition></bpmn:conditionalEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="cb2" sourceRef="cond_long" targetRef="cb_end"/>
+    <bpmn:endEvent id="cb_end"/>
+    <bpmn:sequenceFlow id="cb3" sourceRef="cb_high" targetRef="cond_alert"/>
+    <bpmn:userTask id="cond_alert" name="Alert"/>
+    <bpmn:sequenceFlow id="cb4" sourceRef="cond_alert" targetRef="cb_alert_end"/>
+    <bpmn:endEvent id="cb_alert_end"/>
+  </bpmn:process>
+
+  <!-- interrupting conditional event sub-process -->
+  <bpmn:process id="CondEventSub" isExecutable="true">
+    <bpmn:startEvent id="ce_start"/>
+    <bpmn:sequenceFlow id="ce1" sourceRef="ce_start" targetRef="cond_main"/>
+    <bpmn:userTask id="cond_main" name="Main"/>
+    <bpmn:sequenceFlow id="ce2" sourceRef="cond_main" targetRef="ce_end"/>
+    <bpmn:endEvent id="ce_end"/>
+    <bpmn:subProcess id="ce_on_cancel" triggeredByEvent="true">
+      <bpmn:startEvent id="ce_cancel_start">
+        <bpmn:conditionalEventDefinition><bpmn:condition>= cancelled = true</bpmn:condition></bpmn:conditionalEventDefinition>
+      </bpmn:startEvent>
+      <bpmn:sequenceFlow id="cec1" sourceRef="ce_cancel_start" targetRef="cond_cancel_handler"/>
+      <bpmn:userTask id="cond_cancel_handler" name="Handle Cancellation"/>
+      <bpmn:sequenceFlow id="cec2" sourceRef="cond_cancel_handler" targetRef="ce_cancel_end"/>
+      <bpmn:endEvent id="ce_cancel_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+</bpmn:definitions>

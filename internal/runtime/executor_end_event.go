@@ -112,6 +112,11 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	if err := engineRepo.DisarmBoundaryTriggersTx(parentTx, *parentInstanceID, *parentExecutionID); err != nil {
 		return fmt.Errorf("callActivity end: disarm boundary events: %w", err)
 	}
+	if callNode.CompensationHandler != "" {
+		if err := engineRepo.RecordCompensableTx(parentTx, *parentInstanceID, *parentExecutionID, callNode.ID, callNode.CompensationHandler); err != nil {
+			return fmt.Errorf("callActivity end: record compensation: %w", err)
+		}
+	}
 	if _, err = parentTx.Exec(`
 		UPDATE executions
 		SET current_element_id = $1, status = 'active', is_active = true, updated_at = NOW()

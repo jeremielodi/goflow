@@ -34,7 +34,7 @@
     <bpmn:startEvent id="bm_start"/>
     <bpmn:sequenceFlow id="bm1" sourceRef="bm_start" targetRef="bm_task"/>
     <bpmn:userTask id="bm_task" name="Review"/>
-    <bpmn:boundaryEvent id="bm_escalate" attachedToRef="bm_task" cancelActivity="true">
+    <bpmn:boundaryEvent id="bm_escalate" attachedToRef="bm_task"><!-- no cancelActivity: BPMN default, interrupting -->
       <bpmn:messageEventDefinition messageRef="Msg_BeEscalate"/>
     </bpmn:boundaryEvent>
     <bpmn:sequenceFlow id="bm2" sourceRef="bm_task" targetRef="bm_end"/>

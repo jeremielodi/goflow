@@ -114,6 +114,12 @@ func (r *Runtime) executeTerminateEnd(ctx context.Context, engineRepo *repositor
 	if err := engineRepo.DisarmBoundaryTriggersTx(tx, exec.ProcessInstanceID, scopeID); err != nil {
 		return fmt.Errorf("failed to disarm sub-process boundary events: %w", err)
 	}
+	// The sub-process completed: it can now be compensated.
+	if subNode.CompensationHandler != "" {
+		if err := engineRepo.RecordCompensableTx(tx, exec.ProcessInstanceID, scopeID, subNode.ID, subNode.CompensationHandler); err != nil {
+			return fmt.Errorf("failed to record compensation: %w", err)
+		}
+	}
 	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, scopeID, "active", next); err != nil {
 		return fmt.Errorf("failed to resume execution after sub-process: %w", err)
 	}

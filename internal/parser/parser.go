@@ -29,7 +29,7 @@ type Process struct {
 	BusinessRuleTasks       []BusinessRuleTask       `xml:"businessRuleTask"`
 	CallActivities          []CallActivity           `xml:"callActivity"`
 	EventBasedGateways      []EventBasedGateway      `xml:"eventBasedGateway"`
-	IntermediateTimerEvents  []IntermediateTimerEvent
+	IntermediateTimerEvents []IntermediateTimerEvent
 	BoundaryTimerEvents     []BoundaryTimerEvent
 	BoundaryErrorEvents     []BoundaryErrorEvent
 	BoundaryMessageEvents   []BoundaryMessageEvent
@@ -40,6 +40,7 @@ type Process struct {
 	SendTasks               []ServiceTask   `xml:"sendTask"`
 	ReceiveTasks            []ReceiveTask   `xml:"receiveTask"`
 	IntermediateThrowEvents []ThrowEvent    `xml:"intermediateThrowEvent"`
+	Associations            []Association   `xml:"association"`
 }
 
 // ReceiveTask waits for a message, like an intermediate message catch event.
@@ -61,6 +62,10 @@ type ThrowEvent struct {
 	Ext                    *ExtensionElements      `xml:"extensionElements"`
 	CamundaTopic           string                  `xml:"http://camunda.org/schema/1.0/bpmn topic,attr"`
 	SignalName             string                  `xml:"-"` // resolved
+
+	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
+	EscalationCode            string                     `xml:"-"` // resolved
+	CompensateEventDefinition *CompensateEventDefinition `xml:"compensateEventDefinition"`
 }
 
 // LinkEventDefinition pairs a link throw event with the link catch event
@@ -202,11 +207,12 @@ type SignalEventDefinition struct {
 }
 
 type Definitions struct {
-	XMLName   xml.Name            `xml:"definitions"`
-	Processes []Process           `xml:"process"`
-	Errors    []ErrorDefinition   `xml:"error"`
-	Messages  []MessageDefinition `xml:"message"`
-	Signals   []SignalDefinition  `xml:"signal"`
+	XMLName     xml.Name               `xml:"definitions"`
+	Processes   []Process              `xml:"process"`
+	Errors      []ErrorDefinition      `xml:"error"`
+	Messages    []MessageDefinition    `xml:"message"`
+	Signals     []SignalDefinition     `xml:"signal"`
+	Escalations []EscalationDefinition `xml:"escalation"`
 }
 
 type Task struct {
@@ -231,6 +237,11 @@ type StartEvent struct {
 	IsInterrupting        string                 `xml:"isInterrupting,attr"` // BPMN default: true
 	ErrorCode             string                 `xml:"-"`                   // resolved
 	SignalName            string                 `xml:"-"`                   // resolved
+
+	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
+	EscalationCode            string                     `xml:"-"` // resolved; "" catches every escalation
+
+	ConditionalEventDefinition *ConditionalEventDefinition `xml:"conditionalEventDefinition"`
 }
 
 // Interrupting reports the isInterrupting attribute, which defaults to true.
@@ -248,6 +259,10 @@ type EndEvent struct {
 	SignalEventDefinition    *SignalEventDefinition    `xml:"signalEventDefinition"`
 	ErrorCode                string                    `xml:"-"` // resolved
 	SignalName               string                    `xml:"-"` // resolved
+
+	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
+	EscalationCode            string                     `xml:"-"` // resolved
+	CompensateEventDefinition *CompensateEventDefinition `xml:"compensateEventDefinition"`
 }
 
 // MultiInstanceLoopCharacteristics represents BPMN multi-instance configuration
@@ -387,19 +402,20 @@ type IntermediateCatchEvent struct {
 	Incoming []string `xml:"incoming"`
 	Outgoing []string `xml:"outgoing"`
 
-	MessageEventDefinition *MessageEventDefinition `xml:"messageEventDefinition"`
-	SignalEventDefinition  *SignalEventDefinition  `xml:"signalEventDefinition"`
-	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
-	LinkEventDefinition    *LinkEventDefinition    `xml:"linkEventDefinition"`
-	TimerDefinition        *TimerDefinition        `xml:"-"`
-	MessageName            string                  `xml:"-"` // resolved from Messages map
-	SignalName             string                  `xml:"-"` // resolved from Signals map
+	MessageEventDefinition     *MessageEventDefinition     `xml:"messageEventDefinition"`
+	SignalEventDefinition      *SignalEventDefinition      `xml:"signalEventDefinition"`
+	TimerEventDefinition       *TimerEventDefinition       `xml:"timerEventDefinition"`
+	LinkEventDefinition        *LinkEventDefinition        `xml:"linkEventDefinition"`
+	ConditionalEventDefinition *ConditionalEventDefinition `xml:"conditionalEventDefinition"`
+	TimerDefinition            *TimerDefinition            `xml:"-"`
+	MessageName                string                      `xml:"-"` // resolved from Messages map
+	SignalName                 string                      `xml:"-"` // resolved from Signals map
 }
 
 type BoundaryEvent struct {
 	ID                     string                  `xml:"id,attr"`
 	AttachedToRef          string                  `xml:"attachedToRef,attr"`
-	CancelActivity         bool                    `xml:"cancelActivity,attr"`
+	CancelActivityAttr     string                  `xml:"cancelActivity,attr"` // BPMN default: true; see Interrupting
 	Name                   string                  `xml:"name,attr"`
 	Outgoing               []string                `xml:"outgoing"`
 	TimerEventDefinition   *TimerEventDefinition   `xml:"timerEventDefinition"`
@@ -409,6 +425,12 @@ type BoundaryEvent struct {
 	TimerDefinition        *TimerDefinition        `xml:"-"`
 	MessageName            string                  `xml:"-"` // resolved
 	SignalName             string                  `xml:"-"` // resolved
+
+	EscalationEventDefinition *EscalationEventDefinition `xml:"escalationEventDefinition"`
+	EscalationCode            string                     `xml:"-"` // resolved; "" catches every escalation
+
+	ConditionalEventDefinition *ConditionalEventDefinition `xml:"conditionalEventDefinition"`
+	CompensateEventDefinition  *CompensateEventDefinition  `xml:"compensateEventDefinition"`
 }
 
 type BoundaryMessageEvent struct {
@@ -696,7 +718,7 @@ func PopulateTimerEvents(defs *Definitions) {
 				process.BoundaryTimerEvents = append(process.BoundaryTimerEvents, BoundaryTimerEvent{
 					ID:              event.ID,
 					AttachedToRef:   event.AttachedToRef,
-					CancelActivity:  event.CancelActivity,
+					CancelActivity:  event.Interrupting(),
 					TimerDefinition: event.TimerDefinition,
 				})
 			}
@@ -727,7 +749,7 @@ func PopulateErrorBoundaryEvents(defs *Definitions) {
 			process.BoundaryErrorEvents = append(process.BoundaryErrorEvents, BoundaryErrorEvent{
 				ID:             event.ID,
 				AttachedToRef:  event.AttachedToRef,
-				CancelActivity: event.CancelActivity,
+				CancelActivity: event.Interrupting(),
 				ErrorCode:      errorCode,
 			})
 		}
@@ -782,7 +804,7 @@ func PopulateMessageEvents(defs *Definitions) {
 			process.BoundaryMessageEvents = append(process.BoundaryMessageEvents, BoundaryMessageEvent{
 				ID:             ev.ID,
 				AttachedToRef:  ev.AttachedToRef,
-				CancelActivity: ev.CancelActivity,
+				CancelActivity: ev.Interrupting(),
 				MessageName:    msgName,
 			})
 		}
@@ -826,7 +848,7 @@ func PopulateSignalEvents(defs *Definitions) {
 			process.BoundarySignalEvents = append(process.BoundarySignalEvents, BoundarySignalEvent{
 				ID:             ev.ID,
 				AttachedToRef:  ev.AttachedToRef,
-				CancelActivity: ev.CancelActivity,
+				CancelActivity: ev.Interrupting(),
 				SignalName:     sigName,
 			})
 		}
@@ -858,6 +880,16 @@ func PopulateThrowAndEndEvents(defs *Definitions) {
 	for _, e := range defs.Errors {
 		errorCodeByID[e.ID] = e.ErrorCode
 	}
+	escalationCodeByID := make(map[string]string, len(defs.Escalations))
+	for _, e := range defs.Escalations {
+		escalationCodeByID[e.ID] = e.EscalationCode
+	}
+	escalationCode := func(d *EscalationEventDefinition) string {
+		if d == nil || d.EscalationRef == "" {
+			return ""
+		}
+		return escalationCodeByID[d.EscalationRef]
+	}
 	resolve := func(names map[string]string, ref string) string {
 		if name := names[ref]; name != "" {
 			return name
@@ -874,6 +906,11 @@ func PopulateThrowAndEndEvents(defs *Definitions) {
 			if sv.ErrorEventDefinition != nil && sv.ErrorEventDefinition.ErrorRef != "" {
 				sv.ErrorCode = errorCodeByID[sv.ErrorEventDefinition.ErrorRef]
 			}
+			sv.EscalationCode = escalationCode(sv.EscalationEventDefinition)
+		}
+		for j := range process.BoundaryEvents {
+			be := &process.BoundaryEvents[j]
+			be.EscalationCode = escalationCode(be.EscalationEventDefinition)
 		}
 		for j := range process.ReceiveTasks {
 			rt := &process.ReceiveTasks[j]
@@ -886,6 +923,7 @@ func PopulateThrowAndEndEvents(defs *Definitions) {
 			if ev.SignalEventDefinition != nil && ev.SignalEventDefinition.SignalRef != "" {
 				ev.SignalName = resolve(sigNameByID, ev.SignalEventDefinition.SignalRef)
 			}
+			ev.EscalationCode = escalationCode(ev.EscalationEventDefinition)
 		}
 		for j := range process.EndEvents {
 			ev := &process.EndEvents[j]
@@ -895,6 +933,47 @@ func PopulateThrowAndEndEvents(defs *Definitions) {
 			if ev.ErrorEventDefinition != nil && ev.ErrorEventDefinition.ErrorRef != "" {
 				ev.ErrorCode = errorCodeByID[ev.ErrorEventDefinition.ErrorRef]
 			}
+			ev.EscalationCode = escalationCode(ev.EscalationEventDefinition)
 		}
 	}
+}
+
+// Interrupting reports the boundary event's cancelActivity attribute,
+// which BPMN defaults to true: Camunda Modeler only writes it out, as
+// "false", for non-interrupting boundaries.
+func (b *BoundaryEvent) Interrupting() bool {
+	return b.CancelActivityAttr != "false"
+}
+
+// EscalationDefinition is a <bpmn:escalation> element.
+type EscalationDefinition struct {
+	ID             string `xml:"id,attr"`
+	Name           string `xml:"name,attr"`
+	EscalationCode string `xml:"escalationCode,attr"`
+}
+
+// EscalationEventDefinition references an escalation. Without a ref, on a
+// catch event, it catches every escalation.
+type EscalationEventDefinition struct {
+	EscalationRef string `xml:"escalationRef,attr"`
+}
+
+// ConditionalEventDefinition holds a conditional event's condition (FEEL
+// with "=", or a Camunda 7 "${...}" expression).
+type ConditionalEventDefinition struct {
+	Condition string `xml:"condition"`
+}
+
+// Association links a compensation boundary event to its compensation
+// handler activity.
+type Association struct {
+	ID        string `xml:"id,attr"`
+	SourceRef string `xml:"sourceRef,attr"`
+	TargetRef string `xml:"targetRef,attr"`
+}
+
+// CompensateEventDefinition marks a compensation event. On a throw event,
+// ActivityRef optionally limits compensation to one activity.
+type CompensateEventDefinition struct {
+	ActivityRef string `xml:"activityRef,attr"`
 }

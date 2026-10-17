@@ -165,6 +165,18 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID uuid.UUID, userVa
 		"completed_at": time.Now(),
 	}
 
+	// The task can now be compensated (in the same transaction as its
+	// completion, see repository.RecordCompensableTx).
+	if userNode.CompensationHandler != "" {
+		tx.AddInsertQuery("public.event_subscriptions", []database.QueryParameter{
+			{Key: "process_instance_id", Value: task.ProcessInstanceID},
+			{Key: "execution_id", Value: *task.ExecutionID},
+			{Key: "event_type", Value: "compensable"},
+			{Key: "event_name", Value: userNode.ID},
+			{Key: "target_element_id", Value: userNode.CompensationHandler},
+		})
+	}
+
 	eventPayloadJson, _ := json.Marshal(eventPayload)
 
 	tx.AddInsertQuery("public.process_outbox", []database.QueryParameter{

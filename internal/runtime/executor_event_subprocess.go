@@ -32,10 +32,10 @@ import (
 // scope's execution (nil at process level).
 func (r *Runtime) armEventSubProcessesTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, graph *engine.ProcessGraph, scope string, instanceID uuid.UUID, parentExecID *uuid.UUID) error {
 	for _, n := range graph.Nodes {
-		if n.Type != engine.EventSubProcessType || n.ParentScope != scope || n.TriggerType == engine.TriggerError {
+		if n.Type != engine.EventSubProcessType || n.ParentScope != scope || !armable(n) {
 			continue
 		}
-		if err := r.armTriggerTx(tx, engineRepo, n, instanceID, parentExecID); err != nil {
+		if err := r.armTriggerTx(tx, engineRepo, n, instanceID, parentExecID, false); err != nil {
 			return fmt.Errorf("arming event sub-process %s: %w", n.ID, err)
 		}
 	}
@@ -44,7 +44,10 @@ func (r *Runtime) armEventSubProcessesTx(tx *sqlx.Tx, engineRepo *repository.Eng
 
 // armTriggerTx parks a new trigger execution on the event sub-process node
 // and creates the timer or subscription that will resume it.
-func (r *Runtime) armTriggerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, node *engine.Node, instanceID uuid.UUID, parentExecID *uuid.UUID) error {
+// rearmed marks a non-interrupting trigger armed again right after it
+// fired (a conditional one then waits for its condition to turn false and
+// true again).
+func (r *Runtime) armTriggerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, node *engine.Node, instanceID uuid.UUID, parentExecID *uuid.UUID, rearmed bool) error {
 	trigger, err := r.createTriggerExecutionTx(tx, engineRepo, node, instanceID, parentExecID, "waiting")
 	if err != nil {
 		return err
@@ -64,6 +67,8 @@ func (r *Runtime) armTriggerTx(tx *sqlx.Tx, engineRepo *repository.EngineReposit
 			  (process_instance_id, execution_id, event_type, event_name, target_element_id)
 			VALUES ($1, $2, 'signal', $3, $4)
 		`, instanceID, trigger.ID, node.SignalRef, node.ID)
+	case engine.TriggerConditional:
+		err = insertConditionalSubscriptionTx(tx, instanceID, trigger.ID, node.Condition, node.ID, rearmed)
 	default:
 		return fmt.Errorf("event sub-process %s has trigger type %q, which can't be armed", node.ID, node.TriggerType)
 	}
@@ -110,10 +115,10 @@ func (r *Runtime) executeEventSubProcess(ctx context.Context, engineRepo *reposi
 		if err != nil {
 			return fmt.Errorf("event sub-process %s: interrupting scope: %w", node.ID, err)
 		}
-	} else if node.TriggerType == engine.TriggerMessage || node.TriggerType == engine.TriggerSignal {
+	} else if node.TriggerType == engine.TriggerMessage || node.TriggerType == engine.TriggerSignal || node.TriggerType == engine.TriggerConditional {
 		// Non-interrupting: stay armed for the next occurrence. (A timer
 		// fires once; a cycle reschedules itself on this execution.)
-		if err := r.armTriggerTx(tx, engineRepo, node, exec.ProcessInstanceID, exec.ParentExecutionID); err != nil {
+		if err := r.armTriggerTx(tx, engineRepo, node, exec.ProcessInstanceID, exec.ParentExecutionID, true); err != nil {
 			return fmt.Errorf("event sub-process %s: re-arming: %w", node.ID, err)
 		}
 	}
@@ -171,7 +176,7 @@ func (r *Runtime) finishEventSubProcess(ctx context.Context, engineRepo *reposit
 func (r *Runtime) armProcessEventSubProcesses(ctx context.Context, engineRepo *repository.EngineRepository, graph *engine.ProcessGraph, exec *repository.Execution) error {
 	needed := false
 	for _, n := range graph.Nodes {
-		if n.Type == engine.EventSubProcessType && n.ParentScope == "" && n.TriggerType != engine.TriggerError {
+		if n.Type == engine.EventSubProcessType && n.ParentScope == "" && armable(n) {
 			needed = true
 			break
 		}
@@ -188,4 +193,15 @@ func (r *Runtime) armProcessEventSubProcesses(ctx context.Context, engineRepo *r
 		return err
 	}
 	return tx.Commit()
+}
+
+// armable reports whether an event sub-process waits for its event through
+// an armed trigger (timer, message, signal). Error and escalation event
+// sub-processes are started by the throwing side instead.
+func armable(n *engine.Node) bool {
+	switch n.TriggerType {
+	case engine.TriggerTimer, engine.TriggerMessage, engine.TriggerSignal, engine.TriggerConditional:
+		return true
+	}
+	return false
 }

@@ -54,6 +54,28 @@ const (
 	TerminateEndEventType NodeType = "terminateEndEvent"
 	ErrorEndEventType     NodeType = "errorEndEvent"
 	SignalEndEventType    NodeType = "signalEndEvent"
+
+	// Escalation: thrown by an intermediate or end event, caught by a
+	// boundary event on an enclosing sub-process or an escalation event
+	// sub-process. Uncaught, the token simply carries on.
+	IntermediateEscalationThrowEventType NodeType = "escalationIntermediateThrowEvent"
+	EscalationEndEventType               NodeType = "escalationEndEvent"
+	EscalationBoundaryEventType          NodeType = "escalationBoundaryEvent"
+
+	// Conditional events: wait until Condition holds (re-evaluated by the
+	// conditional watcher in internal/runtime).
+	IntermediateConditionalCatchEventType NodeType = "conditionalIntermediateCatchEvent"
+	ConditionalBoundaryEventType          NodeType = "conditionalBoundaryEvent"
+
+	// Compensation: a compensation boundary event links a completed activity
+	// to its compensation handler (through an association); a compensation
+	// throw event runs the handlers of the completed activities of its scope
+	// and waits for them. CompensationHandlerEndType is a synthetic node
+	// after each handler, marking it done.
+	CompensationBoundaryEventType          NodeType = "compensationBoundaryEvent"
+	IntermediateCompensationThrowEventType NodeType = "compensationIntermediateThrowEvent"
+	CompensationEndEventType               NodeType = "compensationEndEvent"
+	CompensationHandlerEndType             NodeType = "compensationHandlerEnd"
 )
 
 type Flow struct {
@@ -116,20 +138,35 @@ type Node struct {
 
 	// Event sub-process trigger: "timer", "message", "signal" or "error".
 	TriggerType string `json:"triggerType,omitempty"`
+
+	// Escalation code thrown or caught; "" on a catch event catches every
+	// escalation.
+	EscalationCode string `json:"escalationCode,omitempty"`
+
+	// Condition of a conditional event.
+	Condition string `json:"condition,omitempty"`
+
+	// Compensation: on an activity, the ID of its compensation handler; on a
+	// compensation throw event, the one activity to compensate ("" = all
+	// completed activities of its scope).
+	CompensationHandler string `json:"compensationHandler,omitempty"`
+	CompensateActivity  string `json:"compensateActivity,omitempty"`
 }
 
 // Event sub-process trigger types.
 const (
-	TriggerTimer   = "timer"
-	TriggerMessage = "message"
-	TriggerSignal  = "signal"
-	TriggerError   = "error"
+	TriggerTimer       = "timer"
+	TriggerMessage     = "message"
+	TriggerSignal      = "signal"
+	TriggerError       = "error"
+	TriggerEscalation  = "escalation"
+	TriggerConditional = "conditional"
 )
 
 // IsEndEvent reports whether n is an end event of any kind.
 func (n *Node) IsEndEvent() bool {
 	switch n.Type {
-	case EndEventType, TerminateEndEventType, ErrorEndEventType, SignalEndEventType:
+	case EndEventType, TerminateEndEventType, ErrorEndEventType, SignalEndEventType, EscalationEndEventType, CompensationEndEventType:
 		return true
 	}
 	return false

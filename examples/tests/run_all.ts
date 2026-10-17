@@ -130,6 +130,9 @@ async function main() {
     '38_boundary_events.test.ts',
     '39_feel.test.ts',
     '40_grpc_more.test.ts',
+    '41_escalation.test.ts',
+    '42_conditional.test.ts',
+    '43_compensation.test.ts',
   ];
 
   const exitCodes: number[] = [];

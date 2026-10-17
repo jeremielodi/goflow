@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jeremielodi/goflow/internal/parser"
 )
@@ -211,8 +212,57 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		case e.SignalEventDefinition != nil:
 			node.Type = SignalEndEventType
 			node.SignalRef = e.SignalName
+		case e.EscalationEventDefinition != nil:
+			node.Type = EscalationEndEventType
+			node.EscalationCode = e.EscalationCode
+		case e.CompensateEventDefinition != nil:
+			node.Type = CompensationEndEventType
+			node.CompensateActivity = e.CompensateEventDefinition.ActivityRef
 		}
 		register(node)
+	}
+
+	// ---- Compensation Boundary Events (link an activity to its handler) ----
+	for _, b := range process.BoundaryEvents {
+		if b.CompensateEventDefinition == nil {
+			continue
+		}
+		register(&Node{
+			ID:            b.ID,
+			Name:          b.Name,
+			Type:          CompensationBoundaryEventType,
+			AttachedToRef: b.AttachedToRef,
+		})
+	}
+
+	// ---- Conditional Boundary Events (armed like message boundaries) ----
+	for _, b := range process.BoundaryEvents {
+		if b.ConditionalEventDefinition == nil {
+			continue
+		}
+		register(&Node{
+			ID:             b.ID,
+			Name:           b.Name,
+			Type:           ConditionalBoundaryEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.Interrupting(),
+			Condition:      strings.TrimSpace(b.ConditionalEventDefinition.Condition),
+		})
+	}
+
+	// ---- Escalation Boundary Events (matched when an escalation is thrown) ----
+	for _, b := range process.BoundaryEvents {
+		if b.EscalationEventDefinition == nil {
+			continue
+		}
+		register(&Node{
+			ID:             b.ID,
+			Name:           b.Name,
+			Type:           EscalationBoundaryEventType,
+			AttachedToRef:  b.AttachedToRef,
+			CancelActivity: b.Interrupting(),
+			EscalationCode: b.EscalationCode,
+		})
 	}
 
 	// ---- Manual Tasks (pass-through) ----
@@ -247,6 +297,12 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 			node.SignalRef = ev.SignalName
 		case ev.LinkEventDefinition != nil:
 			node.LinkName = ev.LinkEventDefinition.Name
+		case ev.EscalationEventDefinition != nil:
+			node.Type = IntermediateEscalationThrowEventType
+			node.EscalationCode = ev.EscalationCode
+		case ev.CompensateEventDefinition != nil:
+			node.Type = IntermediateCompensationThrowEventType
+			node.CompensateActivity = ev.CompensateEventDefinition.ActivityRef
 		case ev.MessageEventDefinition != nil:
 			// Camunda 8 style: a message throw event with a job type is
 			// worked by a job worker, like a service task. Without one
@@ -350,6 +406,13 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 				Name:     ev.Name,
 				Type:     LinkCatchEventType,
 				LinkName: ev.LinkEventDefinition.Name,
+			})
+		} else if ev.ConditionalEventDefinition != nil {
+			register(&Node{
+				ID:        ev.ID,
+				Name:      ev.Name,
+				Type:      IntermediateConditionalCatchEventType,
+				Condition: strings.TrimSpace(ev.ConditionalEventDefinition.Condition),
 			})
 		}
 		// Note: timer events are handled via process.IntermediateTimerEvents (already registered above)
@@ -705,6 +768,9 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 	if err := linkThrowEvents(graph); err != nil {
 		return nil, err
 	}
+	if err := linkCompensationHandlers(graph, process.Associations); err != nil {
+		return nil, err
+	}
 
 	// Validate parallel gateways
 	for _, node := range graph.Nodes {
@@ -801,6 +867,45 @@ func linkThrowEvents(graph *ProcessGraph) error {
 		}
 		n.Outgoing = append(n.Outgoing, Flow{ID: n.ID + "_link", SourceRef: n.ID, TargetRef: target.ID})
 		target.Incoming = append(target.Incoming, n.ID)
+	}
+	return nil
+}
+
+// linkCompensationHandlers follows each compensation boundary event's
+// association to its handler activity: the activity the boundary is
+// attached to records its handler (CompensationHandler), and the handler —
+// which has no sequence flows of its own — gets a flow to a synthetic
+// CompensationHandlerEndType node, so it completes like any activity.
+func linkCompensationHandlers(graph *ProcessGraph, associations []parser.Association) error {
+	handlerOf := map[string]string{}
+	for _, a := range associations {
+		handlerOf[a.SourceRef] = a.TargetRef
+	}
+	for _, b := range graph.Nodes {
+		if b.Type != CompensationBoundaryEventType {
+			continue
+		}
+		handlerID, ok := handlerOf[b.ID]
+		if !ok {
+			return fmt.Errorf("compensation boundary event %s has no associated compensation handler", b.ID)
+		}
+		handler, ok := graph.Nodes[handlerID]
+		if !ok {
+			return fmt.Errorf("compensation boundary event %s: handler %s not found", b.ID, handlerID)
+		}
+		activity, ok := graph.Nodes[b.AttachedToRef]
+		if !ok {
+			return fmt.Errorf("compensation boundary event %s: activity %s not found", b.ID, b.AttachedToRef)
+		}
+		if len(handler.Outgoing) > 0 {
+			return fmt.Errorf("compensation handler %s must not have outgoing sequence flows", handler.ID)
+		}
+		activity.CompensationHandler = handler.ID
+
+		end := &Node{ID: handler.ID + "__compensated", Type: CompensationHandlerEndType, ParentScope: handler.ParentScope}
+		graph.Nodes[end.ID] = end
+		handler.Outgoing = append(handler.Outgoing, Flow{ID: end.ID + "_flow", SourceRef: handler.ID, TargetRef: end.ID})
+		end.Incoming = append(end.Incoming, handler.ID)
 	}
 	return nil
 }

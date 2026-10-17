@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_Escalation"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Escalation events (suite 41). -->
+
+  <bpmn:escalation id="Esc_Late" escalationCode="LATE"/>
+  <bpmn:escalation id="Esc_Note" escalationCode="NOTE"/>
+  <bpmn:escalation id="Esc_Nobody" escalationCode="NOBODY"/>
+
+  <!-- escalation end event inside a sub-process, interrupting boundary -->
+  <bpmn:process id="EscInterrupting" isExecutable="true">
+    <bpmn:startEvent id="ei_start"/>
+    <bpmn:sequenceFlow id="ei1" sourceRef="ei_start" targetRef="ei_sub"/>
+    <bpmn:subProcess id="ei_sub">
+      <bpmn:startEvent id="ei_sub_start"/>
+      <bpmn:sequenceFlow id="eis1" sourceRef="ei_sub_start" targetRef="ei_fork"/>
+      <bpmn:parallelGateway id="ei_fork"/>
+      <bpmn:sequenceFlow id="eis2" sourceRef="ei_fork" targetRef="esc_work"/>
+      <bpmn:sequenceFlow id="eis3" sourceRef="ei_fork" targetRef="esc_other"/>
+      <bpmn:userTask id="esc_work" name="Work"/>
+      <bpmn:sequenceFlow id="eis4" sourceRef="esc_work" targetRef="ei_escalate"/>
+      <bpmn:endEvent id="ei_escalate"><bpmn:escalationEventDefinition escalationRef="Esc_Late"/></bpmn:endEvent>
+      <bpmn:userTask id="esc_other" name="Other Work"/>
+      <bpmn:sequenceFlow id="eis5" sourceRef="esc_other" targetRef="ei_sub_end"/>
+      <bpmn:endEvent id="ei_sub_end"/>
+    </bpmn:subProcess>
+    <!-- no cancelActivity: interrupting by default -->
+    <bpmn:boundaryEvent id="ei_caught" attachedToRef="ei_sub"><bpmn:escalationEventDefinition escalationRef="Esc_Late"/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="ei2" sourceRef="ei_sub" targetRef="ei_end"/>
+    <bpmn:endEvent id="ei_end"/>
+    <bpmn:sequenceFlow id="ei3" sourceRef="ei_caught" targetRef="esc_handled"/>
+    <bpmn:userTask id="esc_handled" name="Handle Escalation"/>
+    <bpmn:sequenceFlow id="ei4" sourceRef="esc_handled" targetRef="ei_handled_end"/>
+    <bpmn:endEvent id="ei_handled_end"/>
+  </bpmn:process>
+
+  <!-- intermediate escalation throw, non-interrupting catch-all boundary -->
+  <bpmn:process id="EscNonInterrupting" isExecutable="true">
+    <bpmn:startEvent id="en_start"/>
+    <bpmn:sequenceFlow id="en1" sourceRef="en_start" targetRef="en_sub"/>
+    <bpmn:subProcess id="en_sub">
+      <bpmn:startEvent id="en_sub_start"/>
+      <bpmn:sequenceFlow id="ens1" sourceRef="en_sub_start" targetRef="en_throw"/>
+      <bpmn:intermediateThrowEvent id="en_throw"><bpmn:escalationEventDefinition escalationRef="Esc_Note"/></bpmn:intermediateThrowEvent>
+      <bpmn:sequenceFlow id="ens2" sourceRef="en_throw" targetRef="esc_after_throw"/>
+      <bpmn:userTask id="esc_after_throw" name="After Throw"/>
+      <bpmn:sequenceFlow id="ens3" sourceRef="esc_after_throw" targetRef="en_sub_end"/>
+      <bpmn:endEvent id="en_sub_end"/>
+    </bpmn:subProcess>
+    <bpmn:boundaryEvent id="en_noted" attachedToRef="en_sub" cancelActivity="false"><bpmn:escalationEventDefinition/></bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="en2" sourceRef="en_sub" targetRef="en_end"/>
+    <bpmn:endEvent id="en_end"/>
+    <bpmn:sequenceFlow id="en3" sourceRef="en_noted" targetRef="esc_noted"/>
+    <bpmn:userTask id="esc_noted" name="Noted"/>
+    <bpmn:sequenceFlow id="en4" sourceRef="esc_noted" targetRef="en_noted_end"/>
+    <bpmn:endEvent id="en_noted_end"/>
+  </bpmn:process>
+
+  <!-- process-level non-interrupting escalation event sub-process -->
+  <bpmn:process id="EscEventSub" isExecutable="true">
+    <bpmn:startEvent id="es_start"/>
+    <bpmn:sequenceFlow id="es1" sourceRef="es_start" targetRef="es_throw"/>
+    <bpmn:intermediateThrowEvent id="es_throw"><bpmn:escalationEventDefinition escalationRef="Esc_Note"/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="es2" sourceRef="es_throw" targetRef="esc_main"/>
+    <bpmn:userTask id="esc_main" name="Main"/>
+    <bpmn:sequenceFlow id="es3" sourceRef="esc_main" targetRef="es_end"/>
+    <bpmn:endEvent id="es_end"/>
+    <bpmn:subProcess id="es_on_note" triggeredByEvent="true">
+      <bpmn:startEvent id="es_note_start" isInterrupting="false"><bpmn:escalationEventDefinition escalationRef="Esc_Note"/></bpmn:startEvent>
+      <bpmn:sequenceFlow id="esn1" sourceRef="es_note_start" targetRef="esc_es_task"/>
+      <bpmn:userTask id="esc_es_task" name="React To Note"/>
+      <bpmn:sequenceFlow id="esn2" sourceRef="esc_es_task" targetRef="es_note_end"/>
+      <bpmn:endEvent id="es_note_end"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+
+  <!-- nobody catches: the token carries on, no incident -->
+  <bpmn:process id="EscUncaught" isExecutable="true">
+    <bpmn:startEvent id="eu_start"/>
+    <bpmn:sequenceFlow id="eu1" sourceRef="eu_start" targetRef="eu_throw"/>
+    <bpmn:intermediateThrowEvent id="eu_throw"><bpmn:escalationEventDefinition escalationRef="Esc_Nobody"/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="eu2" sourceRef="eu_throw" targetRef="esc_continue"/>
+    <bpmn:userTask id="esc_continue" name="Continue"/>
+    <bpmn:sequenceFlow id="eu3" sourceRef="esc_continue" targetRef="eu_end"/>
+    <bpmn:endEvent id="eu_end"/>
+  </bpmn:process>
+</bpmn:definitions>

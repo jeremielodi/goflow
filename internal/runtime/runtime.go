@@ -505,7 +505,39 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 			currentID = next
 			continue
 
-		case engine.BoundaryTimerEventType, engine.MessageBoundaryEventType, engine.SignalBoundaryEventType:
+		case engine.IntermediateCompensationThrowEventType:
+			carryOn, err := r.throwCompensation(ctx, engineRepo, exec, node, graph)
+			if err != nil || !carryOn {
+				return err
+			}
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
+
+		case engine.CompensationEndEventType:
+			carryOn, err := r.throwCompensation(ctx, engineRepo, exec, node, graph)
+			if err != nil || !carryOn {
+				return err
+			}
+			return r.executeEnd(ctx, engineRepo, exec, node, graph, variables)
+
+		case engine.CompensationHandlerEndType:
+			return r.executeCompensationHandlerEnd(ctx, engineRepo, exec, node)
+
+		case engine.IntermediateConditionalCatchEventType:
+			passed, err := r.executeConditionalCatch(ctx, engineRepo, exec, node, variables)
+			if err != nil || !passed {
+				return err
+			}
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
+
+		case engine.BoundaryTimerEventType, engine.MessageBoundaryEventType, engine.SignalBoundaryEventType, engine.ConditionalBoundaryEventType:
 			// A boundary trigger whose event came, or a token already
 			// leaving through the boundary.
 			if _, isTrigger := repository.ParseBoundaryTriggerPathID(exec.PathID); isTrigger && currentID == exec.CurrentElementID {
@@ -708,7 +740,25 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		case engine.EventSubProcessType:
 			return r.executeEventSubProcess(ctx, engineRepo, exec, node)
 
-		case engine.ManualTaskType, engine.IntermediateThrowEventType, engine.LinkCatchEventType:
+		case engine.IntermediateEscalationThrowEventType:
+			carryOn, err := r.throwEscalation(ctx, engineRepo, exec, node, graph)
+			if err != nil || !carryOn {
+				return err
+			}
+			next, err := r.advance(ctx, engineRepo, exec, node, variables)
+			if err != nil {
+				return err
+			}
+			currentID = next
+
+		case engine.EscalationEndEventType:
+			carryOn, err := r.throwEscalation(ctx, engineRepo, exec, node, graph)
+			if err != nil || !carryOn {
+				return err
+			}
+			return r.executeEnd(ctx, engineRepo, exec, node, graph, variables)
+
+		case engine.ManualTaskType, engine.IntermediateThrowEventType, engine.LinkCatchEventType, engine.EscalationBoundaryEventType:
 			next, err := r.advance(ctx, engineRepo, exec, node, variables)
 			if err != nil {
 				return err
