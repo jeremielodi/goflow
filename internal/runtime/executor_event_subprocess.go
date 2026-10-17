@@ -122,12 +122,32 @@ func (r *Runtime) executeEventSubProcess(ctx context.Context, engineRepo *reposi
 	if err := engineRepo.UpdateExecutionStatusAndNodeTx(tx, exec.ProcessInstanceID, exec.ID, "waiting", node.ID); err != nil {
 		return fmt.Errorf("failed to park trigger execution: %w", err)
 	}
+
+	// A non-interrupting timer cycle with firings left keeps its trigger
+	// (the scheduler already armed the next occurrence on it): this run
+	// gets its own execution on the event sub-process node, so the next
+	// firing doesn't interrupt it.
+	run := exec
+	if !node.CancelActivity && node.TriggerType == engine.TriggerTimer {
+		var cycling bool
+		if err := tx.Get(&cycling, `
+			SELECT EXISTS (SELECT 1 FROM timer_jobs WHERE execution_id = $1 AND is_triggered = false)
+		`, exec.ID); err != nil {
+			return fmt.Errorf("event sub-process %s: %w", node.ID, err)
+		}
+		if cycling {
+			if run, err = r.createTriggerExecutionTx(tx, engineRepo, node, exec.ProcessInstanceID, exec.ParentExecutionID, "waiting"); err != nil {
+				return fmt.Errorf("event sub-process %s: %w", node.ID, err)
+			}
+		}
+	}
+
 	childID := uuid.New()
-	pathID := exec.ID.String() + "_" + node.ID
+	pathID := run.ID.String() + "_" + node.ID
 	if err := engineRepo.CreateExecutionTx(tx, &repository.Execution{
 		ID:                childID,
 		ProcessInstanceID: exec.ProcessInstanceID,
-		ParentExecutionID: &exec.ID,
+		ParentExecutionID: &run.ID,
 		CurrentElementID:  node.StartNodeID,
 		Status:            "active",
 		IsActive:          true,

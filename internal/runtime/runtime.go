@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/checker/decls"
@@ -334,61 +332,6 @@ func ClearConditionCache() {
 	compilationCacheLock.Lock()
 	defer compilationCacheLock.Unlock()
 	compilationCache = make(map[string]*cachedProgram)
-}
-
-// ------------------------------------------------------------
-// TIMER HELPERS
-// ------------------------------------------------------------
-
-// parseTimerDuration parses BPMN timer duration like PT30S, PT1M, PT1H
-func parseTimerDuration(timerDef string) time.Duration {
-	// Extract from XML: <timeDuration>PT30S</timeDuration>
-	re := regexp.MustCompile(`<timeDuration>(.*?)</timeDuration>`)
-	matches := re.FindStringSubmatch(timerDef)
-	if len(matches) < 2 {
-		return 30 * time.Second // default 30 seconds
-	}
-
-	durationStr := matches[1]
-
-	// Parse PT format
-	if strings.HasPrefix(durationStr, "PT") {
-		durationStr = strings.TrimPrefix(durationStr, "PT")
-
-		var duration time.Duration
-
-		// Parse seconds
-		if strings.Contains(durationStr, "S") {
-			secsStr := strings.Split(durationStr, "S")[0]
-			if secs, err := strconv.Atoi(secsStr); err == nil {
-				duration += time.Duration(secs) * time.Second
-			}
-			durationStr = strings.TrimPrefix(durationStr, secsStr+"S")
-		}
-
-		// Parse minutes
-		if strings.Contains(durationStr, "M") {
-			minsStr := strings.Split(durationStr, "M")[0]
-			if mins, err := strconv.Atoi(minsStr); err == nil {
-				duration += time.Duration(mins) * time.Minute
-			}
-			durationStr = strings.TrimPrefix(durationStr, minsStr+"M")
-		}
-
-		// Parse hours
-		if strings.Contains(durationStr, "H") {
-			hoursStr := strings.Split(durationStr, "H")[0]
-			if hours, err := strconv.Atoi(hoursStr); err == nil {
-				duration += time.Duration(hours) * time.Hour
-			}
-		}
-
-		if duration > 0 {
-			return duration
-		}
-	}
-
-	return 30 * time.Second
 }
 
 // ------------------------------------------------------------
@@ -779,7 +722,7 @@ func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error 
 		case engine.IntermediateSignalCatchEventType:
 			return r.executeSignalCatchEvent(ctx, engineRepo, exec, node)
 
-		case engine.MessageStartEventType:
+		case engine.MessageStartEventType, engine.SignalStartEventType:
 			// Message start event: advance past it immediately (started via message endpoint)
 			if node.ParentScope == "" {
 				if err := r.armProcessEventSubProcesses(ctx, engineRepo, graph, exec); err != nil {

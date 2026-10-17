@@ -462,6 +462,11 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 				n.MessageRef = sv.MessageName
 				n.MessageCorrelationKey = sv.MessageCorrelationKey
 			}
+		} else if sv.SignalEventDefinition != nil {
+			if n, ok := nodeMap[sv.ID]; ok {
+				n.Type = SignalStartEventType
+				n.SignalRef = sv.SignalName
+			}
 		}
 	}
 

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_Timers"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Camunda 8 timers (suite 47). -->
+
+  <!-- a non-interrupting timer-cycle event sub-process fires three times -->
+  <bpmn:process id="TimerEsCycle47" isExecutable="true">
+    <bpmn:startEvent id="ec_start"/>
+    <bpmn:sequenceFlow id="ec1" sourceRef="ec_start" targetRef="ec_main"/>
+    <bpmn:userTask id="ec_main" name="Main work"/>
+    <bpmn:sequenceFlow id="ec2" sourceRef="ec_main" targetRef="ec_end"/>
+    <bpmn:endEvent id="ec_end"/>
+    <bpmn:subProcess id="ec_reminder" triggeredByEvent="true">
+      <bpmn:startEvent id="ec_rstart" isInterrupting="false">
+        <bpmn:timerEventDefinition><bpmn:timeCycle>R3/PT1S</bpmn:timeCycle></bpmn:timerEventDefinition>
+      </bpmn:startEvent>
+      <bpmn:sequenceFlow id="ec3" sourceRef="ec_rstart" targetRef="ec_tick"/>
+      <bpmn:userTask id="ec_tick" name="Reminder"/>
+      <bpmn:sequenceFlow id="ec4" sourceRef="ec_tick" targetRef="ec_rend"/>
+      <bpmn:endEvent id="ec_rend"/>
+    </bpmn:subProcess>
+  </bpmn:process>
+
+  <!-- non-interrupting boundary timers: an ISO cycle and a cron -->
+  <bpmn:process id="TimerBoundaryCycle47" isExecutable="true">
+    <bpmn:startEvent id="bc_start"/>
+    <bpmn:sequenceFlow id="bc1" sourceRef="bc_start" targetRef="bc_work"/>
+    <bpmn:userTask id="bc_work" name="Work"/>
+    <bpmn:boundaryEvent id="bc_iso" attachedToRef="bc_work" cancelActivity="false">
+      <bpmn:timerEventDefinition><bpmn:timeCycle>R2/PT1S</bpmn:timeCycle></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="bc_cron" attachedToRef="bc_work" cancelActivity="false">
+      <bpmn:timerEventDefinition><bpmn:timeCycle>* * * * * *</bpmn:timeCycle></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="bc_day" attachedToRef="bc_work" cancelActivity="true">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>P1D</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="bc2" sourceRef="bc_work" targetRef="bc_end"/>
+    <bpmn:sequenceFlow id="bc3" sourceRef="bc_iso" targetRef="bc_iso_task"/>
+    <bpmn:sequenceFlow id="bc4" sourceRef="bc_cron" targetRef="bc_cron_task"/>
+    <bpmn:userTask id="bc_cron_task" name="Cron tick"/>
+    <bpmn:sequenceFlow id="bc7" sourceRef="bc_cron_task" targetRef="bc_cron_end"/>
+    <bpmn:sequenceFlow id="bc5" sourceRef="bc_day" targetRef="bc_day_end"/>
+    <bpmn:userTask id="bc_iso_task" name="ISO tick"/>
+    <bpmn:sequenceFlow id="bc6" sourceRef="bc_iso_task" targetRef="bc_iso_end"/>
+    <bpmn:endEvent id="bc_end"/>
+    <bpmn:endEvent id="bc_iso_end"/>
+    <bpmn:endEvent id="bc_cron_end"/>
+    <bpmn:endEvent id="bc_day_end"/>
+  </bpmn:process>
+
+  <!-- timer values from FEEL expressions over the instance variables -->
+  <bpmn:process id="TimerFeel47" isExecutable="true">
+    <bpmn:startEvent id="tf_start"/>
+    <bpmn:sequenceFlow id="tf1" sourceRef="tf_start" targetRef="tf_wait"/>
+    <bpmn:intermediateCatchEvent id="tf_wait">
+      <bpmn:timerEventDefinition><bpmn:timeDuration>=delay</bpmn:timeDuration></bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="tf2" sourceRef="tf_wait" targetRef="tf_date"/>
+    <bpmn:intermediateCatchEvent id="tf_date">
+      <bpmn:timerEventDefinition><bpmn:timeDate>=when</bpmn:timeDate></bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="tf3" sourceRef="tf_date" targetRef="tf_after"/>
+    <bpmn:userTask id="tf_after" name="After the timers"/>
+    <bpmn:sequenceFlow id="tf4" sourceRef="tf_after" targetRef="tf_end"/>
+    <bpmn:endEvent id="tf_end"/>
+  </bpmn:process>
+</bpmn:definitions>

@@ -135,6 +135,8 @@ async function main() {
     '43_compensation.test.ts',
     '44_script_task.test.ts',
     '45_messages.test.ts',
+    '46_start_events.test.ts',
+    '47_timers.test.ts',
   ];
 
   const exitCodes: number[] = [];

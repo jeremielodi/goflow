@@ -30,7 +30,7 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 
 | Element | Status |
 |---|---|
-| Start Event (plain, Message, Signal) | ✅ |
+| Start Event: none, message, signal, timer (`timeDate`, `timeCycle` as ISO 8601 `R[n]/[start/]duration[/end]` or cron; armed on deploy, replaced by each new version) | ✅ |
 | End Event | ✅ |
 | Service Task (External Worker) | ✅ |
 | User Task (with assignee / candidateGroups) | ✅ |
@@ -56,7 +56,9 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | Multi-instance (parallel / sequential) | ✅ |
 | Business Rule Task (DMN decision table) | ✅ |
 
-Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process); errors and escalations thrown inside a called process don't propagate to the calling call activity; a non-interrupting timer-cycle event sub-process fires only once per arming.
+Timers (every timer event) take `timeDuration` (ISO 8601, calendar units included: `P1M`, `P1DT2H`), `timeDate` (with offset, `@Zone`/`[Zone]` or local) and `timeCycle` (`R[n]/[start/]duration[/end]` or a Spring cron expression, `L`/`W`/`#` included), or a FEEL expression evaluated against the instance variables when armed; cycles repeat on non-interrupting boundary events and event sub-processes.
+
+Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process); errors and escalations thrown inside a called process don't propagate to the calling call activity.
 
 ### Engine Features
 

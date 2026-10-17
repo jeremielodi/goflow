@@ -110,6 +110,9 @@ func (processDef ProcessDefinitionController) DeployBPMN(c *fiber.Ctx) error {
 		if errors.Is(err, service.ErrDeployPermissionDenied) {
 			return c.Status(403).JSON(fiber.Map{"error": err.Error()})
 		}
+		if errors.Is(err, service.ErrInvalidResource) {
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 

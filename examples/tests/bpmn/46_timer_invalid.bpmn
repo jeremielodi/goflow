@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_TI" targetNamespace="http://bpmn.io/schema/bpmn">
+  <!-- suite 46: an invalid timer cycle rejects the deployment -->
+  <bpmn:process id="TimerInvalid46" isExecutable="true">
+    <bpmn:startEvent id="ti_start">
+      <bpmn:timerEventDefinition><bpmn:timeCycle>every now and then</bpmn:timeCycle></bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="ti1" sourceRef="ti_start" targetRef="ti_end"/>
+    <bpmn:endEvent id="ti_end"/>
+  </bpmn:process>
+</bpmn:definitions>

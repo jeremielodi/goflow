@@ -5,6 +5,7 @@ type NodeType string
 const (
 	StartEventType             NodeType = "startEvent"
 	StartTimerEventType        NodeType = "startTimerEvent" // Timer start event
+	SignalStartEventType       NodeType = "signalStartEvent"
 	EndEventType               NodeType = "endEvent"
 	TaskType                   NodeType = "task"
 	UserTaskType               NodeType = "userTask"

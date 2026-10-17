@@ -228,7 +228,8 @@ func (r *EngineRepository) ClaimDueTimers(ctx context.Context, limit int) ([]mod
         WHERE t.id = to_claim.id
         RETURNING t.id, t.process_instance_id, t.execution_id, t.event_type, t.due_at,
                   t.payload, t.is_triggered, t.created_at, t.triggered_at,
-                  t.cycle_count, t.total_cycles, t.repeat_interval
+                  COALESCE(t.cycle_count, 0) AS cycle_count, COALESCE(t.total_cycles, 1) AS total_cycles,
+                  COALESCE(t.repeat_interval, '') AS repeat_interval
     `
 	err := r.db.SelectContext(ctx, &timers, query, limit)
 	if err != nil {

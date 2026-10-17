@@ -20,6 +20,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
 	"github.com/jeremielodi/goflow/internal/metrics"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/retention"
@@ -320,6 +321,9 @@ func main() {
 	v2VariableCtrl := apiv2.NewVariableController(db)
 
 	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher, timerRouter)
+	timerScheduler.SetStartTimerHandler(func(ctx context.Context, job models.TimerJob) error {
+		return runtime.FireStartTimer(ctx, db, taskEventDispatcher, job)
+	})
 	go timerScheduler.Start(context.Background())
 	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher)
 	runtime.StartMessageSweeper(context.Background(), db, taskEventDispatcher)

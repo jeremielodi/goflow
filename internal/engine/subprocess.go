@@ -205,7 +205,7 @@ func finishSubProcesses(graph *ProcessGraph, scopeOf map[string]string, subs []s
 					return fmt.Errorf("sub-process %s has more than one start event", sp.ID)
 				}
 				node.StartNodeID = n.ID
-			case StartTimerEventType, MessageStartEventType:
+			case StartTimerEventType, MessageStartEventType, SignalStartEventType:
 				return fmt.Errorf("sub-process %s: start event %s must be a plain (none) start event", sp.ID, n.ID)
 			}
 		}

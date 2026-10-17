@@ -14,6 +14,7 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
+	timerpkg "github.com/jeremielodi/goflow/internal/timer"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -49,6 +50,14 @@ type TimerScheduler struct {
 	resumer         func(ctx context.Context, execID uuid.UUID) error
 	auditService    *AuditService
 	partitionRouter TimerPartitionRouter
+	// startTimer fires a timer start event (runtime.FireStartTimer; the
+	// runtime package can't be imported from here).
+	startTimer func(ctx context.Context, timer models.TimerJob) error
+}
+
+// SetStartTimerHandler sets what fires timer start events.
+func (s *TimerScheduler) SetStartTimerHandler(h func(ctx context.Context, timer models.TimerJob) error) {
+	s.startTimer = h
 }
 
 func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher, partitionRouter TimerPartitionRouter) *TimerScheduler {
@@ -65,7 +74,9 @@ func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uui
 
 // Start begins the timer scheduler poller
 func (s *TimerScheduler) Start(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second) // Check every 2 seconds
+	// Twice a second: a timer fires at most ~0.5 s late, and a cycle
+	// (each occurrence armed when the previous one fires) keeps up.
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	log.Println("Timer scheduler started")
@@ -95,15 +106,22 @@ func (s *TimerScheduler) Stop() {
 // never touches executions, so there's nothing here for Kafka partition
 // ownership to race against (see the design doc for the full reasoning).
 func (s *TimerScheduler) processDueTimers(ctx context.Context) {
-	timers, err := s.engineRepo.ClaimDueTimers(ctx, 20)
-	if err != nil {
-		log.Printf("Error claiming due timers: %v", err)
-		return
-	}
+	const batch = 20
+	for {
+		timers, err := s.engineRepo.ClaimDueTimers(ctx, batch)
+		if err != nil {
+			log.Printf("Error claiming due timers: %v", err)
+			return
+		}
 
-	for _, timer := range timers {
-		log.Printf("🔥 Processing timer %s (due_at: %s)", timer.ID, timer.DueAt)
-		s.triggerTimer(ctx, timer)
+		for _, timer := range timers {
+			log.Printf("🔥 Processing timer %s (due_at: %s)", timer.ID, timer.DueAt)
+			s.triggerTimer(ctx, timer)
+		}
+		// A full batch: more may be due, don't wait for the next tick.
+		if len(timers) < batch || ctx.Err() != nil {
+			return
+		}
 	}
 }
 
@@ -115,6 +133,17 @@ func (s *TimerScheduler) processDueTimers(ctx context.Context) {
 // since neither touches executions.
 func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob) {
 	log.Printf("Triggering timer %s for process instance %s", timer.ID, timer.ProcessInstanceID)
+
+	if timer.EventType == TimerStartEventType {
+		if s.startTimer == nil {
+			log.Printf("timer %s: no timer start handler set", timer.ID)
+			return
+		}
+		if err := s.startTimer(ctx, timer); err != nil {
+			log.Printf("timer start %s: %v", timer.ID, err)
+		}
+		return
+	}
 
 	var execID uuid.UUID
 	if timer.ExecutionID != nil {
@@ -188,6 +217,43 @@ func (s *TimerScheduler) scheduleNextCycleIfNeeded(ctx context.Context, timer mo
 
 	nextCycle := int(currentCycle) + 1
 	totalCyclesInt := int(totalCycles)
+
+	// Timers armed since internal/timer: the cycle computes its own next
+	// occurrence (calendar durations, explicit start/end, cron).
+	if kind, _ := payload["timer_kind"].(string); kind != "" {
+		value, _ := payload["timer_value"].(string)
+		t, err := timerpkg.Parse(timerpkg.Kind(kind), value)
+		if err != nil {
+			log.Printf("timer %s: %v", timer.ID, err)
+			return
+		}
+		d := timer.DueAt
+		prev := time.Date(d.Year(), d.Month(), d.Day(), d.Hour(), d.Minute(), d.Second(), d.Nanosecond(), time.Local)
+		next, ok := t.Next(prev, nextCycle)
+		for ok && next.Before(time.Now().Add(-time.Minute)) { // missed while down
+			nextCycle++
+			next, ok = t.Next(next, nextCycle)
+		}
+		if !ok {
+			return
+		}
+		payload["current_cycle"] = nextCycle
+		newPayload, _ := json.Marshal(payload)
+		tx, err := s.db.BeginTxx(ctx, nil)
+		if err != nil {
+			log.Printf("timer %s: scheduling the next cycle: %v", timer.ID, err)
+			return
+		}
+		defer tx.Rollback()
+		if err := s.engineRepo.CreateTimerWithCycleTx(tx, uuid.New(), timer.ProcessInstanceID, timer.ExecutionID, next.In(time.Local), timer.EventType, newPayload, nextCycle, t.Repetitions, ""); err != nil {
+			log.Printf("timer %s: scheduling the next cycle: %v", timer.ID, err)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			log.Printf("timer %s: scheduling the next cycle: %v", timer.ID, err)
+		}
+		return
+	}
 
 	// Convert PT10S to 10s for time.ParseDuration
 	intervalStr := repeatInterval

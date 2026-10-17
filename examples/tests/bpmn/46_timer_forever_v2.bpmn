@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="Definitions_TF2" targetNamespace="http://bpmn.io/schema/bpmn">
+  <!-- suite 46: version 2 has no timer start any more -->
+  <bpmn:process id="TimerForever46" isExecutable="true">
+    <bpmn:startEvent id="tf_start"/>
+    <bpmn:sequenceFlow id="tf1" sourceRef="tf_start" targetRef="tf_task"/>
+    <bpmn:userTask id="tf_task" name="Tick"/>
+    <bpmn:sequenceFlow id="tf2" sourceRef="tf_task" targetRef="tf_end"/>
+    <bpmn:endEvent id="tf_end"/>
+  </bpmn:process>
+</bpmn:definitions>

@@ -4,7 +4,9 @@ package service
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/google/uuid"
@@ -20,6 +22,10 @@ import (
 // gateway) distinguish a permission failure from other deploy errors via
 // errors.Is, while still getting a human-readable message from err.Error().
 var ErrDeployPermissionDenied = fmt.Errorf("deploy permission denied")
+
+// ErrInvalidResource is returned for a resource that cannot be deployed as
+// is (Camunda 8 answers INVALID_ARGUMENT).
+var ErrInvalidResource = errors.New("invalid resource")
 
 // RawResource is a single deployable file, decoupled from the HTTP
 // multipart form it usually arrives in — the gRPC gateway's
@@ -167,7 +173,16 @@ func DeployResources(db *sqlx.DB, deploymentName string, tenantID string, resour
 		for _, procKey := range processKeys {
 			graph, err := engine.BuildGraphForProcess(bpmnBytes, procKey)
 			if err != nil {
-				return nil, fmt.Errorf("failed to build graph for process %s: %w", procKey, err)
+				return nil, fmt.Errorf("%w: failed to build graph for process %s: %v", ErrInvalidResource, procKey, err)
+			}
+
+			// An invalid timer start event rejects the deployment.
+			for _, node := range graph.Nodes {
+				if node.Type == engine.StartTimerEventType && node.ParentScope == "" {
+					if _, err := ParseStartTimer(node); err != nil {
+						return nil, fmt.Errorf("%w: process %s, timer start event %s: %v", ErrInvalidResource, procKey, node.ID, err)
+					}
+				}
 			}
 
 			graphJSON, err := json.Marshal(graph)
@@ -192,6 +207,10 @@ func DeployResources(db *sqlx.DB, deploymentName string, tenantID string, resour
 			defUUID, err := uuid.Parse(defID)
 			if err != nil {
 				return nil, fmt.Errorf("invalid definition id returned for %s: %w", procKey, err)
+			}
+
+			if err := ArmStartTimers(db, procKey, defUUID, graph); err != nil {
+				log.Printf("deploy %s: arming timer start events: %v", procKey, err)
 			}
 
 			result.ProcessDefinitions = append(result.ProcessDefinitions, DeployedProcessDefinition{

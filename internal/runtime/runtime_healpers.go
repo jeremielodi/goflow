@@ -5,89 +5,13 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 )
-
-// TimerCycle represents a repeating timer configuration
-type TimerCycle struct {
-	Remaining int           // Number of remaining repetitions (-1 = infinite)
-	Interval  time.Duration // Time between repetitions
-}
-
-// ParseTimerCycle parses a BPMN timer cycle expression
-func ParseTimerCycle(cycleStr string) (*TimerCycle, error) {
-	// Format: R{count}/{duration}
-	// count can be omitted for infinite (R/PT1M)
-
-	parts := strings.Split(cycleStr, "/")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid timer cycle format: %s", cycleStr)
-	}
-
-	// Parse repetition count
-	countPart := strings.TrimPrefix(parts[0], "R")
-	var remaining int = -1 // -1 = infinite
-
-	if countPart != "" {
-		count, err := strconv.Atoi(countPart)
-		if err != nil {
-			return nil, fmt.Errorf("invalid cycle count: %s", countPart)
-		}
-		remaining = count
-	}
-
-	// Parse duration
-	durationStr := parts[1]
-	if !strings.HasPrefix(durationStr, "PT") {
-		return nil, fmt.Errorf("invalid duration format: %s", durationStr)
-	}
-
-	// Remove PT prefix
-	durationStr = strings.TrimPrefix(durationStr, "PT")
-	var duration time.Duration
-
-	// Parse hours
-	if strings.Contains(durationStr, "H") {
-		hoursStr := strings.Split(durationStr, "H")[0]
-		if hours, err := strconv.Atoi(hoursStr); err == nil {
-			duration += time.Duration(hours) * time.Hour
-		}
-		durationStr = strings.TrimPrefix(durationStr, hoursStr+"H")
-	}
-
-	// Parse minutes
-	if strings.Contains(durationStr, "M") {
-		minsStr := strings.Split(durationStr, "M")[0]
-		if mins, err := strconv.Atoi(minsStr); err == nil {
-			duration += time.Duration(mins) * time.Minute
-		}
-		durationStr = strings.TrimPrefix(durationStr, minsStr+"M")
-	}
-
-	// Parse seconds
-	if strings.Contains(durationStr, "S") {
-		secsStr := strings.Split(durationStr, "S")[0]
-		if secs, err := strconv.Atoi(secsStr); err == nil {
-			duration += time.Duration(secs) * time.Second
-		}
-	}
-
-	if duration == 0 {
-		return nil, fmt.Errorf("invalid duration: no time component found")
-	}
-
-	return &TimerCycle{
-		Remaining: remaining,
-		Interval:  duration,
-	}, nil
-}
 
 // internal/runtime/runtime.go
 
@@ -290,16 +214,6 @@ func (r *Runtime) createParallelChildren(ctx context.Context, parentExecID uuid.
 	return nil
 }
 
-// extractCycleString extracts the timeCycle value from timer definition XML
-func extractCycleString(timerDef string) string {
-	re := regexp.MustCompile(`<timeCycle>(.*?)</timeCycle>`)
-	matches := re.FindStringSubmatch(timerDef)
-	if len(matches) < 2 {
-		return ""
-	}
-	return matches[1]
-}
-
 func executeScript(script string, variables map[string]interface{}) (map[string]interface{}, error) {
 	// Simple implementation - just parse variable assignments
 	// For production, use a JavaScript engine like goja or otto
@@ -325,25 +239,6 @@ func executeScript(script string, variables map[string]interface{}) (map[string]
 	}
 
 	return result, nil
-}
-
-// formatDuration formats a duration as ISO 8601 string
-func formatDuration(d time.Duration) string {
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
-
-	result := "PT"
-	if hours > 0 {
-		result += fmt.Sprintf("%dH", hours)
-	}
-	if minutes > 0 {
-		result += fmt.Sprintf("%dM", minutes)
-	}
-	if seconds > 0 {
-		result += fmt.Sprintf("%dS", seconds)
-	}
-	return result
 }
 
 // OnMultiInstanceChildCompleted MUST be called from your external-task/complete API

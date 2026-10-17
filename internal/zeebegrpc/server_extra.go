@@ -342,6 +342,7 @@ func (s *Server) DeleteResource(ctx context.Context, req *pb.DeleteResourceReque
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+	service.RearmStartEvents(s.db, def.ProcessKey)
 	return &pb.DeleteResourceResponse{}, nil
 }
 

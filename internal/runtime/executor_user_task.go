@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -142,42 +141,33 @@ func (r *Runtime) executeUserTask(ctx context.Context, engineRepo *repository.En
 // definition; when it fires, exec moves to targetNodeID. Returns when it
 // first falls due.
 func (r *Runtime) createTimerTx(tx *sqlx.Tx, engineRepo *repository.EngineRepository, exec *repository.Execution, timerDefinition, targetNodeID, eventType string) (time.Time, error) {
-	attachedTimer := &engine.Node{TimerDefinition: timerDefinition}
-
-	var totalCycles int = 1
-	var repeatInterval string
-	var timerDuration time.Duration
-
-	if strings.Contains(attachedTimer.TimerDefinition, "timeCycle") {
-		cycleStr := extractCycleString(attachedTimer.TimerDefinition)
-		cycle, err := ParseTimerCycle(cycleStr)
-		if err == nil {
-			totalCycles = cycle.Remaining
-			repeatInterval = formatDuration(cycle.Interval)
-			timerDuration = cycle.Interval
-		} else {
-			log.Printf("⚠️ Failed to parse timer cycle: %v, using fallback", err)
-			timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
-		}
-	} else {
-		timerDuration = parseTimerDuration(attachedTimer.TimerDefinition)
+	t, err := r.resolveTimer(timerDefinition, exec.ProcessInstanceID)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("timer on %s: %w", targetNodeID, err)
+	}
+	dueAt, ok := t.First(time.Now())
+	if !ok {
+		// A cycle with no repetitions left (R0, or past its end): never fires.
+		return time.Time{}, nil
 	}
 
-	dueAt := time.Now().Add(timerDuration)
-
+	// timer_kind/timer_value let the scheduler compute a cycle's next
+	// occurrences (service.TimerScheduler.scheduleNextCycleIfNeeded);
+	// timer_value is the FEEL-resolved value, so a cycle keeps the value it
+	// had when armed.
 	payload := map[string]interface{}{
-		"target_node_id":    targetNodeID,
-		"event_type":        eventType,
-		"is_cycle":          totalCycles != 1 || repeatInterval != "",
-		"total_cycles":      totalCycles,
-		"repeat_interval":   repeatInterval,
-		"current_cycle":     0,
-		"original_duration": timerDuration.String(),
+		"target_node_id": targetNodeID,
+		"event_type":     eventType,
+		"is_cycle":       t.IsCycle(),
+		"total_cycles":   t.Repetitions,
+		"current_cycle":  0,
+		"timer_kind":     string(t.Kind),
+		"timer_value":    t.Raw,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	timerID := uuid.New()
-	if err := engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt, eventType, payloadBytes, 0, totalCycles, repeatInterval); err != nil {
+	if err := engineRepo.CreateTimerWithCycleTx(tx, timerID, exec.ProcessInstanceID, &exec.ID, dueAt.In(time.Local), eventType, payloadBytes, 0, t.Repetitions, ""); err != nil {
 		return time.Time{}, err
 	}
 

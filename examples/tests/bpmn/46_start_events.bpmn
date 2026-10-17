@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_StartEvents"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Timer and signal start events (suite 46). -->
+
+  <bpmn:signal id="Sig_Go" name="Go46"/>
+
+  <!-- a cycle firing twice -->
+  <bpmn:process id="TimerCycle46" isExecutable="true">
+    <bpmn:startEvent id="tc_start">
+      <bpmn:timerEventDefinition><bpmn:timeCycle>R2/PT2S</bpmn:timeCycle></bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="tc1" sourceRef="tc_start" targetRef="tc_task"/>
+    <bpmn:userTask id="tc_task" name="Started by a cycle"/>
+    <bpmn:sequenceFlow id="tc2" sourceRef="tc_task" targetRef="tc_end"/>
+    <bpmn:endEvent id="tc_end"/>
+  </bpmn:process>
+
+  <!-- a date already past fires once, right away -->
+  <bpmn:process id="TimerDate46" isExecutable="true">
+    <bpmn:startEvent id="td_start">
+      <bpmn:timerEventDefinition><bpmn:timeDate>2020-01-01T00:00:00Z</bpmn:timeDate></bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:sequenceFlow id="td1" sourceRef="td_start" targetRef="td_task"/>
+    <bpmn:userTask id="td_task" name="Started by a date"/>
+    <bpmn:sequenceFlow id="td2" sourceRef="td_task" targetRef="td_end"/>
+    <bpmn:endEvent id="td_end"/>
+  </bpmn:process>
+
+  <!-- started by a signal; also has a none start event -->
+  <bpmn:process id="SignalStart46" isExecutable="true">
+    <bpmn:startEvent id="ss_start">
+      <bpmn:signalEventDefinition signalRef="Sig_Go"/>
+    </bpmn:startEvent>
+    <bpmn:startEvent id="ss_plain"/>
+    <bpmn:sequenceFlow id="ss1" sourceRef="ss_start" targetRef="ss_task"/>
+    <bpmn:sequenceFlow id="ss2" sourceRef="ss_plain" targetRef="ss_task"/>
+    <bpmn:userTask id="ss_task" name="Started"/>
+    <bpmn:sequenceFlow id="ss3" sourceRef="ss_task" targetRef="ss_end"/>
+    <bpmn:endEvent id="ss_end"/>
+  </bpmn:process>
+</bpmn:definitions>

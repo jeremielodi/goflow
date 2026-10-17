@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/jeremielodi/goflow/internal/eventlog"
@@ -18,10 +19,6 @@ func BroadcastSignal(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, name s
 	subs, err := subRepo.FindBySignalName(name)
 	if err != nil {
 		return 0, nil, err
-	}
-
-	if len(subs) == 0 {
-		return 0, nil, nil
 	}
 
 	engineRepo := repository.NewEngineRepository(db, dispatcher)
@@ -88,6 +85,12 @@ func BroadcastSignal(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, name s
 		}
 		resumed++
 	}
+
+	// Signal start events: one new instance per process waiting on it.
+	started, startErrs := startBySignal(context.Background(), db, dispatcher, name, variables)
+	resumed += len(started)
+	errs = append(errs, startErrs...)
+
 	service.LogAuditErr("signal broadcast", auditService.LogSignalBroadcast(name, resumed))
 	if p := eventlog.Global(); p != nil {
 		p.SignalBroadcast(name, int32(resumed))
