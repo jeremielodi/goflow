@@ -23,14 +23,33 @@ func (r *IncidentRepository) CreateIncidentTx(tx *sqlx.Tx, c *models.IncidentCre
 	inc := &models.Incident{}
 	err := tx.QueryRowx(`
 		INSERT INTO public.incidents
-			(process_instance_id, job_id, incident_type, activity_id, error_message, error_code, state)
-		VALUES ($1, $2, $3, $4, $5, $6, 'open')
+			(process_instance_id, job_id, incident_type, activity_id, error_message, error_code, state, execution_id)
+		VALUES ($1, $2, $3, $4, $5, $6, 'open', $7)
 		RETURNING id, process_instance_id, job_id, incident_type, activity_id,
 		          error_message, error_code, state, created_at, resolved_at
 	`, c.ProcessInstanceID, c.JobID, c.IncidentType, c.ActivityID,
-		nullableString(c.ErrorMessage), nullableString(c.ErrorCode),
+		nullableString(c.ErrorMessage), nullableString(c.ErrorCode), c.ExecutionID,
 	).StructScan(inc)
 	return inc, err
+}
+
+// ExecutionOf returns the execution an incident stopped, when resolving it
+// should run that execution again (incidents raised by the runtime on an
+// element; job incidents have none: their job is retried instead).
+func (r *IncidentRepository) ExecutionOf(processInstanceID, id uuid.UUID) *uuid.UUID {
+	var exec *uuid.UUID
+	if err := r.db.Get(&exec, `SELECT execution_id FROM public.incidents WHERE process_instance_id = $1 AND id = $2`, processInstanceID, id); err != nil {
+		return nil
+	}
+	return exec
+}
+
+// HasOpenIncidentOnExecution tells whether execID already has an open
+// runtime incident.
+func (r *IncidentRepository) HasOpenIncidentOnExecution(processInstanceID, execID uuid.UUID) bool {
+	var open bool
+	r.db.Get(&open, `SELECT EXISTS (SELECT 1 FROM public.incidents WHERE process_instance_id = $1 AND execution_id = $2 AND state = 'open')`, processInstanceID, execID)
+	return open
 }
 
 func (r *IncidentRepository) GetByID(id uuid.UUID) (*models.Incident, error) {

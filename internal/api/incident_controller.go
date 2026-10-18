@@ -5,9 +5,11 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
+	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
@@ -18,14 +20,16 @@ type IncidentController struct {
 	incidentRepo *repository.IncidentRepository
 	extTaskRepo  *repository.ExternalTaskRepository
 	zeebeKeys    *repository.ZeebeKeyRepository
+	dispatcher   *events.TaskEventDispatcher
 }
 
-func NewIncidentController(db *sqlx.DB) *IncidentController {
+func NewIncidentController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *IncidentController {
 	return &IncidentController{
 		db:           db,
 		incidentRepo: repository.NewIncidentRepository(db),
 		extTaskRepo:  repository.NewExternalTaskRepository(db),
 		zeebeKeys:    repository.NewZeebeKeyRepository(db),
+		dispatcher:   dispatcher,
 	}
 }
 
@@ -212,4 +216,28 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"message": "retries set, incident resolved"})
+}
+
+// ResolveIncident handles POST /v2/incidents/:id/resolution (Camunda 8):
+// the incident is resolved and, for one the runtime raised on an element,
+// the element runs again.
+func (ctrl *IncidentController) ResolveIncident(c *fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"message": "invalid incident id"})
+	}
+	inc, err := ctrl.incidentRepo.GetByID(id)
+	if err != nil || inc == nil {
+		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+	}
+	if !ctrl.checkIncidentAccess(c, inc.ProcessInstanceID, "MANAGE") {
+		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+	}
+	if err := service.ResolveIncident(ctrl.db, id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
+	}
+	if err := runtime.ResumeAfterIncident(ctrl.db, ctrl.dispatcher, inc.ProcessInstanceID, id); err != nil {
+		return c.Status(500).JSON(fiber.Map{"message": "incident resolved, but running the element again failed: " + err.Error()})
+	}
+	return c.SendStatus(204)
 }

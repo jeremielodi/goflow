@@ -29,10 +29,27 @@ func (r *Runtime) throwCompensation(ctx context.Context, engineRepo *repository.
 	if s, ok := graph.Nodes[scope]; ok && s.Type == engine.EventSubProcessType {
 		scope = s.ParentScope
 	}
+	// What to compensate: the activities with a compensation handler —
+	// and, as in Camunda 8, inside an embedded sub-process without a
+	// handler of its own, the activities it completed (nested
+	// compensation, recursively).
 	var activities []string
-	for _, n := range graph.Nodes {
-		if n.CompensationHandler != "" && n.ParentScope == scope && (node.CompensateActivity == "" || n.ID == node.CompensateActivity) {
+	var collect func(n *engine.Node)
+	collect = func(n *engine.Node) {
+		switch {
+		case n.CompensationHandler != "":
 			activities = append(activities, n.ID)
+		case n.Type == engine.SubProcessType:
+			for _, inner := range graph.Nodes {
+				if inner.ParentScope == n.ID {
+					collect(inner)
+				}
+			}
+		}
+	}
+	for _, n := range graph.Nodes {
+		if n.ParentScope == scope && (node.CompensateActivity == "" || n.ID == node.CompensateActivity) {
+			collect(n)
 		}
 	}
 

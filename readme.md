@@ -48,18 +48,18 @@ GoFlow is a production-ready BPMN 2.0 workflow engine written in Go, exposing RE
 | Boundary Error / Escalation Event | ✅ |
 | Embedded Sub-Process (nested, with boundary events) | ✅ |
 | Event Sub-Process (timer, message, signal, error, escalation, conditional; interrupting or not) | ✅ |
-| Manual / Send / Receive Task | ✅ |
+| Manual / Send / Receive Task; an untyped task passes straight through (as in Camunda 8; versions deployed before keep it as a user task) | ✅ |
 | Intermediate Throw Event (none, signal, escalation, compensation, link) and Link Catch Event | ✅ |
 | Intermediate Conditional Catch Event | ✅ |
-| End Event: terminate, error, signal, escalation, compensation | ✅ |
-| Compensation (boundary + handler, throw with optional `activityRef`) | ✅ |
+| End Event: terminate, error, signal, escalation, compensation, message (worked by a job worker) | ✅ |
+| Compensation (boundary + handler, throw with optional `activityRef`, nested into completed sub-processes) | ✅ |
 | Multi-instance on any activity (every task type, embedded sub-process, call activity), parallel or sequential: `zeebe:loopCharacteristics` (inputCollection, inputElement, outputCollection, outputElement), loop cardinality, completion condition (`numberOf*Instances`), boundary events on the whole loop | ✅ |
 | Variable scopes: local variables per sub-process, multi-instance iteration and activity (input mappings), propagation to the nearest scope that has the variable, output mappings evaluated in the activity scope, `SetVariables` with `local` | ✅ |
 | Business Rule Task (DMN decision table) | ✅ |
 
 Timers (every timer event) take `timeDuration` (ISO 8601, calendar units included: `P1M`, `P1DT2H`), `timeDate` (with offset, `@Zone`/`[Zone]` or local) and `timeCycle` (`R[n]/[start/]duration[/end]` or a Spring cron expression, `L`/`W`/`#` included), or a FEEL expression evaluated against the instance variables when armed; cycles repeat on non-interrupting boundary events and event sub-processes.
 
-Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs the handlers of one scope, all at once, and does not reach into completed sub-processes (no nested compensation, no compensation event sub-process).
+Known limits of the BPMN coverage: conditional events are re-evaluated by a watcher about once a second (not on each variable write, as in Camunda 7); compensation runs its handlers all at once (it reaches into completed embedded sub-processes without a handler of their own, as in Camunda 8; there is no compensation event sub-process).
 
 ### Engine Features
 
@@ -70,7 +70,7 @@ Known limits of the BPMN coverage: conditional events are re-evaluated by a watc
 | FEEL expressions: native interpreter (`FEEL_MODE`, shadow by default) alongside the legacy FEEL-to-CEL path | ✅ |
 | External task worker pattern (fetchAndLock) | ✅ |
 | Job retries with exponential back-off | ✅ |
-| Incident management | ✅ |
+| Incident management: failed jobs, unhandled errors, and any failure on an element (condition, script, input collection, called process, timer…) as an incident on it; resolving it runs the element again (`POST /v2/incidents/:id/resolution`, gRPC `ResolveIncident`) | ✅ |
 | Timer scheduler (SKIP LOCKED) | ✅ |
 | Message correlation (`POST /engine-rest/message`) | ✅ |
 | Signal broadcast (`POST /engine-rest/signal`) | ✅ |

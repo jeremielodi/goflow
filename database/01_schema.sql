@@ -524,6 +524,7 @@ CREATE TABLE incidents (
     state TEXT NOT NULL DEFAULT 'open',  -- open, resolved, deleted
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     resolved_at TIMESTAMP NULL,
+    execution_id UUID NULL,              -- execution to resume on resolution (migration 003)
     PRIMARY KEY (process_instance_id, id)
 );
 
@@ -978,4 +979,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('002', 'scope_variables : variables locales aux portées')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('003', 'incidents.execution_id : exécution à reprendre à la résolution')
 ON CONFLICT (version) DO NOTHING;

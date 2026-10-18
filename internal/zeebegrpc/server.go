@@ -584,8 +584,15 @@ func (s *Server) ResolveIncident(ctx context.Context, req *pb.ResolveIncidentReq
 		return &pb.ResolveIncidentResponse{}, nil
 	}
 
+	inc, _ := repository.NewIncidentRepository(s.db).GetByID(incidentID)
 	if err := service.ResolveIncident(s.db, incidentID); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+	// An incident the runtime raised on an element: run it again.
+	if inc != nil {
+		if err := runtime.ResumeAfterIncident(s.db, s.dispatcher, inc.ProcessInstanceID, incidentID); err != nil {
+			return nil, status.Errorf(codes.Internal, "incident resolved, but running the element again failed: %v", err)
+		}
 	}
 
 	return &pb.ResolveIncidentResponse{}, nil

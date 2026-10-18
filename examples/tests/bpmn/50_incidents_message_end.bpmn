@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_Incidents"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Message end events and runtime incidents (suite 50). -->
+
+  <bpmn:message id="Msg_Done" name="Done50"/>
+
+  <!-- a message end event worked by a job worker, beside a parallel branch -->
+  <bpmn:process id="MessageEnd50" isExecutable="true">
+    <bpmn:startEvent id="me_start"/>
+    <bpmn:sequenceFlow id="me1" sourceRef="me_start" targetRef="me_fork"/>
+    <bpmn:parallelGateway id="me_fork"/>
+    <bpmn:sequenceFlow id="me2" sourceRef="me_fork" targetRef="me_notify"/>
+    <bpmn:sequenceFlow id="me3" sourceRef="me_fork" targetRef="me_other"/>
+    <bpmn:endEvent id="me_notify">
+      <bpmn:extensionElements><zeebe:taskDefinition type="notify50"/></bpmn:extensionElements>
+      <bpmn:messageEventDefinition messageRef="Msg_Done"/>
+    </bpmn:endEvent>
+    <bpmn:userTask id="me_other"/>
+    <bpmn:sequenceFlow id="me4" sourceRef="me_other" targetRef="me_end"/>
+    <bpmn:endEvent id="me_end"/>
+  </bpmn:process>
+
+  <!-- a gateway with no matching condition and no default flow -->
+  <bpmn:process id="GatewayIncident50" isExecutable="true">
+    <bpmn:startEvent id="g_start"/>
+    <bpmn:sequenceFlow id="g1" sourceRef="g_start" targetRef="g_gw"/>
+    <bpmn:exclusiveGateway id="g_gw"/>
+    <bpmn:sequenceFlow id="g2" sourceRef="g_gw" targetRef="g_big">
+      <bpmn:conditionExpression>=amount &gt; 100</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="g3" sourceRef="g_gw" targetRef="g_small">
+      <bpmn:conditionExpression>=amount &lt;= 100</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:userTask id="g_big"/>
+    <bpmn:userTask id="g_small"/>
+    <bpmn:sequenceFlow id="g4" sourceRef="g_big" targetRef="g_end"/>
+    <bpmn:sequenceFlow id="g5" sourceRef="g_small" targetRef="g_end2"/>
+    <bpmn:endEvent id="g_end"/>
+    <bpmn:endEvent id="g_end2"/>
+  </bpmn:process>
+
+  <!-- an untyped task passes straight through -->
+  <bpmn:process id="Untyped50" isExecutable="true">
+    <bpmn:startEvent id="u_start"/>
+    <bpmn:sequenceFlow id="u1" sourceRef="u_start" targetRef="u_task"/>
+    <bpmn:task id="u_task" name="Nothing to run"/>
+    <bpmn:sequenceFlow id="u2" sourceRef="u_task" targetRef="u_after"/>
+    <bpmn:userTask id="u_after"/>
+    <bpmn:sequenceFlow id="u3" sourceRef="u_after" targetRef="u_end"/>
+    <bpmn:endEvent id="u_end"/>
+  </bpmn:process>
+
+  <!-- nested compensation: the throw reaches inside a completed sub-process -->
+  <bpmn:process id="NestedComp50" isExecutable="true">
+    <bpmn:startEvent id="n_start"/>
+    <bpmn:sequenceFlow id="n1" sourceRef="n_start" targetRef="n_sub"/>
+    <bpmn:subProcess id="n_sub">
+      <bpmn:startEvent id="n_in_start"/>
+      <bpmn:sequenceFlow id="n2" sourceRef="n_in_start" targetRef="n_book"/>
+      <bpmn:userTask id="n_book"/>
+      <bpmn:boundaryEvent id="n_book_comp" attachedToRef="n_book"><bpmn:compensateEventDefinition/></bpmn:boundaryEvent>
+      <bpmn:userTask id="n_unbook" isForCompensation="true"/>
+      <bpmn:association id="na1" sourceRef="n_book_comp" targetRef="n_unbook"/>
+      <bpmn:sequenceFlow id="n3" sourceRef="n_book" targetRef="n_in_end"/>
+      <bpmn:endEvent id="n_in_end"/>
+    </bpmn:subProcess>
+    <bpmn:sequenceFlow id="n4" sourceRef="n_sub" targetRef="n_undo"/>
+    <bpmn:intermediateThrowEvent id="n_undo"><bpmn:compensateEventDefinition/></bpmn:intermediateThrowEvent>
+    <bpmn:sequenceFlow id="n5" sourceRef="n_undo" targetRef="n_after"/>
+    <bpmn:userTask id="n_after"/>
+    <bpmn:sequenceFlow id="n6" sourceRef="n_after" targetRef="n_end"/>
+    <bpmn:endEvent id="n_end"/>
+  </bpmn:process>
+
+  <!-- a multi-instance input collection that isn't a list -->
+  <bpmn:process id="CollectionIncident50" isExecutable="true">
+    <bpmn:startEvent id="c_start"/>
+    <bpmn:sequenceFlow id="c1" sourceRef="c_start" targetRef="c_each"/>
+    <bpmn:userTask id="c_each">
+      <bpmn:multiInstanceLoopCharacteristics>
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=items" inputElement="item"/>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:sequenceFlow id="c2" sourceRef="c_each" targetRef="c_end"/>
+    <bpmn:endEvent id="c_end"/>
+  </bpmn:process>
+</bpmn:definitions>

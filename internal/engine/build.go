@@ -62,14 +62,17 @@ func BuildGraphFromProcess(process *parser.Process) (*ProcessGraph, error) {
 		register(node)
 	}
 
-	// ---- Generic Tasks (treat as UserTasks) ----
+	// ---- Generic (untyped) Tasks ----
+	// As in Camunda 8, a task without a type has nothing to run: the token
+	// passes straight through, like a manual task. (Before, GoFlow made it
+	// a user task; versions deployed then keep that, their graph being
+	// stored at deploy time.)
 	for _, t := range process.Tasks {
-		node := &Node{
+		register(&Node{
 			ID:   t.ID,
 			Name: t.Name,
-			Type: UserTaskType, // Treat generic tasks as UserTasks
-		}
-		register(node)
+			Type: ManualTaskType,
+		})
 	}
 
 	// ---- User Tasks (assignee & candidate groups) ----

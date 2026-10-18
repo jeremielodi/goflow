@@ -297,7 +297,7 @@ func main() {
 	}
 
 	timerController := api.NewTimerController(db)
-	incidentCtrl := api.NewIncidentController(db)
+	incidentCtrl := api.NewIncidentController(db, taskEventDispatcher)
 	analyticsCtrl := api.NewAnalyticsController(db)
 	eventLogCtrl := api.NewEventLogController(eventLogConsumer, db)
 
@@ -568,6 +568,7 @@ func main() {
 	app.Get("/v2/forms/:formKey", v2FormCtrl.GetForm)
 
 	app.Post("/v2/incidents/search", v2IncidentCtrl.SearchIncidents)
+	app.Post("/v2/incidents/:id/resolution", incidentCtrl.ResolveIncident)
 	app.Post("/v2/flownode-instances/search", v2FlownodeInstanceCtrl.SearchFlownodeInstances)
 	app.Post("/v2/variables/search", v2VariableCtrl.SearchVariables)
 	app.Post("/v2/process-instances/:id/modification", v2ProcessInstanceCtrl.ModifyProcessInstance)

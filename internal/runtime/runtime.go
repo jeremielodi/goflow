@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,8 +15,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
-	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/eventlog"
+	"github.com/jeremielodi/goflow/internal/events"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
@@ -355,7 +357,74 @@ func NewRuntime(Graph *engine.ProcessGraph, DB *sqlx.DB, dispatcher *events.Task
 // ------------------------------------------------------------
 // ExecuteExecution starts or resumes from a given execution ID
 // ------------------------------------------------------------
+
+// ExecuteExecution runs an execution until it waits or ends. A failure on
+// an element — a condition, a script, an input collection, a called
+// process that doesn't exist, an invalid timer… — becomes an incident on
+// that element, as in Camunda 8: the token stays there, and resolving the
+// incident runs the element again (see ResumeAfterIncident). An error is
+// returned only when the execution is gone or can't hold an incident.
 func (r *Runtime) ExecuteExecution(ctx context.Context, execID uuid.UUID) error {
+	err := r.executeExecution(ctx, execID)
+	if err == nil {
+		return nil
+	}
+	if raised := r.raiseExecutionIncident(execID, err); raised {
+		return nil
+	}
+	return err
+}
+
+// raiseExecutionIncident records err as an incident on the element execID
+// stopped at. False when the execution is gone or finished (the error is
+// then the caller's), or the incident can't be written.
+func (r *Runtime) raiseExecutionIncident(execID uuid.UUID, cause error) bool {
+	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
+	exec, err := engineRepo.GetExecutionByID(execID)
+	if err != nil || exec == nil || !exec.IsActive || exec.Status == "completed" || exec.Status == "cancelled" || exec.Status == "terminated" {
+		return false
+	}
+	incidents := repository.NewIncidentRepository(r.DB)
+	if incidents.HasOpenIncidentOnExecution(exec.ProcessInstanceID, exec.ID) {
+		return true // raised deeper down already
+	}
+	element := strings.TrimPrefix(exec.CurrentElementID, engine.ImplicitEndPrefix)
+	tx, err := r.DB.Beginx()
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback()
+	if _, err := incidents.CreateIncidentTx(tx, &models.IncidentCreate{
+		ProcessInstanceID: exec.ProcessInstanceID,
+		IncidentType:      "executionError",
+		ActivityID:        element,
+		ErrorMessage:      cause.Error(),
+		ExecutionID:       &exec.ID,
+	}); err != nil {
+		log.Printf("raising an incident for %v: %v", cause, err)
+		return false
+	}
+	if err := engineRepo.UpdateExecutionStatusTx(tx, exec.ProcessInstanceID, exec.ID, "waiting"); err != nil {
+		return false
+	}
+	if err := tx.Commit(); err != nil {
+		return false
+	}
+	log.Printf("⚠️ incident on %s (instance %s): %v", element, exec.ProcessInstanceID, cause)
+	return true
+}
+
+// ResumeAfterIncident runs again the execution a resolved runtime incident
+// had stopped.
+func ResumeAfterIncident(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, processInstanceID, incidentID uuid.UUID) error {
+	exec := repository.NewIncidentRepository(db).ExecutionOf(processInstanceID, incidentID)
+	if exec == nil {
+		return nil
+	}
+	return ResumeExecution(db, *exec, dispatcher)
+}
+
+func (r *Runtime) executeExecution(ctx context.Context, execID uuid.UUID) error {
 	engineRepo := repository.NewEngineRepository(r.DB, r.dispatcher)
 
 	// Get active execution

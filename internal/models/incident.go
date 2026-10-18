@@ -54,4 +54,7 @@ type IncidentCreate struct {
 	ActivityID        string
 	ErrorMessage      string
 	ErrorCode         string
+	// ExecutionID: the execution to run again when the incident is
+	// resolved (runtime incidents only).
+	ExecutionID *uuid.UUID
 }

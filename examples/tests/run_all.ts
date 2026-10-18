@@ -139,6 +139,7 @@ async function main() {
     '47_timers.test.ts',
     '48_scopes_multi_instance.test.ts',
     '49_call_activity.test.ts',
+    '50_incidents_message_end.test.ts',
   ];
 
   const exitCodes: number[] = [];
