@@ -325,7 +325,7 @@ func main() {
 		return runtime.FireStartTimer(ctx, db, taskEventDispatcher, job)
 	})
 	go timerScheduler.Start(context.Background())
-	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher)
+	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher, database.ConnStringForListener(util))
 	runtime.StartMessageSweeper(context.Background(), db, taskEventDispatcher)
 	defer timerScheduler.Stop()
 

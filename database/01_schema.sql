@@ -960,6 +960,25 @@ CREATE TABLE IF NOT EXISTS public.scope_variables (
     PRIMARY KEY (process_instance_id, scope_id)
 );
 
+-- NOTIFY goflow_variables à chaque écriture de variables (migration 004) :
+-- les événements conditionnels sont réévalués aussitôt.
+CREATE OR REPLACE FUNCTION public.goflow_notify_variables() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('goflow_variables', NEW.process_instance_id::text);
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS variables_notify ON public.variables;
+CREATE TRIGGER variables_notify
+AFTER INSERT OR UPDATE ON public.variables
+FOR EACH ROW EXECUTE FUNCTION public.goflow_notify_variables();
+
+DROP TRIGGER IF EXISTS scope_variables_notify ON public.scope_variables;
+CREATE TRIGGER scope_variables_notify
+AFTER INSERT OR UPDATE ON public.scope_variables
+FOR EACH ROW EXECUTE FUNCTION public.goflow_notify_variables();
+
 
 -- Suivi des migrations (voir database/migrations/README.md). Une base neuve
 -- part directement de la baseline 000.
@@ -983,4 +1002,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('003', 'incidents.execution_id : exécution à reprendre à la résolution')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('004', 'goflow_variables : NOTIFY à chaque écriture de variables')
 ON CONFLICT (version) DO NOTHING;
