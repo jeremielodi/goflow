@@ -66,6 +66,9 @@ func GlobalConsumer() *Consumer {
 	return globalConsumer
 }
 
+// NewConsumer returns the projector: it folds events into the
+// eventlog_projected_* tables, consuming in groupID, shared by every
+// replica — so each event is projected once.
 func NewConsumer(brokers []string, groupID string, db *sqlx.DB) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
@@ -75,6 +78,25 @@ func NewConsumer(brokers []string, groupID string, db *sqlx.DB) *Consumer {
 		}),
 		projRepo: repository.NewEventLogProjectionRepository(db),
 		waiters:  make(map[string][]*Waiter),
+	}
+}
+
+// NewWatcher returns this replica's watcher: it reads every partition of
+// the topic, from now on, to feed the recent-events ring and wake the
+// Command Gateway's waiters (Register). Its consumer group is unique to
+// this replica: with several replicas sharing a group, Kafka splits the
+// partitions between them, and a replica waiting for the outcome of a
+// command it produced would never see the event when another replica
+// owns that instance's partition. It doesn't project (NewConsumer does).
+func NewWatcher(brokers []string) *Consumer {
+	return &Consumer{
+		reader: kafka.NewReader(kafka.ReaderConfig{
+			Brokers:     brokers,
+			Topic:       Topic,
+			GroupID:     "goflow-eventlog-watch-" + uuid.New().String(),
+			StartOffset: kafka.LastOffset,
+		}),
+		waiters: make(map[string][]*Waiter),
 	}
 }
 
@@ -178,8 +200,11 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 
 		recent := toRecentEvent(&env)
-		c.record(recent)
-		c.project(&env)
+		if c.projRepo != nil {
+			c.project(&env) // the projector
+			continue
+		}
+		c.record(recent) // the watcher
 		c.notifyWaiters(env.ProcessInstanceId, recent.Type, &env)
 	}
 }

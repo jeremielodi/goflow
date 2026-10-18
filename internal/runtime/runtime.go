@@ -499,6 +499,12 @@ func (r *Runtime) executeExecution(ctx context.Context, execID uuid.UUID) error 
 			if err != nil {
 				return fmt.Errorf("failed to begin transaction: %w", err)
 			}
+			// A step that doesn't wait: the next wait state's durable
+			// commit carries it (see repository.NoSyncTx).
+			if err := repository.NoSyncTx(tx); err != nil {
+				tx.Rollback()
+				return err
+			}
 
 			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 				tx.Rollback()
@@ -824,6 +830,10 @@ func (r *Runtime) executeExecution(ctx context.Context, execID uuid.UUID) error 
 			}
 			tx, err := r.DB.BeginTxx(ctx, nil)
 			if err != nil {
+				return err
+			}
+			if err := repository.NoSyncTx(tx); err != nil { // a step that doesn't wait
+				tx.Rollback()
 				return err
 			}
 			if err = engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {

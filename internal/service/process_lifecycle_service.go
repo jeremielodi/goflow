@@ -113,7 +113,7 @@ func TerminateProcessInstance(db *sqlx.DB, dispatcher *events.TaskEventDispatche
 	// The processes its call activities started go with it.
 	TerminateOrphanedCalledInstances(db, dispatcher, &instanceID)
 
-	if err := ArchiveAndDeleteProcessInstance(db, instanceID, &reason); err != nil {
+	if err := ArchiveFinishedInstance(db, instanceID, &reason); err != nil {
 		fmt.Printf("Warning: failed to archive terminated process instance %s: %v\n", instanceID, err)
 	}
 

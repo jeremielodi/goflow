@@ -980,6 +980,19 @@ AFTER INSERT OR UPDATE ON public.scope_variables
 FOR EACH ROW EXECUTE FUNCTION public.goflow_notify_variables();
 
 
+-- Index des tables du moteur lues et nettoyées par instance ou exécution
+-- (migration 005).
+CREATE INDEX IF NOT EXISTS idx_jobs_process_instance_id ON public.jobs (process_instance_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_execution_id ON public.jobs (execution_id);
+CREATE INDEX IF NOT EXISTS idx_timer_jobs_process_instance_id ON public.timer_jobs (process_instance_id);
+CREATE INDEX IF NOT EXISTS idx_timer_jobs_execution_id ON public.timer_jobs (execution_id);
+CREATE INDEX IF NOT EXISTS idx_event_subscriptions_process_instance_id ON public.event_subscriptions (process_instance_id);
+CREATE INDEX IF NOT EXISTS idx_event_subscriptions_execution_id ON public.event_subscriptions (execution_id) WHERE consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_event_subprocesses_process_instance_id ON public.event_subprocesses (process_instance_id);
+CREATE INDEX IF NOT EXISTS idx_multi_instance_children_child ON public.multi_instance_children (child_execution_id);
+CREATE INDEX IF NOT EXISTS idx_published_messages_expires_at ON public.published_messages (expires_at);
+
+
 -- Suivi des migrations (voir database/migrations/README.md). Une base neuve
 -- part directement de la baseline 000.
 CREATE TABLE IF NOT EXISTS public.schema_migrations (
@@ -1006,4 +1019,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('004', 'goflow_variables : NOTIFY à chaque écriture de variables')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('005', 'index manquants sur les tables du moteur (jobs, timers, abonnements…)')
 ON CONFLICT (version) DO NOTHING;

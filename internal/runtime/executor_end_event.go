@@ -78,7 +78,7 @@ func (r *Runtime) executeEndEvent(ctx context.Context, engineRepo *repository.En
 	// failed archive leaves the instance live (already safely marked
 	// completed above), never risking data loss, so it's logged but not
 	// treated as fatal to process completion.
-	if err := service.ArchiveAndDeleteProcessInstance(r.DB, exec.ProcessInstanceID, nil); err != nil {
+	if err := service.ArchiveFinishedInstance(r.DB, exec.ProcessInstanceID, nil); err != nil {
 		fmt.Printf("Warning: failed to archive process instance %s: %v\n", exec.ProcessInstanceID, err)
 	}
 

@@ -75,7 +75,10 @@ async function main() {
   }
 
   console.log('📦  Starting Docker services (fresh build)…');
-  execSync('docker compose up -d --build --wait', {
+  // GOFLOW_REPLICAS=3 (with COMPOSE_FILE including docker-compose.scale.yaml)
+  // runs the suites against several GoFlow instances behind the load balancer.
+  const replicas = process.env.GOFLOW_REPLICAS ? ` --scale goflow=${process.env.GOFLOW_REPLICAS}` : '';
+  execSync(`docker compose up -d --build --wait${replicas}`, {
     cwd: path.join(__dirname, '..', '..'),
     stdio: 'inherit',
   });

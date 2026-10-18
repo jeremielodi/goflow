@@ -571,6 +571,18 @@ go run ./cmd/loadtest -url http://127.0.0.1:8080 -email <admin> -password <pwd> 
 
 It creates real instances: run it against a non-production server, or in production only in a quiet window and knowing the instances will stay in history (until retention removes them).
 
+### Horizontal scaling
+
+Several GoFlow instances can share one database behind a load balancer:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.scale.yaml up -d --scale goflow=3
+```
+
+`docker-compose.scale.yaml` adds an nginx load balancer (`deploy/nginx-lb.conf`: HTTP, server-sent events, WebSocket and the gRPC gateway) in front of the replicas, and leaves `docker-compose.yaml` untouched for a single instance. Everything running in the background is safe with several instances (timers and conditional events are claimed with `SKIP LOCKED`, archiving under advisory locks, message correlation atomically), job wake-ups and task events (`TASK_EVENTS_FANOUT`) are relayed between instances through Postgres `NOTIFY`, and each instance watches the whole Kafka event log. The full regression suite passes against three replicas. Keep `replicas × DB_MAX_OPEN_CONNS` under Postgres's `max_connections`.
+
+What bounds throughput is then Postgres — mostly waiting for its write-ahead log to reach the disk on each commit. GoFlow waits only where it matters: finished instances are archived in the background (`ARCHIVE_MODE=async`, the default; `sync` archives in the completing call), and writes that are safe to lose or redo on a crash — audit rows, archiving, the Kafka projections, job locks, a token passing through a step that doesn't wait — commit without waiting for the disk (`synchronous_commit` off for those transactions only); engine state stays durable. A server's SSD sustains far more commits per second than a laptop's virtualized disk, so measure on the real hardware with `cmd/loadtest`.
+
 ### FEEL expressions
 
 Expressions starting with `=` (Camunda 8 style) and DMN input entries can be evaluated by a native FEEL interpreter (`internal/feel`) instead of the historical FEEL-to-CEL text rewriting. Native FEEL brings FEEL semantics the rewriting can't: a missing variable is `null` instead of an error, numbers are exact decimals (`0.1 + 0.2 = 0.3`), and `if/then/else`, `for`, `some/every`, list filters (`items[qty > 1]`), ranges, contexts and built-in functions (`string length`, `list contains`, `sum`, `date`, `duration`…) work.

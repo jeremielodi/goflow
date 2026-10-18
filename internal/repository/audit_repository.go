@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/pkg/database"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -18,34 +17,32 @@ func NewAuditRepository(db *sqlx.DB) *AuditRepository {
 	return &AuditRepository{db: db}
 }
 
-// CreateAuditLog creates a single audit log entry
+// CreateAuditLog creates a single audit log entry. It doesn't wait for
+// the write to reach the disk (synchronous_commit off for this
+// transaction only): on a crash the last few milliseconds of audit rows
+// may be lost, never engine state, which is written durably by its own
+// transactions. Waiting for the disk on every audit row was the largest
+// cost of running an instance — COMMIT dominated the database time under
+// load.
 func (r *AuditRepository) CreateAuditLog(log *models.AuditLog) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	params := []database.QueryParameter{
-		{Key: "id", Value: log.ID},
-		{Key: "action", Value: string(log.Action)},
-		{Key: "created_at", Value: log.CreatedAt},
+	if log.ID == uuid.Nil {
+		log.ID = uuid.New()
 	}
-
-	if log.ProcessInstanceID != nil {
-		params = append(params, database.QueryParameter{Key: "process_instance_id", Value: *log.ProcessInstanceID})
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = time.Now()
 	}
-	if log.TaskID != nil {
-		params = append(params, database.QueryParameter{Key: "task_id", Value: *log.TaskID})
+	tx, err := r.db.Beginx()
+	if err != nil {
+		return err
 	}
-	if log.UserID != nil {
-		params = append(params, database.QueryParameter{Key: "user_id", Value: *log.UserID})
+	defer tx.Rollback()
+	if _, err := tx.Exec(`SET LOCAL synchronous_commit TO OFF`); err != nil {
+		return err
 	}
-	if log.OldData != nil {
-		params = append(params, database.QueryParameter{Key: "old_data", Value: log.OldData})
+	if err := r.CreateAuditLogTx(tx, log); err != nil {
+		return err
 	}
-	if log.NewData != nil {
-		params = append(params, database.QueryParameter{Key: "new_data", Value: log.NewData})
-	}
-
-	_, err := adapter.Insert("public.audit_logs", params)
-	return err
+	return tx.Commit()
 }
 
 // CreateAuditLogTx creates a single audit log entry within a transaction

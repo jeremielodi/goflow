@@ -51,7 +51,7 @@
  * endpoints specifically.
  */
 import * as path from 'path';
-import { GoFlowClient, runSuite, assert } from './client';
+import { GoFlowClient, runSuite, assert, sleep } from './client';
 
 const OPERATE_BPMN = path.join(__dirname, 'bpmn', '19_operate_process.bpmn');
 const PARALLEL_BPMN = path.join(__dirname, 'bpmn', '03_meal_preparation.bpmn');
@@ -77,6 +77,21 @@ interface TokenHistoryStep {
 async function getAuditLogs(instanceId: string): Promise<AuditLogEntry[]> {
   const res = await client.api.get(`/engine-rest/audit/process/${instanceId}`);
   return res.data.logs ?? [];
+}
+
+/**
+ * The raw audit log once the instance is archived: finished instances are
+ * archived in the background (ARCHIVE_MODE=async, the default), within a
+ * second or so of ending, so wait for it.
+ */
+async function getAuditLogsAfterArchive(instanceId: string): Promise<AuditLogEntry[]> {
+  const deadline = Date.now() + 10000;
+  let logs = await getAuditLogs(instanceId);
+  while (logs.length > 0 && Date.now() < deadline) {
+    await sleep(300);
+    logs = await getAuditLogs(instanceId);
+  }
+  return logs;
 }
 
 async function getTokenHistory(instanceId: string): Promise<TokenHistoryStep[]> {
@@ -148,11 +163,11 @@ async function run() {
 
           await client.waitForProcessEnd(instanceId, 10000);
 
-          // Completion triggers ArchiveAndDeleteProcessInstance: the raw
+          // Completion leads to archiving (in the background): the raw
           // audit log is now gone (no historic fallback for this endpoint,
           // by design) — an empty result here is the expected proof that
           // archival actually deleted the live rows, not a bug.
-          const logsAfterArchive = await getAuditLogs(instanceId);
+          const logsAfterArchive = await getAuditLogsAfterArchive(instanceId);
           assert(
             logsAfterArchive.length === 0,
             `expected the raw audit log to be empty after archival, got: [${logsAfterArchive.map(l => l.action).join(', ')}]`
@@ -250,7 +265,7 @@ async function run() {
           // Raw audit log is gone — proof the live row was actually
           // archived and deleted, not merely soft-deleted (expected, by
           // design: this endpoint has no historic fallback).
-          const logs = await getAuditLogs(instanceId);
+          const logs = await getAuditLogsAfterArchive(instanceId);
           assert(
             logs.length === 0,
             `expected the raw audit log to be empty after archival, got: [${logs.map(l => l.action).join(', ')}]`

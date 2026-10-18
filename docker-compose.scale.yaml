@@ -1,0 +1,38 @@
+# Plusieurs instances GoFlow derrière un load balancer nginx.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.scale.yaml up -d --scale goflow=3
+#
+# Ce fichier s'ajoute à docker-compose.yaml sans le modifier : sans lui,
+# GoFlow tourne comme avant, en une seule instance. Les instances partagent
+# la même base ; tout ce qui tourne en tâche de fond (timers, archivage,
+# messages, conditions) est déjà sûr à plusieurs, et les événements de
+# tâches (SSE, WebSocket) sont relayés entre instances.
+#
+# Connexions : chaque instance ouvre jusqu'à DB_MAX_OPEN_CONNS connexions.
+# Garder instances × DB_MAX_OPEN_CONNS sous POSTGRES_MAX_CONNECTIONS (200
+# par défaut), avec de la marge pour les connexions LISTEN.
+
+services:
+  goflow:
+    # Plusieurs répliques : pas de nom de conteneur fixe, et c'est le load
+    # balancer qui publie les ports.
+    container_name: !reset null
+    ports: !reset []
+    environment:
+      TASK_EVENTS_FANOUT: "true"
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-40}
+
+  lb:
+    image: nginx:1.29.2-alpine
+    container_name: goflow-lb
+    depends_on:
+      goflow:
+        condition: service_healthy
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+      - "26500:26500"
+    volumes:
+      - ./deploy/nginx-lb.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - goflow-network
+    restart: unless-stopped

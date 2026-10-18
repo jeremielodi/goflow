@@ -871,7 +871,7 @@ func (pc *ProcessInstanceController) EndProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := service.ArchiveAndDeleteProcessInstance(pc.db, instanceID, nil); err != nil {
+	if err := service.ArchiveFinishedInstance(pc.db, instanceID, nil); err != nil {
 		fmt.Printf("Warning: failed to archive ended process instance %s: %v\n", instanceID, err)
 	}
 

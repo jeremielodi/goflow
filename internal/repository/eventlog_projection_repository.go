@@ -28,7 +28,7 @@ func NewEventLogProjectionRepository(db *sqlx.DB) *EventLogProjectionRepository 
 // process_start.go) stay NULL rather than being overwritten with empty
 // strings.
 func (r *EventLogProjectionRepository) UpsertInstance(id uuid.UUID, processDefinitionID *uuid.UUID, processKey string, version int32, status string, startedAt time.Time) error {
-	_, err := r.db.Exec(`
+	_, err := execNoSync(r.db, `
 		INSERT INTO public.eventlog_projected_instances
 			(id, process_definition_id, process_key, version, status, started_at, updated_at)
 		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, NOW())
@@ -48,7 +48,7 @@ func (r *EventLogProjectionRepository) UpsertInstance(id uuid.UUID, processDefin
 // inserts a minimal row rather than silently doing nothing, so the
 // projection still reflects reality once folded events catch up.
 func (r *EventLogProjectionRepository) UpdateInstanceStatus(id uuid.UUID, status string, endedAt time.Time) error {
-	_, err := r.db.Exec(`
+	_, err := execNoSync(r.db, `
 		INSERT INTO public.eventlog_projected_instances (id, status, ended_at, updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (id) DO UPDATE SET
@@ -61,7 +61,7 @@ func (r *EventLogProjectionRepository) UpdateInstanceStatus(id uuid.UUID, status
 
 // UpsertJob creates or refreshes a projected job row — called on JobCreated.
 func (r *EventLogProjectionRepository) UpsertJob(id, processInstanceID uuid.UUID, executionID *uuid.UUID, jobType, status string) error {
-	_, err := r.db.Exec(`
+	_, err := execNoSync(r.db, `
 		INSERT INTO public.eventlog_projected_jobs
 			(id, process_instance_id, execution_id, job_type, status, updated_at)
 		VALUES ($1, $2, $3, $4, $5, NOW())
@@ -76,7 +76,7 @@ func (r *EventLogProjectionRepository) UpsertJob(id, processInstanceID uuid.UUID
 // JobCompleted/JobFailed. Same insert-if-missing rationale as
 // UpdateInstanceStatus.
 func (r *EventLogProjectionRepository) UpdateJobStatus(id, processInstanceID uuid.UUID, status, errorMessage string, retriesRemaining *int32) error {
-	_, err := r.db.Exec(`
+	_, err := execNoSync(r.db, `
 		INSERT INTO public.eventlog_projected_jobs (id, process_instance_id, status, error_message, retries_remaining, updated_at)
 		VALUES ($1, $2, $3, NULLIF($4, ''), $5, NOW())
 		ON CONFLICT (id) DO UPDATE SET

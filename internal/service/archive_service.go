@@ -122,6 +122,12 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// No need to wait for the disk: if a crash loses this commit, it loses
+	// it whole — the instance is still completed in the live tables and
+	// gets archived again.
+	if _, err := tx.Exec(`SET LOCAL synchronous_commit TO OFF`); err != nil {
+		return err
+	}
 
 	err = archiveRepo.InsertProcessInstanceTx(tx, repository.HistoricProcessInstance{
 		ID:                       instance.ID,

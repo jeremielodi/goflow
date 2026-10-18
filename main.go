@@ -130,7 +130,11 @@ func main() {
 	if brokersEnv := util.DotEnvVariable("KAFKA_BROKERS"); brokersEnv != "" {
 		brokers := strings.Split(brokersEnv, ",")
 		eventlog.SetGlobalProducer(eventlog.NewProducer(brokers))
-		eventLogConsumer = eventlog.NewConsumer(brokers, "goflow-eventlog-shadow", db)
+		// The projector (one group shared by every replica) and this
+		// replica's watcher (every event: recent-events ring, Command
+		// Gateway waiters).
+		go eventlog.NewConsumer(brokers, "goflow-eventlog-shadow", db).Run(context.Background())
+		eventLogConsumer = eventlog.NewWatcher(brokers)
 		go eventLogConsumer.Run(context.Background())
 		log.Println("✅ Event log shadow mode started (brokers:", brokersEnv, ")")
 	} else {
@@ -183,11 +187,11 @@ func main() {
 
 	// Create SSE listener for real-time events
 	sseListener := listeners.NewSSEListener()
-	taskEventDispatcher.Register(sseListener)
+	taskEventDispatcher.RegisterViewer(sseListener)
 
 	// Create WebSocket listener
 	wsListener := listeners.NewWebSocketListener()
-	taskEventDispatcher.Register(wsListener)
+	taskEventDispatcher.RegisterViewer(wsListener)
 
 	// Create Webhook listener (optional - configure as needed)
 	webhookListener := listeners.NewWebhookListener()
@@ -202,6 +206,15 @@ func main() {
 	// 	},
 	// })
 	taskEventDispatcher.Register(webhookListener)
+
+	// Several GoFlow instances behind a load balancer (docker-compose.scale.yaml):
+	// task events are relayed between them, so an SSE/WebSocket client sees
+	// them whichever instance it is connected to.
+	if strings.EqualFold(os.Getenv("TASK_EVENTS_FANOUT"), "true") {
+		if err := repository.StartTaskEventFanout(context.Background(), db, database.ConnStringForListener(util), taskEventDispatcher); err != nil {
+			log.Fatalln("task event fanout: ", err)
+		}
+	}
 
 	resumer := runtime.CreateResumer(db, taskEventDispatcher)
 
@@ -327,6 +340,7 @@ func main() {
 	go timerScheduler.Start(context.Background())
 	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher, database.ConnStringForListener(util))
 	runtime.StartMessageSweeper(context.Background(), db, taskEventDispatcher)
+	service.StartArchiver(context.Background(), db)
 	defer timerScheduler.Stop()
 
 	// ============================================================

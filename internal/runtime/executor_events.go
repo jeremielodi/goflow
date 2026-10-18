@@ -28,6 +28,11 @@ func (r *Runtime) advance(ctx context.Context, engineRepo *repository.EngineRepo
 		return "", fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+	// A step that doesn't wait: the next wait state's durable commit
+	// carries it (see repository.NoSyncTx).
+	if err := repository.NoSyncTx(tx); err != nil {
+		return "", err
+	}
 	if err := engineRepo.UpdateExecutionNodeTx(tx, exec.ProcessInstanceID, exec.ID, next); err != nil {
 		return "", fmt.Errorf("failed to update execution node: %w", err)
 	}

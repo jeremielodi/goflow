@@ -519,7 +519,27 @@ func (r *EngineRepository) UpdateProcessInstanceStatusTx(tx *sqlx.Tx, instanceID
 
 // CompleteProcessInstance marks a process instance as completed
 func (r *EngineRepository) CompleteProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
-	return r.UpdateProcessInstanceStatusTx(tx, instanceID, "completed", &[]time.Time{time.Now()}[0])
+	if err := r.UpdateProcessInstanceStatusTx(tx, instanceID, "completed", &[]time.Time{time.Now()}[0]); err != nil {
+		return err
+	}
+	// A finished instance receives nothing more: its subscriptions are
+	// closed, its pending timers dropped and its still-armed trigger
+	// executions (event sub-processes, boundary events) ended — right now,
+	// not when it gets archived (in the background, a moment later).
+	if _, err := tx.Exec(`
+		UPDATE public.event_subscriptions SET consumed_at = NOW()
+		WHERE process_instance_id = $1 AND consumed_at IS NULL
+	`, instanceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM public.timer_jobs WHERE process_instance_id = $1 AND is_triggered = false`, instanceID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`
+		UPDATE public.executions SET status = 'completed', is_active = false, updated_at = NOW()
+		WHERE process_instance_id = $1 AND is_active = true
+	`, instanceID)
+	return err
 }
 
 // // CreateExecutionTx creates a new execution within a transaction

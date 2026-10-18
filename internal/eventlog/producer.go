@@ -10,9 +10,9 @@
 // real network round-trip to the caller's critical path, and that latency
 // once shifted the timing of a pre-existing, otherwise-benign race in the
 // inclusive-gateway join logic into an actual duplicate-key failure —
-// exactly the kind of behavioral change Phase 0 must never cause. Firing
-// each publish on its own goroutine, decoupled from the caller's context,
-// removes that risk entirely.
+// exactly the kind of behavioral change Phase 0 must never cause. A publish
+// only queues the event (see Producer.send); a single sender writes the
+// queue in the background, decoupled from the caller.
 package eventlog
 
 import (
@@ -38,21 +38,27 @@ const Topic = "goflow.process-events"
 // context — it is never tied to (or able to block) the caller's request.
 const publishTimeout = 5 * time.Second
 
+// Producer publishes domain events without ever blocking its caller:
+// send queues the event, and a single sender goroutine writes the queue to
+// Kafka in order, batching whatever is waiting. Events of one GoFlow
+// instance therefore reach their partition in the order they happened
+// (they used to be written by one goroutine each, in no particular order).
 type Producer struct {
 	writer *kafka.Writer
+	queue  chan kafka.Message
 }
+
+// producerQueue bounds the events waiting to be written; beyond it, events
+// are dropped (logged) rather than blocking the engine.
+const producerQueue = 10000
 
 // globalProducer is a process-wide singleton, set once at boot (or left nil
 // if Phase 0 shadow-mode publishing isn't configured, e.g. in unit tests or
 // `go run` outside Docker). This mirrors the codebase's existing pattern for
-// cross-cutting, best-effort infrastructure that many unrelated call sites
-// need without threading a dependency through every layer — see
-// repository.NotifyJobAvailable/JobWakeChannel. Every call site using
-// Global() must treat a nil result as a no-op.
+// process-wide singletons.
 var globalProducer *Producer
 
-// SetGlobalProducer installs the process-wide Producer used by call sites
-// throughout internal/service and internal/runtime.
+// SetGlobalProducer installs p as the process-wide producer.
 func SetGlobalProducer(p *Producer) {
 	globalProducer = p
 }
@@ -63,46 +69,66 @@ func Global() *Producer {
 }
 
 // NewProducer builds a producer against the given brokers (e.g.
-// []string{"redpanda:9092"}). The returned Producer is safe for concurrent
-// use, matching kafka-go.Writer's own concurrency contract.
+// []string{"redpanda:9092"}) and starts its sender.
 func NewProducer(brokers []string) *Producer {
-	return &Producer{
+	p := &Producer{
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),
 			Topic:        Topic,
 			Balancer:     &kafka.Hash{}, // key (processInstanceId) determines partition
 			RequiredAcks: kafka.RequireOne,
+			BatchTimeout: 5 * time.Millisecond,
 		},
+		queue: make(chan kafka.Message, producerQueue),
 	}
+	go p.run()
+	return p
 }
 
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }
 
-// send fires the publish on its own goroutine and returns immediately —
-// see the package doc comment for why this must never block the caller.
+// run writes the queue in order: it takes every event already waiting
+// (up to a batch) and writes them in one call.
+func (p *Producer) run() {
+	const maxBatch = 500
+	batch := make([]kafka.Message, 0, maxBatch)
+	for msg := range p.queue {
+		batch = append(batch[:0], msg)
+	collect:
+		for len(batch) < maxBatch {
+			select {
+			case more := <-p.queue:
+				batch = append(batch, more)
+			default:
+				break collect
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
+		if err := p.writer.WriteMessages(ctx, batch...); err != nil {
+			log.Printf("eventlog: failed to publish %d event(s): %v", len(batch), err)
+		}
+		cancel()
+	}
+}
+
+// send queues the event and returns immediately — see the package doc
+// comment for why this must never block the caller.
 func (p *Producer) send(instanceID string, env *pb.Envelope) {
 	env.EventId = uuid.NewString()
 	env.ProcessInstanceId = instanceID
 	env.OccurredAt = timestamppb.Now()
-	eventType := envelopeEventType(env)
-
-	go func() {
-		data, err := proto.Marshal(env)
-		if err != nil {
-			log.Printf("eventlog: failed to marshal %s event for instance %s: %v", eventType, instanceID, err)
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), publishTimeout)
-		defer cancel()
-		if err := p.writer.WriteMessages(ctx, kafka.Message{
-			Key:   []byte(instanceID),
-			Value: data,
-		}); err != nil {
-			log.Printf("eventlog: failed to publish %s event for instance %s: %v", eventType, instanceID, err)
-		}
-	}()
+	data, err := proto.Marshal(env)
+	if err != nil {
+		log.Printf("eventlog: failed to marshal %s event for instance %s: %v", envelopeEventType(env), instanceID, err)
+		return
+	}
+	select {
+	case p.queue <- kafka.Message{Key: []byte(instanceID), Value: data}:
+	default:
+		log.Printf("eventlog: publish queue full, dropping %s event for instance %s", envelopeEventType(env), instanceID)
+	}
 }
 
 func envelopeEventType(env *pb.Envelope) string {

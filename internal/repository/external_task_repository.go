@@ -25,6 +25,10 @@ func NewExternalTaskRepository(db *sqlx.DB) *ExternalTaskRepository {
 
 // FetchAndLockJobs fetches and locks pending jobs for given topics
 func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicConfig, workerID string, maxTasks int) ([]TopicJobs, error) {
+	// A lost lock only means the job is fetched again (see NoSyncTx).
+	if err := NoSyncTx(tx); err != nil {
+		return nil, err
+	}
 	result := []TopicJobs{}
 
 	for _, topic := range topics {
@@ -229,20 +233,6 @@ func (r *ExternalTaskRepository) GetProcessDefinitionGraphTx(tx *sqlx.Tx, instan
 	}
 
 	return graphJSON, nil
-}
-
-// CompleteProcessInstance marks a process instance as completed
-func (r *ExternalTaskRepository) CompleteProcessInstanceTx(tx *sqlx.Tx, instanceID uuid.UUID) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.process_instances",
-		[]database.QueryParameter{
-			{Key: "status", Value: "completed"},
-			{Key: "ended_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: instanceID},
-	)
-	return err
 }
 
 // CompleteExecution marks an execution as completed. Uses direct SQL rather
