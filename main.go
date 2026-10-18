@@ -90,6 +90,20 @@ func main() {
 	if err != nil {
 		log.Fatalln("Postgres: ", err)
 	}
+	// Session-level work (advisory locks held across transactions) reaches
+	// Postgres directly, bypassing PgBouncer when there is one (DB_DIRECT_HOST).
+	directDB, err := database.NewDirectPostgres(util)
+	if err != nil {
+		log.Fatalln("Postgres (direct): ", err)
+	}
+	// History and analytics read a replica when DB_READ_HOST
+	// is set (read-only, a few milliseconds behind), the primary otherwise.
+	readDB := db
+	if replica, err := database.NewReadPostgres(util); err != nil {
+		log.Fatalln("Postgres (read replica): ", err)
+	} else if replica != nil {
+		readDB = replica
+	}
 
 	// Optional Citus-backed distributed-storage deployment (see
 	// architecture/citus-distributed-storage-design.md and
@@ -256,7 +270,7 @@ func main() {
 		log.Fatalln("retention:", err)
 	}
 	if retentionCfg.Enabled() {
-		retention.Start(context.Background(), db, retentionCfg)
+		retention.Start(context.Background(), directDB, retentionCfg)
 		log.Printf("✅ Retention purge enabled: finished instances older than %d days, every %s", retentionCfg.Days, retentionCfg.Interval)
 	} else {
 		log.Println("⏭️ RETENTION_DAYS not set — finished instances are kept forever")
@@ -289,6 +303,8 @@ func main() {
 	taskCtrl := api.NewTaskController(db, &rootDirPath, taskEventDispatcher) // Pass dispatcher
 
 	externalTaskCtrl := api.NewExternalTaskController(db, taskEventDispatcher)
+	// Read on the primary: the audit trail (token replay) is read right
+	// after the actions it records.
 	auditController := api.NewAuditController(db)
 
 	multiInstanceController := api.NewMultiInstanceController(db)
@@ -311,7 +327,7 @@ func main() {
 
 	timerController := api.NewTimerController(db)
 	incidentCtrl := api.NewIncidentController(db, taskEventDispatcher)
-	analyticsCtrl := api.NewAnalyticsController(db)
+	analyticsCtrl := api.NewAnalyticsController(readDB)
 	eventLogCtrl := api.NewEventLogController(eventLogConsumer, db)
 
 	historicTaskCtrl := api.NewHistoricTaskController(db)
@@ -319,7 +335,7 @@ func main() {
 
 	messageCtrl := api.NewMessageController(db, taskEventDispatcher)
 	signalCtrl := api.NewSignalController(db, taskEventDispatcher)
-	historyCtrl := api.NewHistoryController(db)
+	historyCtrl := api.NewHistoryController(readDB)
 
 	// Camunda 8 REST API ("/v2/...") — same engine, translated request/response shapes.
 	v2ProcessInstanceCtrl := apiv2.NewProcessInstanceController(db, taskEventDispatcher)
@@ -340,7 +356,7 @@ func main() {
 	go timerScheduler.Start(context.Background())
 	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher, database.ConnStringForListener(util))
 	runtime.StartMessageSweeper(context.Background(), db, taskEventDispatcher)
-	service.StartArchiver(context.Background(), db)
+	service.StartArchiver(context.Background(), db, directDB)
 	defer timerScheduler.Stop()
 
 	// ============================================================

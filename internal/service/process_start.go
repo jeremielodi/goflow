@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/repository"
@@ -131,7 +132,8 @@ func startProcessInstanceAt(
 
 	if err = instanceRepo.CreateProcessInstanceTx(tx, instanceID, processDefinitionID, now, tenantID); err != nil {
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		var pgErr *pgconn.PgError // the pgx driver
+		if (errors.As(err, &pqErr) && pqErr.Code == "23505") || (errors.As(err, &pgErr) && pgErr.Code == "23505") {
 			return ErrProcessAlreadyStarted
 		}
 		return fmt.Errorf("failed to create process instance: %w", err)

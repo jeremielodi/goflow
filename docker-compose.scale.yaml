@@ -1,26 +1,76 @@
-# Plusieurs instances GoFlow derrière un load balancer nginx.
+# Plusieurs instances GoFlow derrière un load balancer nginx, avec PgBouncer
+# devant Postgres.
 #
 #   docker compose -f docker-compose.yaml -f docker-compose.scale.yaml up -d --scale goflow=3
 #
 # Ce fichier s'ajoute à docker-compose.yaml sans le modifier : sans lui,
-# GoFlow tourne comme avant, en une seule instance. Les instances partagent
-# la même base ; tout ce qui tourne en tâche de fond (timers, archivage,
-# messages, conditions) est déjà sûr à plusieurs, et les événements de
-# tâches (SSE, WebSocket) sont relayés entre instances.
+# GoFlow tourne comme avant, en une seule instance connectée directement à
+# Postgres. Les instances partagent la même base ; tout ce qui tourne en
+# tâche de fond (timers, archivage, messages, conditions) est déjà sûr à
+# plusieurs, et les événements de tâches (SSE, WebSocket) sont relayés entre
+# instances.
 #
-# Connexions : chaque instance ouvre jusqu'à DB_MAX_OPEN_CONNS connexions.
-# Garder instances × DB_MAX_OPEN_CONNS sous POSTGRES_MAX_CONNECTIONS (200
-# par défaut), avec de la marge pour les connexions LISTEN.
+# PgBouncer (mode transaction) mutualise les connexions : chaque instance
+# peut ouvrir beaucoup de connexions clientes, Postgres n'en voit que
+# DEFAULT_POOL_SIZE. Ce qui a besoin d'une session Postgres (LISTEN, verrous
+# consultatifs de l'archiveur et de la rétention) passe directement par
+# Postgres (DB_DIRECT_HOST). Les délais (statement_timeout…) sont réglés
+# côté Postgres : PgBouncer ne transmet pas les paramètres de démarrage.
 
 services:
+  postgres:
+    command:
+      - postgres
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      - -c
+      - statement_timeout=30000
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      - -c
+      - hba_file=/etc/goflow/pg_hba.conf
+    volumes:
+      - ./deploy/pg_hba.conf:/etc/goflow/pg_hba.conf:ro
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: goflow-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: goflow
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
+      DB_NAME: goflow
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 2000
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_POOL_SIZE:-80}
+      MAX_PREPARED_STATEMENTS: 200
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,statement_timeout,idle_in_transaction_session_timeout
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
   goflow:
     # Plusieurs répliques : pas de nom de conteneur fixe, et c'est le load
     # balancer qui publie les ports.
     container_name: !reset null
     ports: !reset []
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      postgres-replica:
+        condition: service_healthy
     environment:
+      DB_HOST: pgbouncer
+      DB_DIRECT_HOST: postgres
+      DB_DIRECT_PORT: 5432
       TASK_EVENTS_FANOUT: "true"
-      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-40}
+      DB_READ_HOST: postgres-replica
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-100}
 
   lb:
     image: nginx:1.29.2-alpine
@@ -36,3 +86,49 @@ services:
     networks:
       - goflow-network
     restart: unless-stopped
+
+  # Rôle de réplication sur le primaire (idempotent), puis la réplique en
+  # lecture : l'historique et l'analytics la lisent
+  # (DB_READ_HOST), quelques millisecondes derrière le primaire.
+  replication-setup:
+    image: postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: goflow
+      POSTGRES_DB: goflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+    entrypoint: ["/bin/bash", "/replication-setup.sh"]
+    volumes:
+      - ./deploy/replication-setup.sh:/replication-setup.sh:ro
+    networks:
+      - goflow-network
+    restart: "no"
+
+  postgres-replica:
+    image: postgres:16
+    container_name: goflow-postgres-replica
+    depends_on:
+      replication-setup:
+        condition: service_completed_successfully
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-200}
+    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
+    volumes:
+      - replica_data:/var/lib/postgresql/data
+      - ./deploy/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "goflow", "-d", "goflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+volumes:
+  replica_data:

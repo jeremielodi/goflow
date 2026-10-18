@@ -5,9 +5,10 @@ import (
 	"strconv"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // the "pgx" driver
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // LISTEN (pq.Listener) and pq helpers
 )
 
 // Connection pool configuration
@@ -65,7 +66,7 @@ func NewPostgres(util common.Util) (*sqlx.DB, error) {
 		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
-	db, err := sqlx.Connect("postgres", connStr)
+	db, err := sqlx.Connect(driverName, connStr+pgxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -97,7 +98,7 @@ func NewPostgresWithPool(util common.Util, config PoolConfig) (*sqlx.DB, error) 
 		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
-	db, err := sqlx.Connect("postgres", connStr)
+	db, err := sqlx.Connect(driverName, connStr+pgxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -126,7 +127,7 @@ func NewPostgresDev(util common.Util) (*sqlx.DB, error) {
 		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
-	db, err := sqlx.Connect("postgres", connStr)
+	db, err := sqlx.Connect(driverName, connStr+pgxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -154,7 +155,7 @@ func NewPostgresHighPerf(util common.Util) (*sqlx.DB, error) {
 		DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME, sslMode(env),
 	)
 
-	db, err := sqlx.Connect("postgres", connStr)
+	db, err := sqlx.Connect(driverName, connStr+pgxOptions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -226,11 +227,41 @@ func NewPostgres2(util common.Util) (*sqlx.DB, error) {
 // across callers — lib/pq's pq.Listener manages its own dedicated,
 // auto-reconnecting connection for exactly this reason.
 func ConnStringForListener(util common.Util) string {
+	return directConnString(util)
+}
+
+// directConnString reaches Postgres itself, bypassing a connection pooler
+// such as PgBouncer: DB_DIRECT_HOST / DB_DIRECT_PORT when set, otherwise
+// DB_HOST / DB_PORT (no pooler: the same database). Session-level features
+// need it — LISTEN, and advisory locks held across transactions — since a
+// pooler in transaction mode hands each transaction to any server
+// connection.
+func directConnString(util common.Util) string {
 	env := util.DotEnvVariable
+	host, port := env("DB_DIRECT_HOST"), env("DB_DIRECT_PORT")
+	if host == "" {
+		host = env("DB_HOST")
+	}
+	if port == "" {
+		port = env("DB_PORT")
+	}
 	return fmt.Sprintf(
 		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s",
-		env("DB_HOST"), env("DB_PORT"), env("DB_USER"), env("DB_PASS"), env("DB_NAME"), sslMode(env),
+		host, port, env("DB_USER"), env("DB_PASS"), env("DB_NAME"), sslMode(env),
 	)
+}
+
+// NewDirectPostgres opens a small pool reaching Postgres directly (see
+// directConnString), for session-level work: the advisory locks of the
+// archiver and the retention job.
+func NewDirectPostgres(util common.Util) (*sqlx.DB, error) {
+	db, err := sqlx.Connect(driverName, directConnString(util)+" connect_timeout=10"+pgxOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database directly: %w", err)
+	}
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	return db, nil
 }
 
 // GetPoolStats returns current connection pool statistics for monitoring
@@ -275,3 +306,43 @@ func poolConfigFromEnv(env func(string) string, base PoolConfig) PoolConfig {
 	}
 	return base
 }
+
+// NewReadPostgres opens a pool on a read replica (DB_READ_HOST,
+// DB_READ_PORT; same credentials), for read-only, lag-tolerant queries —
+// history, analytics — so they don't load the primary.
+// nil when DB_READ_HOST isn't set: those queries then read the primary.
+func NewReadPostgres(util common.Util) (*sqlx.DB, error) {
+	env := util.DotEnvVariable
+	host := env("DB_READ_HOST")
+	if host == "" {
+		return nil, nil
+	}
+	port := env("DB_READ_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	connStr := fmt.Sprintf(
+		"host=%s port=%v user=%s password=%s dbname=%s sslmode=%s connect_timeout=10 statement_timeout=60000",
+		host, port, env("DB_USER"), env("DB_PASS"), env("DB_NAME"), sslMode(env),
+	)
+	db, err := sqlx.Connect(driverName, connStr+pgxOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to the read replica: %w", err)
+	}
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+	return db, nil
+}
+
+// driverName is the database/sql driver of every pool: pgx. lib/pq sent
+// each parameterized query in two round trips (prepare, then execute),
+// which a connection pooler in transaction mode (PgBouncer) may route to
+// two different server connections — "unnamed prepared statement does
+// not exist". pq.Listener (LISTEN) keeps using lib/pq on its own
+// connection.
+const driverName = "pgx"
+
+// pgxOptions: describe a statement once per connection, then send each
+// execution in one round trip with the unnamed statement — safe through
+// PgBouncer, unlike cached named statements.
+const pgxOptions = " default_query_exec_mode=cache_describe"

@@ -1,0 +1,4 @@
+# Scripts and configs run inside Linux containers: keep LF line endings,
+# whatever core.autocrlf says (a CRLF shell script fails in the container).
+*.sh   text eol=lf
+*.conf text eol=lf

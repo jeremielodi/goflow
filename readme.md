@@ -579,7 +579,15 @@ Several GoFlow instances can share one database behind a load balancer:
 docker compose -f docker-compose.yaml -f docker-compose.scale.yaml up -d --scale goflow=3
 ```
 
-`docker-compose.scale.yaml` adds an nginx load balancer (`deploy/nginx-lb.conf`: HTTP, server-sent events, WebSocket and the gRPC gateway) in front of the replicas, and leaves `docker-compose.yaml` untouched for a single instance. Everything running in the background is safe with several instances (timers and conditional events are claimed with `SKIP LOCKED`, archiving under advisory locks, message correlation atomically), job wake-ups and task events (`TASK_EVENTS_FANOUT`) are relayed between instances through Postgres `NOTIFY`, and each instance watches the whole Kafka event log. The full regression suite passes against three replicas. Keep `replicas × DB_MAX_OPEN_CONNS` under Postgres's `max_connections`.
+`docker-compose.scale.yaml` leaves `docker-compose.yaml` untouched for a single instance and adds:
+
+- an nginx load balancer (`deploy/nginx-lb.conf`: HTTP, server-sent events, WebSocket and the gRPC gateway) in front of the replicas;
+- PgBouncer in transaction mode: the replicas may open many client connections, Postgres only sees the pool (`PGBOUNCER_POOL_SIZE`). What needs a Postgres session — `LISTEN`, the advisory locks of the archiver and the retention job — reaches Postgres directly (`DB_DIRECT_HOST`). GoFlow uses the pgx driver, which sends each query in one round trip, as a transaction-mode pooler requires;
+- a streaming read replica (`deploy/replica-entrypoint.sh`): history and analytics read it (`DB_READ_HOST`), a few milliseconds behind the primary; everything else reads and writes the primary.
+
+Everything running in the background is safe with several instances (timers and conditional events are claimed with `SKIP LOCKED`, archiving under advisory locks, message correlation atomically), job wake-ups and task events (`TASK_EVENTS_FANOUT`) are relayed between instances through Postgres `NOTIFY`, and each instance watches the whole Kafka event log. The full regression suite passes against three replicas behind PgBouncer, with the read replica.
+
+On an existing database, a read replica needs, on the primary, a replication role (`CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '…'`) and a `pg_hba.conf` line (`host replication replicator <replica address> scram-sha-256`, then `SELECT pg_reload_conf()`); the replica then starts from `pg_basebackup -R` (what `deploy/replica-entrypoint.sh` does). None of it changes the data.
 
 What bounds throughput is then Postgres — mostly waiting for its write-ahead log to reach the disk on each commit. GoFlow waits only where it matters: finished instances are archived in the background (`ARCHIVE_MODE=async`, the default; `sync` archives in the completing call), and writes that are safe to lose or redo on a crash — audit rows, archiving, the Kafka projections, job locks, a token passing through a step that doesn't wait — commit without waiting for the disk (`synchronous_commit` off for those transactions only); engine state stays durable. A server's SSD sustains far more commits per second than a laptop's virtualized disk, so measure on the real hardware with `cmd/loadtest`.
 

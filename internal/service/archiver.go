@@ -43,9 +43,10 @@ const archiverBatch = 100
 
 // StartArchiver archives finished instances in the background until ctx
 // is done (no-op with ARCHIVE_MODE=sync). Several GoFlow instances can run
-// it: each instance is archived under a session advisory lock, so two
-// archivers never work on the same one.
-func StartArchiver(ctx context.Context, db *sqlx.DB) {
+// it: each instance is archived under a session advisory lock — held on
+// lockDB, which reaches Postgres directly (see database.NewDirectPostgres)
+// — so two archivers never work on the same one.
+func StartArchiver(ctx context.Context, db, lockDB *sqlx.DB) {
 	if !asyncArchiving() {
 		return
 	}
@@ -58,7 +59,7 @@ func StartArchiver(ctx context.Context, db *sqlx.DB) {
 				return
 			case <-ticker.C:
 				// Drain: keep going while full batches come back.
-				for archivePass(ctx, db) == archiverBatch && ctx.Err() == nil {
+				for archivePass(ctx, db, lockDB) == archiverBatch && ctx.Err() == nil {
 				}
 			}
 		}
@@ -67,7 +68,7 @@ func StartArchiver(ctx context.Context, db *sqlx.DB) {
 
 // archivePass archives up to archiverBatch finished instances and returns
 // how many it found.
-func archivePass(ctx context.Context, db *sqlx.DB) int {
+func archivePass(ctx context.Context, db, lockDB *sqlx.DB) int {
 	var finished []struct {
 		ID     uuid.UUID `db:"id"`
 		Status string    `db:"status"`
@@ -84,7 +85,7 @@ func archivePass(ctx context.Context, db *sqlx.DB) int {
 	if len(finished) == 0 {
 		return 0
 	}
-	conn, err := db.Connx(ctx)
+	conn, err := lockDB.Connx(ctx)
 	if err != nil {
 		log.Printf("archiver: %v", err)
 		return 0
