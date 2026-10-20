@@ -100,7 +100,8 @@ func main() {
 	// is set (read-only, a few milliseconds behind), the primary otherwise.
 	readDB := db
 	if replica, err := database.NewReadPostgres(util); err != nil {
-		log.Fatalln("Postgres (read replica): ", err)
+		// Not fatal: history and analytics read the primary meanwhile.
+		log.Printf("⚠️ read replica unreachable, reading history and analytics on the primary: %v", err)
 	} else if replica != nil {
 		readDB = replica
 	}

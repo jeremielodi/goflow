@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -174,6 +175,12 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 			return
 		}
 		if _, _, err := ResumeTimerExecution(s.db, s.dispatcher, timer.ProcessInstanceID, execID, targetNodeID); err != nil {
+			if errors.Is(err, ErrStaleTimer) {
+				// Disarmed after it was claimed: nothing to resume, and a
+				// cycle must not arm its next occurrence.
+				log.Printf("timer %s: its execution moved on meanwhile — ignored", timer.ID)
+				return
+			}
 			log.Printf("Failed to resume execution for timer %s: %v", timer.ID, err)
 			return
 		}
@@ -330,6 +337,10 @@ func ParseTimerTargetNode(payload []byte) (string, error) {
 // internal/partition's Partition Processor (see TimerPartitionRouter
 // above) the same way SetJobRetries/ResolveIncident were extracted in the
 // prior gap-closing pass.
+// ErrStaleTimer: the execution a timer would resume no longer waits for it
+// (its element was left, the timer disarmed, after the timer was claimed).
+var ErrStaleTimer = errors.New("timer is stale: its execution no longer waits")
+
 func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, processInstanceID, execID uuid.UUID, targetNodeID string) (fromNodeID string, cancelledTaskIDs []uuid.UUID, err error) {
 	engineRepo := repository.NewEngineRepository(db, dispatcher)
 	auditService := NewAuditService(db)
@@ -340,9 +351,21 @@ func ResumeTimerExecution(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, p
 	}
 	defer tx.Rollback()
 
-	if err := tx.Get(&fromNodeID, `SELECT current_element_id FROM public.executions WHERE process_instance_id = $1 AND id = $2`, processInstanceID, execID); err != nil {
+	// Locked: the timer and whatever left its element meanwhile (an
+	// activity completing disarms its boundary timers) take turns. A timer
+	// claimed just before being disarmed finds its execution no longer
+	// waiting: it is stale.
+	var at struct {
+		Node   string `db:"current_element_id"`
+		Status string `db:"status"`
+	}
+	if err := tx.Get(&at, `SELECT current_element_id, status FROM public.executions WHERE process_instance_id = $1 AND id = $2 FOR UPDATE`, processInstanceID, execID); err != nil {
 		return "", nil, fmt.Errorf("failed to load current node: %w", err)
 	}
+	if at.Status != "waiting" {
+		return at.Node, nil, ErrStaleTimer
+	}
+	fromNodeID = at.Node
 
 	if err := tx.Select(&cancelledTaskIDs, `
 		UPDATE public.tasks

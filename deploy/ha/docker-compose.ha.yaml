@@ -1,0 +1,147 @@
+# Postgres en haute disponibilité (Patroni + etcd + HAProxy), en test sur une
+# seule machine : 3 nœuds Postgres, 3 nœuds etcd, GoFlow branché sur HAProxy.
+#
+#   docker compose -f docker-compose.yaml -f deploy/ha/docker-compose.ha.yaml up -d
+#
+# Patroni élit le primaire (verrou dans etcd) et, s'il tombe, promeut un
+# réplica en moins de 30 secondes ; HAProxy envoie toujours GoFlow au
+# primaire du moment (port 5000) et les lectures historiques aux réplicas
+# (port 5001). La réplication est synchrone : une écriture durable confirmée
+# est sur deux nœuds, une bascule ne la perd pas.
+#
+# Sur de vrais serveurs (un nœud Postgres + etcd par serveur), voir
+# deploy/ha/node.compose.yaml et le README (Postgres high availability).
+
+x-spilo: &spilo
+  image: ghcr.io/zalando/spilo-16:3.2-p3
+  environment: &spilo-env
+    SCOPE: goflow
+    PGVERSION: "16"
+    ETCD3_HOSTS: "'etcd1:2379','etcd2:2379','etcd3:2379'"
+    PGUSER_SUPERUSER: postgres
+    PGPASSWORD_SUPERUSER: ${PG_SUPERUSER_PASSWORD:-postgres-ha}
+    PGUSER_STANDBY: standby
+    PGPASSWORD_STANDBY: ${PG_STANDBY_PASSWORD:-standby-ha}
+    PGUSER_ADMIN: admin
+    PGPASSWORD_ADMIN: ${PG_ADMIN_PASSWORD:-admin-ha}
+    ALLOW_NOSSL: "true"
+    SPILO_PROVIDER: local
+    SPILO_CONFIGURATION: |
+      bootstrap:
+        dcs:
+          ttl: 20
+          loop_wait: 5
+          retry_timeout: 5
+          maximum_lag_on_failover: 1048576
+          synchronous_mode: true
+          postgresql:
+            parameters:
+              max_connections: 300
+              statement_timeout: 30000
+              idle_in_transaction_session_timeout: 60000
+  depends_on:
+    - etcd1
+    - etcd2
+    - etcd3
+  networks:
+    - goflow-network
+  restart: unless-stopped
+
+x-etcd: &etcd
+  image: quay.io/coreos/etcd:v3.5.17
+  networks:
+    - goflow-network
+  restart: unless-stopped
+
+services:
+  # The standalone Postgres of docker-compose.yaml isn't used.
+  postgres:
+    profiles: ["standalone"]
+
+  etcd1:
+    <<: *etcd
+    container_name: goflow-etcd1
+    command: ["etcd", "--name", "etcd1", "--data-dir", "/etcd-data",
+      "--listen-client-urls", "http://0.0.0.0:2379", "--advertise-client-urls", "http://etcd1:2379",
+      "--listen-peer-urls", "http://0.0.0.0:2380", "--initial-advertise-peer-urls", "http://etcd1:2380",
+      "--initial-cluster", "etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380",
+      "--initial-cluster-token", "goflow-etcd", "--initial-cluster-state", "new"]
+  etcd2:
+    <<: *etcd
+    container_name: goflow-etcd2
+    command: ["etcd", "--name", "etcd2", "--data-dir", "/etcd-data",
+      "--listen-client-urls", "http://0.0.0.0:2379", "--advertise-client-urls", "http://etcd2:2379",
+      "--listen-peer-urls", "http://0.0.0.0:2380", "--initial-advertise-peer-urls", "http://etcd2:2380",
+      "--initial-cluster", "etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380",
+      "--initial-cluster-token", "goflow-etcd", "--initial-cluster-state", "new"]
+  etcd3:
+    <<: *etcd
+    container_name: goflow-etcd3
+    command: ["etcd", "--name", "etcd3", "--data-dir", "/etcd-data",
+      "--listen-client-urls", "http://0.0.0.0:2379", "--advertise-client-urls", "http://etcd3:2379",
+      "--listen-peer-urls", "http://0.0.0.0:2380", "--initial-advertise-peer-urls", "http://etcd3:2380",
+      "--initial-cluster", "etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380",
+      "--initial-cluster-token", "goflow-etcd", "--initial-cluster-state", "new"]
+
+  pg1:
+    <<: *spilo
+    container_name: goflow-pg1
+    hostname: pg1
+    volumes: ["pg1_data:/home/postgres/pgdata"]
+  pg2:
+    <<: *spilo
+    container_name: goflow-pg2
+    hostname: pg2
+    volumes: ["pg2_data:/home/postgres/pgdata"]
+  pg3:
+    <<: *spilo
+    container_name: goflow-pg3
+    hostname: pg3
+    volumes: ["pg3_data:/home/postgres/pgdata"]
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: goflow-haproxy
+    depends_on: [pg1, pg2, pg3]
+    environment:
+      PG1_ADDR: pg1
+      PG2_ADDR: pg2
+      PG3_ADDR: pg3
+    volumes:
+      - ./deploy/ha/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "127.0.0.1:7000:7000" # HAProxy stats
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  ha-init:
+    image: postgres:16
+    depends_on: [haproxy]
+    environment:
+      PG_SUPERUSER_PASSWORD: ${PG_SUPERUSER_PASSWORD:-postgres-ha}
+      GOFLOW_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
+    entrypoint: ["/bin/bash", "/ha-init.sh"]
+    volumes:
+      - ./deploy/ha/ha-init.sh:/ha-init.sh:ro
+      - ./database:/schema:ro
+    networks:
+      - goflow-network
+    restart: "no"
+
+  goflow:
+    depends_on: !override
+      ha-init:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+    environment:
+      DB_HOST: haproxy
+      DB_PORT: 5000
+      DB_READ_HOST: haproxy
+      DB_READ_PORT: 5001
+
+volumes:
+  pg1_data:
+  pg2_data:
+  pg3_data:

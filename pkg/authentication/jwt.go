@@ -123,7 +123,7 @@ func (s *JWTService) CreateRefreshToken(user models.User) (string, error) {
 // the tenant ID for multi-tenancy).
 func (s *JWTService) ParseAccessTokenClaims(tokenString string) (*CustomClaims, error) {
 	// Parse token
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := timeTolerantParser.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -150,9 +150,8 @@ func (s *JWTService) ParseAccessTokenClaims(tokenString string) (*CustomClaims, 
 		return nil, fmt.Errorf("invalid token type, expected access token, got: %s", claims.TokenType)
 	}
 
-	// Check expiration
-	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
-		return nil, fmt.Errorf("token has expired")
+	if err := checkTimes(claims); err != nil {
+		return nil, err
 	}
 
 	return claims, nil
@@ -170,7 +169,7 @@ func (s *JWTService) ParseAccessToken(tokenString string) (string, error) {
 // ParseRefreshToken parses and validates refresh token
 func (s *JWTService) ParseRefreshToken(tokenString string) (string, error) {
 	// Parse token
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
+	token, err := timeTolerantParser.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -197,9 +196,8 @@ func (s *JWTService) ParseRefreshToken(tokenString string) (string, error) {
 		return "", fmt.Errorf("invalid token type, expected refresh token, got: %s", claims.TokenType)
 	}
 
-	// Check expiration
-	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
-		return "", fmt.Errorf("refresh token has expired")
+	if err := checkTimes(claims); err != nil {
+		return "", fmt.Errorf("refresh %w", err)
 	}
 
 	return claims.UserId, nil
@@ -275,4 +273,28 @@ func (s *JWTService) ValidateAndGetUser(tokenString string) (*models.User, error
 // GetUserIDFromToken extracts user ID from token without database lookup
 func (s *JWTService) GetUserIDFromToken(tokenString string) (string, error) {
 	return s.ParseAccessToken(tokenString)
+}
+
+// clockSkew is how far apart the clocks of the servers issuing and checking
+// a token may be. With several GoFlow instances on several servers, a
+// token issued on one is checked on another; a check with no tolerance
+// refused a token whose "not before" was a moment ahead of the checking
+// server's clock.
+const clockSkew = 30 * time.Second
+
+// timeTolerantParser checks signatures but leaves the time claims to
+// checkTimes, with clockSkew tolerance (golang-jwt v4 has no leeway option).
+var timeTolerantParser = &jwt.Parser{SkipClaimsValidation: true}
+
+// checkTimes validates a token's expiry and not-before times, allowing
+// clockSkew between servers.
+func checkTimes(claims *CustomClaims) error {
+	now := time.Now()
+	if claims.ExpiresAt != nil && now.After(claims.ExpiresAt.Time.Add(clockSkew)) {
+		return fmt.Errorf("token has expired")
+	}
+	if claims.NotBefore != nil && now.Add(clockSkew).Before(claims.NotBefore.Time) {
+		return fmt.Errorf("token is not valid yet")
+	}
+	return nil
 }

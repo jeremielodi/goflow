@@ -1,0 +1,78 @@
+# Un nœud du cluster Postgres haute disponibilité : etcd + Postgres/Patroni.
+# À lancer sur chacun des 3 serveurs de base de données, avec ses variables :
+#
+#   NODE_NAME=pg1 NODE_IP=10.0.0.1 \
+#   ETCD_CLUSTER="pg1=http://10.0.0.1:2380,pg2=http://10.0.0.2:2380,pg3=http://10.0.0.3:2380" \
+#   ETCD_HOSTS="'10.0.0.1:2379','10.0.0.2:2379','10.0.0.3:2379'" \
+#   docker compose -f deploy/ha/node.compose.yaml up -d
+#
+# (ou les mêmes variables dans un fichier .env à côté). Les trois nœuds
+# démarrés, Patroni en élit un primaire ; les deux autres le suivent en
+# réplication synchrone. Ports à ouvrir entre les serveurs : 2379, 2380
+# (etcd), 5432 (Postgres), 8008 (API Patroni) — et 5432/8008 vers les
+# serveurs applicatifs (HAProxy). Ne les exposez pas sur Internet.
+#
+# Mots de passe : les mêmes sur les trois nœuds (PG_SUPERUSER_PASSWORD,
+# PG_STANDBY_PASSWORD, PG_ADMIN_PASSWORD).
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    container_name: goflow-etcd
+    network_mode: host
+    command:
+      - etcd
+      - --name=${NODE_NAME:?NODE_NAME must be set (pg1, pg2 or pg3)}
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://${NODE_IP:?NODE_IP must be set}:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://${NODE_IP}:2380
+      - --initial-cluster=${ETCD_CLUSTER:?ETCD_CLUSTER must be set}
+      - --initial-cluster-token=goflow-etcd
+      - --initial-cluster-state=new
+    volumes:
+      - etcd_data:/etcd-data
+    restart: unless-stopped
+
+  postgres:
+    image: ghcr.io/zalando/spilo-16:3.2-p3
+    container_name: goflow-pg
+    network_mode: host
+    depends_on: [etcd]
+    environment:
+      SCOPE: goflow
+      PGVERSION: "16"
+      ETCD3_HOSTS: ${ETCD_HOSTS:?ETCD_HOSTS must be set}
+      PATRONI_NAME: ${NODE_NAME}
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${NODE_IP}:5432
+      PATRONI_RESTAPI_CONNECT_ADDRESS: ${NODE_IP}:8008
+      PGUSER_SUPERUSER: postgres
+      PGPASSWORD_SUPERUSER: ${PG_SUPERUSER_PASSWORD:?PG_SUPERUSER_PASSWORD must be set}
+      PGUSER_STANDBY: standby
+      PGPASSWORD_STANDBY: ${PG_STANDBY_PASSWORD:?PG_STANDBY_PASSWORD must be set}
+      PGUSER_ADMIN: admin
+      PGPASSWORD_ADMIN: ${PG_ADMIN_PASSWORD:?PG_ADMIN_PASSWORD must be set}
+      SPILO_PROVIDER: local
+      # The engine's state survives a failover: a durable commit is on two
+      # nodes before it is confirmed (synchronous_mode).
+      SPILO_CONFIGURATION: |
+        bootstrap:
+          dcs:
+            ttl: 20
+            loop_wait: 5
+            retry_timeout: 5
+            maximum_lag_on_failover: 1048576
+            synchronous_mode: true
+            postgresql:
+              parameters:
+                max_connections: 300
+                statement_timeout: 30000
+                idle_in_transaction_session_timeout: 60000
+    volumes:
+      - pg_data:/home/postgres/pgdata
+    restart: unless-stopped
+
+volumes:
+  etcd_data:
+  pg_data:

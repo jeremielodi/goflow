@@ -587,9 +587,47 @@ docker compose -f docker-compose.yaml -f docker-compose.scale.yaml up -d --scale
 
 Everything running in the background is safe with several instances (timers and conditional events are claimed with `SKIP LOCKED`, archiving under advisory locks, message correlation atomically), job wake-ups and task events (`TASK_EVENTS_FANOUT`) are relayed between instances through Postgres `NOTIFY`, and each instance watches the whole Kafka event log. The full regression suite passes against three replicas behind PgBouncer, with the read replica.
 
+What bounds throughput is then Postgres — mostly waiting for its write-ahead log to reach the disk on each commit. GoFlow waits only where it matters: finished instances are archived in the background (`ARCHIVE_MODE=async`, the default; `sync` archives in the completing call), and writes that are safe to lose or redo on a crash — audit rows, archiving, the Kafka projections, job locks, a token passing through a step that doesn't wait — commit without waiting for the disk (`synchronous_commit` off for those transactions only); engine state stays durable. A server's SSD sustains far more commits per second than a laptop's virtualized disk, so measure on the real hardware with `cmd/loadtest`.
+
+### Postgres high availability
+
+With three database servers, Postgres runs as a Patroni cluster (`deploy/ha`): Patroni elects a primary (its lock lives in etcd, which runs on the same three servers), the other two follow it with synchronous replication — a durable commit is on two nodes before it is confirmed, so a failover loses none — and if the primary fails, a replica is promoted. HAProxy, on the application server, sends GoFlow to the current primary (port 5000) and history reads to any node that can serve them (port 5001), using Patroni's health checks. GoFlow needs nothing more: connections cut by a failover are reopened, `LISTEN` reconnects, and the instances carry on.
+
+```bash
+# on each database server (pg1, pg2, pg3 — its own name and address)
+NODE_NAME=pg1 NODE_IP=10.0.0.1 \
+ETCD_CLUSTER="pg1=http://10.0.0.1:2380,pg2=http://10.0.0.2:2380,pg3=http://10.0.0.3:2380" \
+ETCD_HOSTS="'10.0.0.1:2379','10.0.0.2:2379','10.0.0.3:2379'" \
+PG_SUPERUSER_PASSWORD=… PG_STANDBY_PASSWORD=… PG_ADMIN_PASSWORD=… \
+docker compose -f deploy/ha/node.compose.yaml up -d
+
+# on the application server
+PG1_ADDR=10.0.0.1 PG2_ADDR=10.0.0.2 PG3_ADDR=10.0.0.3 PG_SUPERUSER_PASSWORD=… \
+docker compose -f docker-compose.yaml -f deploy/ha/app.compose.yaml up -d
+```
+
+Several GoFlow instances in front of the cluster combine both setups — nginx in front of the instances, PgBouncer going through HAProxy (so following the primary across failovers), no separate read replica since the cluster has its own:
+
+```bash
+docker compose -f docker-compose.yaml -f docker-compose.scale.yaml \
+  -f deploy/ha/app.compose.yaml -f deploy/ha/scale-ha.compose.yaml up -d --scale goflow=3
+```
+
+Open 2379, 2380, 5432 and 8008 between the database servers, and 5432/8008 to the application server — never to the Internet. `deploy/ha/docker-compose.ha.yaml` runs the whole cluster on one machine to try it out; `scripts/ha-failover-test.sh` stops the current primary under load and checks that no instance is lost and that GoFlow carries on. On this laptop, a replica took over 28 seconds after the primary stopped, and GoFlow was writing again at the same moment, with no instance lost; the full regression suite passes on the cluster.
+
+Moving an existing standalone database to the cluster leaves the old one untouched:
+
+1. Run the migrations of `database/migrations` on the old database, as usual.
+2. Start the three nodes, check the cluster: `curl http://10.0.0.1:8008/cluster`.
+3. Stop GoFlow (`docker compose stop goflow`) and dump the old database — a read: `docker exec goflow-postgres pg_dump -U goflow -Fc goflow > goflow.dump`.
+4. Create the role and the empty database on the cluster: `docker compose -f docker-compose.yaml -f deploy/ha/app.compose.yaml run --rm -e GOFLOW_SKIP_SCHEMA=true ha-init`.
+5. Restore into the primary: `pg_restore -h 10.0.0.x -U postgres -d goflow --no-owner --role=goflow goflow.dump` (any node: if it isn't the primary, the restore is refused — use the one `/cluster` lists as leader).
+6. Start GoFlow on the cluster (`app.compose.yaml`). Keep the old database stopped but intact until you're satisfied: going back is restarting GoFlow without `app.compose.yaml`.
+
+### Read replica on an existing standalone database
+
 On an existing database, a read replica needs, on the primary, a replication role (`CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '…'`) and a `pg_hba.conf` line (`host replication replicator <replica address> scram-sha-256`, then `SELECT pg_reload_conf()`); the replica then starts from `pg_basebackup -R` (what `deploy/replica-entrypoint.sh` does). None of it changes the data.
 
-What bounds throughput is then Postgres — mostly waiting for its write-ahead log to reach the disk on each commit. GoFlow waits only where it matters: finished instances are archived in the background (`ARCHIVE_MODE=async`, the default; `sync` archives in the completing call), and writes that are safe to lose or redo on a crash — audit rows, archiving, the Kafka projections, job locks, a token passing through a step that doesn't wait — commit without waiting for the disk (`synchronous_commit` off for those transactions only); engine state stays durable. A server's SSD sustains far more commits per second than a laptop's virtualized disk, so measure on the real hardware with `cmd/loadtest`.
 
 ### FEEL expressions
 

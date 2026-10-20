@@ -1,0 +1,43 @@
+# Plusieurs instances GoFlow (docker-compose.scale.yaml : nginx, PgBouncer)
+# devant le cluster Postgres haute disponibilité (Patroni + HAProxy).
+#
+# En test sur une machine :
+#   docker compose -f docker-compose.yaml -f docker-compose.scale.yaml \
+#     -f deploy/ha/docker-compose.ha.yaml -f deploy/ha/scale-ha.compose.yaml \
+#     up -d --scale goflow=3
+# En production, deploy/ha/app.compose.yaml à la place de docker-compose.ha.yaml.
+#
+# PgBouncer passe par HAProxy (port 5000) et suit donc le primaire : à une
+# bascule, HAProxy coupe ses connexions vers l'ancien primaire, il en rouvre
+# vers le nouveau ; les connexions des instances GoFlow vers PgBouncer
+# restent ouvertes. Le travail de session (LISTEN, verrous) va directement à
+# HAProxy, les lectures historiques aux nœuds de lecture (port 5001). La
+# réplique locale de docker-compose.scale.yaml n'a plus de raison d'être.
+
+services:
+  replication-setup:
+    profiles: ["standalone"]
+  postgres-replica:
+    profiles: ["standalone"]
+
+  pgbouncer:
+    depends_on: !override
+      ha-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: haproxy
+      DB_PORT: 5000
+
+  goflow:
+    depends_on: !override
+      pgbouncer:
+        condition: service_started
+      redpanda:
+        condition: service_healthy
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: 5432
+      DB_DIRECT_HOST: haproxy
+      DB_DIRECT_PORT: 5000
+      DB_READ_HOST: haproxy
+      DB_READ_PORT: 5001

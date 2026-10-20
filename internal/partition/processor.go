@@ -390,6 +390,9 @@ func (p *Processor) handleTimerFired(ctx context.Context, cmd *pb.TimerFiredComm
 	}
 
 	if _, _, err := service.ResumeTimerExecution(p.db, p.dispatcher, row.ProcessInstanceID, execID, cmd.TargetNodeId); err != nil {
+		if errors.Is(err, service.ErrStaleTimer) {
+			return nil // its element was left meanwhile: nothing to resume
+		}
 		return fmt.Errorf("resume timer execution %s: %w", execID, err)
 	}
 

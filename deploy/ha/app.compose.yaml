@@ -1,0 +1,63 @@
+# Serveur applicatif devant un cluster Postgres haute disponibilité
+# (deploy/ha/node.compose.yaml sur 3 serveurs) : HAProxy envoie GoFlow au
+# primaire du moment, l'historique aux nœuds de lecture.
+#
+#   PG1_ADDR=10.0.0.1 PG2_ADDR=10.0.0.2 PG3_ADDR=10.0.0.3 \
+#   docker compose -f docker-compose.yaml -f deploy/ha/app.compose.yaml up -d
+#
+# Plusieurs instances GoFlow (nginx devant elles, PgBouncer branché sur
+# HAProxy, donc qui suit le primaire ; pas de réplique locale : le cluster
+# a ses réplicas) :
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.scale.yaml \
+#     -f deploy/ha/app.compose.yaml -f deploy/ha/scale-ha.compose.yaml \
+#     up -d --scale goflow=3
+#
+# Une base neuve est initialisée par ha-init (rôle goflow, base, schéma).
+# Pour reprendre une base existante, voir le README avant de démarrer.
+
+services:
+  # The standalone Postgres of docker-compose.yaml isn't used.
+  postgres:
+    profiles: ["standalone"]
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    container_name: goflow-haproxy
+    environment:
+      PG1_ADDR: ${PG1_ADDR:?PG1_ADDR must be set}
+      PG2_ADDR: ${PG2_ADDR:?PG2_ADDR must be set}
+      PG3_ADDR: ${PG3_ADDR:?PG3_ADDR must be set}
+    volumes:
+      - ./deploy/ha/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "127.0.0.1:7000:7000" # HAProxy stats
+    networks:
+      - goflow-network
+    restart: unless-stopped
+
+  ha-init:
+    image: postgres:16
+    depends_on: [haproxy]
+    environment:
+      PG_SUPERUSER_PASSWORD: ${PG_SUPERUSER_PASSWORD:?PG_SUPERUSER_PASSWORD must be set}
+      GOFLOW_PASSWORD: ${POSTGRES_PASSWORD:-goflow123}
+    entrypoint: ["/bin/bash", "/ha-init.sh"]
+    volumes:
+      - ./deploy/ha/ha-init.sh:/ha-init.sh:ro
+      - ./database:/schema:ro
+    networks:
+      - goflow-network
+    restart: "no"
+
+  goflow:
+    depends_on: !override
+      ha-init:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+    environment:
+      DB_HOST: haproxy
+      DB_PORT: 5000
+      DB_READ_HOST: haproxy
+      DB_READ_PORT: 5001
