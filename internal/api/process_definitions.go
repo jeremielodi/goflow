@@ -12,7 +12,6 @@ import (
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
-	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jeremielodi/goflow/pkg/common"
 	"github.com/jmoiron/sqlx"
@@ -311,50 +310,5 @@ func (ctrl *ProcessDefinitionController) GetInstancePositions(c *fiber.Ctx) erro
 	}
 
 	return c.JSON(positions)
-}
-
-// POST /engine-rest/process-definition/:id/start
-// Starts a specific version of a process definition by its UUID.
-func (ctrl *ProcessDefinitionController) StartByDefinitionID(c *fiber.Ctx) error {
-	id, err := uuid.Parse(c.Params("id"))
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"message": "invalid definition id"})
-	}
-
-	var body struct {
-		Variables map[string]interface{} `json:"variables"`
-	}
-	if parseErr := c.BodyParser(&body); parseErr != nil {
-		body.Variables = map[string]interface{}{}
-	}
-
-	def, err := ctrl.processRepo.FindProcessDefinitionByID(id)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"message": "process definition not found"})
-	}
-
-	if userID, parseErr := uuid.Parse(common.GetUserUuid(c)); parseErr == nil {
-		if allowed, permErr := service.CanAccessProcess(ctrl.db, userID, def.ProcessKey, "START"); permErr == nil && !allowed {
-			return c.Status(403).JSON(fiber.Map{"message": "you do not have START access to this process"})
-		}
-	}
-
-	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
-
-	instanceID, execID, err := runtime.StartInstance(c.Context(), def.ID, tenantID, body.Variables)
-	if errors.Is(err, runtime.ErrExecutionFailed) {
-		return c.Status(500).JSON(fiber.Map{"message": "execution failed", "error": err.Error()})
-	}
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
-	}
-
-	return c.JSON(fiber.Map{
-		"processInstanceId": instanceID,
-		"executionId":       execID,
-		"processKey":        def.ProcessKey,
-		"version":           def.Version,
-		"definitionId":      def.ID,
-	})
 }
 

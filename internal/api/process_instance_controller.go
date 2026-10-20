@@ -74,7 +74,7 @@ func normalizeVariables(variables map[string]interface{}) map[string]interface{}
 		if varMap, ok := value.(map[string]interface{}); ok {
 			// Check if it has a "value" field (Camunda typed format)
 			if val, hasValue := varMap["value"]; hasValue {
-				result[key] = val
+				result[key] = typedValue(val, varMap["type"])
 				continue
 			}
 		}
@@ -589,8 +589,11 @@ func (pc *ProcessInstanceController) GetProcessInstance(c *fiber.Ctx) error {
 func (pc *ProcessInstanceController) GetProcessInstanceList(c *fiber.Ctx) error {
 	status := c.Query("status")
 	processKey := c.Query("processKey")
+	if processKey == "" {
+		processKey = c.Query("processDefinitionKey") // Camunda 7
+	}
 
-	instances, err := pc.processInstanceRepo.FindAll(status, processKey, common.GetTenantId(c))
+	instances, err := pc.processInstanceRepo.FindAll(status, processKey, common.GetTenantId(c), c.Query("businessKey"))
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",

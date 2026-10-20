@@ -55,7 +55,7 @@ async function workJob(topic: string, marker: string, handler: (vars: Record<str
       if (vars.marker !== marker) continue;
       const result = handler(vars);
       if (result === 'BAD') {
-        await client.api.post(`/engine-rest/external-task/${job.id}/failure`, { workerId: 'test', errorMessage: 'bad thing', errorCode: 'BAD', retries: 1 });
+        await client.api.post(`/engine-rest/external-task/${job.id}/failure`, { workerId: 'test', errorMessage: 'bad thing', errorCode: 'BAD', retries: 0 });
       } else {
         await client.completeExternalTask(job.id, result);
       }

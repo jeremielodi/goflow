@@ -656,3 +656,18 @@ func toC7Variable(v interface{}) c7Variable {
 		return c7Variable{Value: x, Type: "Object", ValueInfo: map[string]interface{}{}}
 	}
 }
+
+// typedValue is a typed variable's value: a Camunda "Json" (or "Object")
+// value sent as a JSON string is decoded, so it's stored as an object.
+func typedValue(value, typ interface{}) interface{} {
+	s, isString := value.(string)
+	t, _ := typ.(string)
+	if !isString || !(strings.EqualFold(t, "json") || strings.EqualFold(t, "object")) {
+		return value
+	}
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+		return value
+	}
+	return parsed
+}

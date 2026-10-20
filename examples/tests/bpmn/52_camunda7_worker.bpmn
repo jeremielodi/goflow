@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_C7Worker"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Suite 52: a Camunda 7 application and its external task worker. -->
+
+  <bpmn:error id="Err_Declined" name="Payment declined" errorCode="PAYMENT_DECLINED"/>
+
+  <bpmn:process id="C7Worker52" isExecutable="true">
+    <bpmn:startEvent id="w_start"/>
+    <bpmn:sequenceFlow id="w1" sourceRef="w_start" targetRef="w_charge"/>
+    <bpmn:serviceTask id="w_charge" name="Charge card" camunda:type="external" camunda:topic="c7-charge"/>
+    <bpmn:boundaryEvent id="w_declined_error" attachedToRef="w_charge">
+      <bpmn:errorEventDefinition errorRef="Err_Declined"/>
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="w2" sourceRef="w_charge" targetRef="w_ship"/>
+    <bpmn:userTask id="w_ship" name="Ship"/>
+    <bpmn:sequenceFlow id="w3" sourceRef="w_ship" targetRef="w_end"/>
+    <bpmn:endEvent id="w_end"/>
+    <bpmn:sequenceFlow id="w4" sourceRef="w_declined_error" targetRef="w_declined"/>
+    <bpmn:userTask id="w_declined" name="Payment declined"/>
+    <bpmn:sequenceFlow id="w5" sourceRef="w_declined" targetRef="w_end_declined"/>
+    <bpmn:endEvent id="w_end_declined"/>
+  </bpmn:process>
+
+  <bpmn:process id="C7NoCatch52" isExecutable="true">
+    <bpmn:startEvent id="n_start"/>
+    <bpmn:sequenceFlow id="n1" sourceRef="n_start" targetRef="n_work"/>
+    <bpmn:serviceTask id="n_work" camunda:type="external" camunda:topic="c7-nocatch"/>
+    <bpmn:sequenceFlow id="n2" sourceRef="n_work" targetRef="n_end"/>
+    <bpmn:endEvent id="n_end"/>
+  </bpmn:process>
+</bpmn:definitions>

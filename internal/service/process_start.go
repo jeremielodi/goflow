@@ -31,7 +31,7 @@ var ErrProcessAlreadyStarted = fmt.Errorf("process instance already started")
 // so this only returns the new IDs.
 //
 // This consolidates logic that was previously duplicated across four
-// independent call sites (v1 StartProcess, StartByDefinitionID, v2
+// independent call sites (v1 StartProcess, start by definition id, v2
 // CreateProcessInstance, and the async worker's processStartProcess) —
 // duplication that already once caused two of those four paths to silently
 // miss audit instrumentation.
@@ -44,7 +44,7 @@ func StartProcessInstance(
 ) (instanceID, execID uuid.UUID, err error) {
 	instanceID = uuid.New()
 	execID = uuid.New()
-	if err := startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables); err != nil {
+	if err := startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables, ""); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 	return instanceID, execID, nil
@@ -66,8 +66,13 @@ func StartProcessInstanceWithIDs(
 	processDefinitionID, instanceID, execID uuid.UUID,
 	tenantID *string,
 	variables map[string]interface{},
+	businessKey ...string,
 ) error {
-	return startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables)
+	key := ""
+	if len(businessKey) > 0 {
+		key = businessKey[0]
+	}
+	return startProcessInstance(db, graph, processDefinitionID, instanceID, execID, tenantID, variables, key)
 }
 
 // StartProcessInstanceAt is StartProcessInstance starting at a given start
@@ -83,7 +88,7 @@ func StartProcessInstanceAt(
 ) (instanceID, execID uuid.UUID, err error) {
 	instanceID = uuid.New()
 	execID = uuid.New()
-	if err := startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID); err != nil {
+	if err := startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID, ""); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 	return instanceID, execID, nil
@@ -95,6 +100,7 @@ func startProcessInstance(
 	processDefinitionID, instanceID, execID uuid.UUID,
 	tenantID *string,
 	variables map[string]interface{},
+	businessKey string,
 ) error {
 	var startNodeID string
 	for _, node := range graph.Nodes {
@@ -106,7 +112,7 @@ func startProcessInstance(
 	if startNodeID == "" {
 		return fmt.Errorf("no start event found in process definition")
 	}
-	return startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID)
+	return startProcessInstanceAt(db, processDefinitionID, instanceID, execID, tenantID, variables, startNodeID, businessKey)
 }
 
 func startProcessInstanceAt(
@@ -115,6 +121,7 @@ func startProcessInstanceAt(
 	tenantID *string,
 	variables map[string]interface{},
 	startNodeID string,
+	businessKey string,
 ) error {
 	if variables == nil {
 		variables = map[string]interface{}{}
@@ -137,6 +144,11 @@ func startProcessInstanceAt(
 			return ErrProcessAlreadyStarted
 		}
 		return fmt.Errorf("failed to create process instance: %w", err)
+	}
+	if businessKey != "" {
+		if _, err = tx.Exec(`UPDATE public.process_instances SET business_key = $1 WHERE id = $2`, businessKey, instanceID); err != nil {
+			return fmt.Errorf("failed to set the business key: %w", err)
+		}
 	}
 	if err = instanceRepo.CreateVariablesTx(tx, instanceID, variables, now); err != nil {
 		return fmt.Errorf("failed to save process variables: %w", err)

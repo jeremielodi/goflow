@@ -345,3 +345,47 @@ type LockedJob struct {
 var (
 	ErrNotServiceTask = errors.New("node is not a service task")
 )
+
+// ErrJobNotLockedBy: the job isn't locked by that worker (or not locked).
+var ErrJobNotLockedBy = errors.New("external task is not locked by this worker")
+
+// ExtendLock moves a locked job's lock expiry, if workerID holds it.
+func (r *ExternalTaskRepository) ExtendLock(jobID uuid.UUID, workerID string, until time.Time) error {
+	return r.lockUpdate(jobID, workerID, `UPDATE public.jobs SET locked_until = $1
+		WHERE process_instance_id = $2 AND id = $3 AND status = 'locked' AND locked_by = $4`, until)
+}
+
+// Unlock gives a locked job back, to be fetched again.
+func (r *ExternalTaskRepository) Unlock(jobID uuid.UUID) error {
+	return r.lockUpdate(jobID, "", `UPDATE public.jobs SET status = 'pending', locked_by = NULL, locked_until = NULL
+		WHERE process_instance_id = $1 AND id = $2 AND status = 'locked'`)
+}
+
+// LockOwner returns the worker holding a job ("" when it isn't locked),
+// and ErrJobNotFound semantics as sql.ErrNoRows.
+func (r *ExternalTaskRepository) LockOwner(jobID uuid.UUID) (string, error) {
+	var owner sql.NullString
+	err := r.db.Get(&owner, `SELECT CASE WHEN status = 'locked' THEN locked_by END FROM public.jobs WHERE id = $1`, jobID)
+	return owner.String, err
+}
+
+func (r *ExternalTaskRepository) lockUpdate(jobID uuid.UUID, workerID, query string, until ...time.Time) error {
+	var instanceID uuid.UUID
+	if err := r.db.Get(&instanceID, `SELECT process_instance_id FROM public.jobs WHERE id = $1`, jobID); err != nil {
+		return err
+	}
+	var res sql.Result
+	var err error
+	if len(until) > 0 {
+		res, err = r.db.Exec(query, until[0], instanceID, jobID, workerID)
+	} else {
+		res, err = r.db.Exec(query, instanceID, jobID)
+	}
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrJobNotLockedBy
+	}
+	return nil
+}

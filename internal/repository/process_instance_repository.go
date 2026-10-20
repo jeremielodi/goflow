@@ -150,10 +150,10 @@ func (r *ProcessInstanceRepository) UpsertVariables(instanceID uuid.UUID, variab
 
 // FindAll retrieves process instances with optional filters. An empty
 // tenantID means "no tenant filter" (superuser / untenanted deployment).
-func (r *ProcessInstanceRepository) FindAll(status, processKey, tenantID string) ([]models.ProcessInstance, error) {
+func (r *ProcessInstanceRepository) FindAll(status, processKey, tenantID string, businessKey ...string) ([]models.ProcessInstance, error) {
 	var instances []models.ProcessInstance
 	query := `
-		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at, pi.tenant_id,
+		SELECT pi.id, pi.process_definition_id, pi.status, pi.started_by, pi.started_at, pi.ended_at, pi.tenant_id, pi.business_key,
 		       pd.process_key, pd.process_name, pd.version
 		FROM public.process_instances pi
 		LEFT JOIN public.process_definitions pd ON pd.id = pi.process_definition_id
@@ -175,6 +175,12 @@ func (r *ProcessInstanceRepository) FindAll(status, processKey, tenantID string)
 	if tenantID != "" {
 		query += fmt.Sprintf(" AND pi.tenant_id = $%d", argIndex)
 		args = append(args, tenantID)
+		argIndex++
+	}
+
+	if len(businessKey) > 0 && businessKey[0] != "" {
+		query += fmt.Sprintf(" AND pi.business_key = $%d", argIndex)
+		args = append(args, businessKey[0])
 		argIndex++
 	}
 
@@ -201,6 +207,7 @@ func (r *ProcessInstanceRepository) FindByID(id uuid.UUID) (*models.ProcessInsta
 			pi.started_at,
 			pi.ended_at,
 			pi.tenant_id,
+			pi.business_key,
 			pd.process_key,
 			pd.process_name,
 			pd.version

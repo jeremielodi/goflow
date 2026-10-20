@@ -146,6 +146,7 @@ async function main() {
     '49_call_activity.test.ts',
     '50_incidents_message_end.test.ts',
     '51_camunda7_task_api.test.ts',
+    '52_camunda7_worker.test.ts',
   ];
 
   const exitCodes: number[] = [];

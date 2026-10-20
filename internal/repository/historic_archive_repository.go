@@ -38,6 +38,7 @@ type HistoricProcessInstance struct {
 	DurationMillis           *int64    `db:"duration_millis" json:"durationInMillis,omitempty"`
 	State                    string    `db:"state" json:"state"`
 	DeleteReason             *string   `db:"delete_reason" json:"deleteReason,omitempty"`
+	BusinessKey              *string   `db:"business_key" json:"businessKey,omitempty"`
 	ArchivedAt               time.Time `db:"archived_at" json:"archivedAt"`
 }
 
@@ -89,10 +90,10 @@ func (r *HistoricArchiveRepository) InsertProcessInstanceTx(tx *sqlx.Tx, h Histo
 	_, err := tx.Exec(`
 		INSERT INTO public.historic_process_instances
 			(id, process_definition_id, process_definition_key, process_definition_version,
-			 tenant_id, started_by, started_at, ended_at, duration_millis, state, delete_reason)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 tenant_id, started_by, started_at, ended_at, duration_millis, state, delete_reason, business_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`, h.ID, h.ProcessDefinitionID, h.ProcessDefinitionKey, h.ProcessDefinitionVersion,
-		h.TenantID, h.StartedBy, h.StartedAt, h.EndedAt, h.DurationMillis, h.State, h.DeleteReason)
+		h.TenantID, h.StartedBy, h.StartedAt, h.EndedAt, h.DurationMillis, h.State, h.DeleteReason, h.BusinessKey)
 	return err
 }
 

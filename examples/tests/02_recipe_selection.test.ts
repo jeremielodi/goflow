@@ -121,8 +121,8 @@ async function run() {
           while (Date.now() - startFail < 10000) {
             const tasks = await client.fetchAndLock([{ name: 'cook_meal' }]);
             if (tasks.length > 0) {
-              // Server decrements retries by 1 internally, so pass 2 to leave 1 retry remaining
-              await client.failExternalTask(tasks[0].id, 'Temporary cooking failure', 2);
+              // retries is what remains after this failure (Camunda 7): one retry
+              await client.failExternalTask(tasks[0].id, 'Temporary cooking failure', 1);
               failed = true;
               break;
             }

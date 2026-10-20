@@ -729,6 +729,9 @@ ALTER TABLE process_instances
 
 CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_process_instances_tenant_id ON process_instances(tenant_id);
+-- Business key (Camunda 7): see migrations/006_business_key.sql.
+ALTER TABLE process_instances ADD COLUMN IF NOT EXISTS business_key TEXT NULL;
+CREATE INDEX IF NOT EXISTS idx_process_instances_business_key ON process_instances(business_key);
 
 -- =========================================================
 -- OIDC IDENTITY
@@ -769,6 +772,8 @@ ON historic_process_instances(process_definition_key);
 
 CREATE INDEX IF NOT EXISTS idx_historic_process_instances_tenant_id
 ON historic_process_instances(tenant_id);
+ALTER TABLE historic_process_instances ADD COLUMN IF NOT EXISTS business_key TEXT NULL;
+CREATE INDEX IF NOT EXISTS idx_historic_process_instances_business_key ON historic_process_instances(business_key);
 
 -- Analytics query support — see archive/migrations-before-baseline/010_historic_process_instance_time_indexes.sql.
 CREATE INDEX IF NOT EXISTS idx_historic_process_instances_started_at
@@ -1023,4 +1028,8 @@ ON CONFLICT (version) DO NOTHING;
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES ('005', 'index manquants sur les tables du moteur (jobs, timers, abonnements…)')
+ON CONFLICT (version) DO NOTHING;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('006', 'business key des instances (Camunda 7)')
 ON CONFLICT (version) DO NOTHING;

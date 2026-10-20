@@ -57,6 +57,7 @@ type HistoricActivityInstanceResponse struct {
 // to get right this way than a hand-rolled UNION with LIMIT/OFFSET.
 func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 	processKey := c.Query("processDefinitionKey")
+	businessKey := c.Query("businessKey")
 	state := c.Query("state") // active, completed, suspended, terminated
 	startedAfter := c.Query("startedAfter")
 	startedBefore := c.Query("startedBefore")
@@ -87,7 +88,7 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 
 	query := `
 		SELECT pi.id, pi.process_definition_id, pd.process_key,
-		       pi.started_at, pi.ended_at, pi.status
+		       pi.started_at, pi.ended_at, pi.status, pi.business_key
 		FROM process_instances pi
 		JOIN process_definitions pd ON pd.id = pi.process_definition_id
 		WHERE 1=1
@@ -97,6 +98,11 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 	if processKey != "" {
 		query += ` AND pd.process_key = $` + itoa(idx)
 		args = append(args, processKey)
+		idx++
+	}
+	if businessKey != "" {
+		query += ` AND pi.business_key = $` + itoa(idx)
+		args = append(args, businessKey)
 		idx++
 	}
 	if dbState != "" {
@@ -127,6 +133,7 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 		StartedAt           *time.Time `db:"started_at"`
 		EndedAt             *time.Time `db:"ended_at"`
 		Status              string     `db:"status"`
+		BusinessKey         *string    `db:"business_key"`
 	}
 	var liveRows []row
 	if err := hc.db.Select(&liveRows, query, args...); err != nil {
@@ -148,6 +155,7 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 			ID:                   r.ID.String(),
 			ProcessDefinitionID:  r.ProcessDefinitionID.String(),
 			ProcessDefinitionKey: r.ProcessKey,
+			BusinessKey:          r.BusinessKey,
 			StartTime:            r.StartedAt,
 			EndTime:              r.EndedAt,
 			DurationInMillis:     dur,
@@ -169,12 +177,16 @@ func (hc *HistoryController) ListHistoricProcessInstances(c *fiber.Ctx) error {
 			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 		}
 		for _, h := range historicRows {
+			if businessKey != "" && (h.BusinessKey == nil || *h.BusinessKey != businessKey) {
+				continue
+			}
 			ended := h.EndedAt
 			d := ended.Sub(h.StartedAt).Milliseconds()
 			resp = append(resp, HistoricProcessInstanceResponse{
 				ID:                   h.ID.String(),
 				ProcessDefinitionID:  h.ProcessDefinitionID.String(),
 				ProcessDefinitionKey: h.ProcessDefinitionKey,
+				BusinessKey:          h.BusinessKey,
 				StartTime:            &h.StartedAt,
 				EndTime:              &ended,
 				DurationInMillis:     &d,
@@ -222,11 +234,12 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 		StartedAt           *time.Time `db:"started_at"`
 		EndedAt             *time.Time `db:"ended_at"`
 		Status              string     `db:"status"`
+		BusinessKey         *string    `db:"business_key"`
 	}
 	var r row
 	err := hc.db.Get(&r, `
 		SELECT pi.id, pi.process_definition_id, pd.process_key,
-		       pi.started_at, pi.ended_at, pi.status
+		       pi.started_at, pi.ended_at, pi.status, pi.business_key
 		FROM process_instances pi
 		JOIN process_definitions pd ON pd.id = pi.process_definition_id
 		WHERE pi.id = $1
@@ -249,6 +262,7 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 					ID:                   h.ID.String(),
 					ProcessDefinitionID:  h.ProcessDefinitionID.String(),
 					ProcessDefinitionKey: h.ProcessDefinitionKey,
+					BusinessKey:          h.BusinessKey,
 					StartTime:            &h.StartedAt,
 					EndTime:              &ended,
 					DurationInMillis:     &d,
@@ -278,6 +292,7 @@ func (hc *HistoryController) GetHistoricProcessInstance(c *fiber.Ctx) error {
 		ID:                   r.ID.String(),
 		ProcessDefinitionID:  r.ProcessDefinitionID.String(),
 		ProcessDefinitionKey: r.ProcessKey,
+		BusinessKey:          r.BusinessKey,
 		StartTime:            r.StartedAt,
 		EndTime:              r.EndedAt,
 		DurationInMillis:     dur,

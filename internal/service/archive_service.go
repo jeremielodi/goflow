@@ -141,6 +141,7 @@ func ArchiveAndDeleteProcessInstance(db *sqlx.DB, instanceID uuid.UUID, deleteRe
 		DurationMillis:           &durationMillis,
 		State:                    instance.Status,
 		DeleteReason:             deleteReason,
+		BusinessKey:              instance.BusinessKey,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to insert historic process instance: %w", err)

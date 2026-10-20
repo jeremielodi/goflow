@@ -31,6 +31,18 @@ GET /engine-rest/process-definition?key=myProcess&latestVersion=true
 
 # Get single definition
 GET /engine-rest/process-definition/:id
+
+# By key, as in Camunda 7 (ProcessDefinitionDto)
+GET /engine-rest/process-definition/key/:key
+GET /engine-rest/process-definition/key/:key/tenant-id/:tenantId
+
+# Start an instance, as in Camunda 7 (also .../submit-form)
+POST /engine-rest/process-definition/key/:key/start
+POST /engine-rest/process-definition/key/:key/tenant-id/:tenantId/start
+POST /engine-rest/process-definition/:id/start
+{ "variables": { "amount": { "value": 120, "type": "Integer" } }, "businessKey": "ORDER-42", "withVariablesInReturn": false }
+→ { "id", "definitionId", "businessKey", "ended", "suspended", "tenantId", "links",
+    "processInstanceId", "executionId", "processKey", "version" }   (variables: typed or plain)
 ```
 
 ## Process Instances
@@ -46,6 +58,7 @@ POST /engine-rest/process-definition/:id/start
 # List running instances
 GET /engine-rest/process-instance
 GET /engine-rest/process-instance?processDefinitionKey=myProcess
+GET /engine-rest/process-instance?businessKey=ORDER-42
 
 # Get instance
 GET /engine-rest/process-instance/:id
@@ -97,16 +110,27 @@ POST /engine-rest/task/:id/variables         { "modifications": { ... } }   (del
 
 ## External Tasks (Service Workers)
 
+Camunda 7's external task API, with its request and response shapes:
+
 ```http
 POST /engine-rest/external-task/fetchAndLock
 {
   "workerId": "my-worker",
-  "maxJobsToActivate": 10,
-  "topics": [{ "topicName": "send-email", "lockDuration": 30000 }]
+  "maxTasks": 10,
+  "asyncResponseTimeout": 10000,        // long polling (ms, capped at 60 s): wait for a task when none is ready
+  "topics": [{ "topicName": "send-email", "lockDuration": 30000, "variables": ["to", "subject"] }]   // variables: only these (absent or empty: all)
 }
+→ [{ "id", "topicName", "workerId", "activityId", "activityInstanceId", "executionId",
+     "processInstanceId", "processDefinitionId", "processDefinitionKey", "businessKey",
+     "tenantId", "retries", "lockExpirationTime", "priority", "variables": { "to": { "value", "type" } } }]
 
-POST /engine-rest/external-task/:id/complete   { "workerId": "...", "variables": {...} }
-POST /engine-rest/external-task/:id/failure    { "workerId": "...", "errorMessage": "..." }
+POST /engine-rest/external-task/:id/complete    { "workerId": "...", "variables": { "x": { "value": 1, "type": "Integer" } } }
+POST /engine-rest/external-task/:id/failure     { "workerId": "...", "errorMessage": "...", "retries": 2 }
+     retries is what remains after this failure: 0 raises an incident
+POST /engine-rest/external-task/:id/bpmnError   { "workerId": "...", "errorCode": "...", "errorMessage": "...", "variables": {...} }
+     caught by the nearest error boundary / error event sub-process / calling process; uncaught: an incident
+POST /engine-rest/external-task/:id/extendLock  { "workerId": "...", "newDuration": 60000 }   500 if another worker holds it
+POST /engine-rest/external-task/:id/unlock
 ```
 
 ## Messages & Signals

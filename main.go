@@ -494,8 +494,18 @@ func main() {
 	app.Post("/engine-rest/v2/deployments", processDefinitionCtrl.DeployBPMN)
 	app.Post("/engine-rest/v2/process-definitions/:key/start", processInstanceCtrl.StartProcess)
 	app.Get("/engine-rest/process-definition", processDefinitionCtrl.ListDefinitions)
+	// Camunda 7 process definition endpoints (by key, by id), Camunda 7
+	// request and response shapes.
+	c7ProcessCtrl := api.NewCamunda7ProcessController(db)
+	app.Get("/engine-rest/process-definition/key/:key", c7ProcessCtrl.GetDefinition)
+	app.Get("/engine-rest/process-definition/key/:key/tenant-id/:tenant", c7ProcessCtrl.GetDefinition)
+	app.Post("/engine-rest/process-definition/key/:key/start", c7ProcessCtrl.Start)
+	app.Post("/engine-rest/process-definition/key/:key/submit-form", c7ProcessCtrl.Start)
+	app.Post("/engine-rest/process-definition/key/:key/tenant-id/:tenant/start", c7ProcessCtrl.Start)
+	app.Post("/engine-rest/process-definition/key/:key/tenant-id/:tenant/submit-form", c7ProcessCtrl.Start)
+	app.Post("/engine-rest/process-definition/:id/start", c7ProcessCtrl.Start)
+	app.Post("/engine-rest/process-definition/:id/submit-form", c7ProcessCtrl.Start)
 	app.Get("/engine-rest/process-definition/:id", processDefinitionCtrl.GetDefinition)
-	app.Post("/engine-rest/process-definition/:id/start", processDefinitionCtrl.StartByDefinitionID)
 
 	// Per-resource process permissions (see process_authorization_service.go) —
 	// each handler itself requires MANAGE on :key, so no route-level gate here.
@@ -521,6 +531,9 @@ func main() {
 	app.Post("/engine-rest/external-task/fetchAndLock", permissions(db, "CAN_READ_JOBS"), externalTaskCtrl.FetchAndLock)
 	app.Post("/engine-rest/external-task/:id/complete", externalTaskCtrl.CompleteTask)
 	app.Post("/engine-rest/external-task/:id/failure", externalTaskCtrl.HandleFailure)
+	app.Post("/engine-rest/external-task/:id/bpmnError", externalTaskCtrl.HandleBpmnError)
+	app.Post("/engine-rest/external-task/:id/extendLock", externalTaskCtrl.ExtendLock)
+	app.Post("/engine-rest/external-task/:id/unlock", externalTaskCtrl.Unlock)
 
 	// ============================================================
 	// TASK ROUTES

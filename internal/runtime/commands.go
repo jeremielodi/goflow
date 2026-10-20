@@ -146,18 +146,26 @@ type StartInstanceArgs struct {
 	ExecutionID  uuid.UUID              `json:"executionId"`
 	TenantID     *string                `json:"tenantId,omitempty"`
 	Variables    map[string]interface{} `json:"variables,omitempty"`
+	BusinessKey  string                 `json:"businessKey,omitempty"`
 }
 
 // StartInstance creates an instance of a process definition and runs it
 // up to its first wait states. The ids are chosen here, before the
 // command travels: the instance id is its partition key.
 func StartInstance(ctx context.Context, definitionID uuid.UUID, tenantID *string, variables map[string]interface{}) (instanceID, execID uuid.UUID, err error) {
+	return StartInstanceWithBusinessKey(ctx, definitionID, tenantID, variables, "")
+}
+
+// StartInstanceWithBusinessKey is StartInstance with a Camunda 7 business
+// key.
+func StartInstanceWithBusinessKey(ctx context.Context, definitionID uuid.UUID, tenantID *string, variables map[string]interface{}, businessKey string) (instanceID, execID uuid.UUID, err error) {
 	args := StartInstanceArgs{
 		DefinitionID: definitionID,
 		InstanceID:   uuid.New(),
 		ExecutionID:  uuid.New(),
 		TenantID:     tenantID,
 		Variables:    variables,
+		BusinessKey:  businessKey,
 	}
 	err = cmdbus.Do(ctx, cmdbus.Key(args.InstanceID), CmdStartInstance, args, nil)
 	return args.InstanceID, args.ExecutionID, err
@@ -168,7 +176,7 @@ func (c *commands) startInstance(ctx context.Context, a StartInstanceArgs) (stru
 	if err != nil {
 		return struct{}{}, fmt.Errorf("load process definition %s: %w", a.DefinitionID, err)
 	}
-	err = service.StartProcessInstanceWithIDs(c.db, graph, a.DefinitionID, a.InstanceID, a.ExecutionID, a.TenantID, a.Variables)
+	err = service.StartProcessInstanceWithIDs(c.db, graph, a.DefinitionID, a.InstanceID, a.ExecutionID, a.TenantID, a.Variables, a.BusinessKey)
 	if errors.Is(err, service.ErrProcessAlreadyStarted) && cmdbus.Redelivered(ctx) {
 		return struct{}{}, c.resumeStranded(ctx, a.InstanceID)
 	}

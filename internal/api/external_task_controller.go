@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log"
 
@@ -40,9 +39,14 @@ func NewExternalTaskController(db *sqlx.DB, dispatcher *events.TaskEventDispatch
 type FetchAndLockRequest struct {
 	WorkerId string `json:"workerId"`
 	MaxTasks int    `json:"maxTasks"`
-	Topics   []struct {
+	// AsyncResponseTimeout (ms): wait that long for a task when none is
+	// available (Camunda 7 long polling).
+	AsyncResponseTimeout int64 `json:"asyncResponseTimeout"`
+	Topics               []struct {
 		TopicName    string `json:"topicName"`
 		LockDuration int    `json:"lockDuration"` // milliseconds
+		// Variables, when given, are the only variables returned.
+		Variables []string `json:"variables"`
 	} `json:"topics"`
 }
 
@@ -59,6 +63,18 @@ type FetchAndLockResponse struct {
 	Retries           int                        `json:"retries"`
 	WorkerId          string                     `json:"workerId"`
 	Headers           map[string]string          `json:"headers,omitempty"` // zeebe:taskHeaders
+	// Camunda 7 LockedExternalTaskDto fields.
+	ActivityID           string  `json:"activityId"`
+	ActivityInstanceID   string  `json:"activityInstanceId"`
+	ExecutionID          string  `json:"executionId"`
+	ProcessDefinitionID  string  `json:"processDefinitionId"`
+	ProcessDefinitionKey string  `json:"processDefinitionKey"`
+	BusinessKey          *string `json:"businessKey"`
+	TenantID             *string `json:"tenantId"`
+	LockExpirationTime   *string `json:"lockExpirationTime"`
+	Priority             int     `json:"priority"`
+	ErrorMessage         *string `json:"errorMessage"`
+	ErrorDetails         *string `json:"errorDetails"`
 }
 
 type CompleteRequest struct {
@@ -81,7 +97,7 @@ func normalizeVariablesForExternal(variables map[string]interface{}) map[string]
 		if varMap, ok := value.(map[string]interface{}); ok {
 			if val, hasValue := varMap["value"]; hasValue {
 				// Typed format
-				result[key] = val
+				result[key] = typedValue(val, varMap["type"])
 				continue
 			}
 		}
@@ -104,100 +120,6 @@ func formatVariablesForResponse(variables map[string]interface{}) map[string]Cam
 	return result
 }
 
-func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
-	var req FetchAndLockRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{
-			"title":   "Validation Error",
-			"message": "invalid request body",
-			"error":   err.Error(),
-		})
-	}
-
-	if req.MaxTasks <= 0 {
-		req.MaxTasks = 10 // default
-	}
-
-	// Prepare topic configs
-	topics := make([]repository.TopicConfig, len(req.Topics))
-	for i, topic := range req.Topics {
-		topics[i] = repository.TopicConfig{
-			TopicName:    topic.TopicName,
-			LockDuration: topic.LockDuration,
-		}
-	}
-
-	// Begin transaction
-	tx, err := ctrl.db.Beginx()
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to begin transaction",
-			"error":   err.Error(),
-		})
-	}
-	defer tx.Rollback()
-
-	// Fetch and lock jobs using repository
-	topicJobs, err := ctrl.externalTaskRepo.FetchAndLockJobsTx(tx, topics, req.WorkerId, req.MaxTasks)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to fetch jobs",
-			"error":   err.Error(),
-		})
-	}
-
-	if err := tx.Commit(); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": "failed to commit transaction",
-			"error":   err.Error(),
-		})
-	}
-	for _, topicJob := range topicJobs {
-		for _, job := range topicJob.Jobs {
-			service.LogAuditErr("job locked", ctrl.auditService.LogJobLocked(job.ID, job.ProcessInstanceID, req.WorkerId))
-		}
-	}
-
-	// Build response
-	engineRepo := repository.NewEngineRepository(ctrl.db, ctrl.dispatcher)
-	response := []FetchAndLockResponse{}
-	for _, topicJob := range topicJobs {
-		for _, job := range topicJob.Jobs {
-			// Parse variables from payload
-			rawVars := make(map[string]interface{})
-			if len(job.Payload) > 0 {
-				if err := json.Unmarshal(job.Payload, &rawVars); err != nil {
-					log.Printf("Warning: failed to parse job payload for job %s: %v", job.ID, err)
-				}
-			}
-
-			// Convert to Camunda variable format (typed)
-			convertedVars := formatVariablesForResponse(rawVars)
-
-			var headers map[string]string
-			if graph, gerr := engineRepo.GetProcessGraphByInstanceID(job.ProcessInstanceID); gerr == nil && graph != nil {
-				if n, ok := graph.Nodes[job.CurrentElementID]; ok {
-					headers = n.TaskHeaders
-				}
-			}
-
-			response = append(response, FetchAndLockResponse{
-				ID:                job.ID.String(),
-				TopicName:         topicJob.TopicName,
-				ProcessInstanceID: job.ProcessInstanceID.String(),
-				Variables:         convertedVars,
-				Retries:           job.Retries,
-				WorkerId:          req.WorkerId,
-				Headers:           headers,
-			})
-		}
-	}
-
-	return c.JSON(response)
-}
 
 func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 	jobID, err := uuid.Parse(c.Params("id"))
@@ -272,10 +194,9 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 		})
 	}
 
-	// Camunda 7's convention is "current retry count" (needs decrementing);
-	// Zeebe's own convention (service.FailJob's retriesRemaining param) is
-	// already "count to leave remaining after this failure".
-	newRetries := req.Retries - 1
+	// retries is what remains after this failure, in Camunda 7 (0: an
+	// incident) as in Camunda 8 — service.FailJob's own convention.
+	newRetries := req.Retries
 
 	result, err := runtime.FailJob(c.Context(), ctrl.db, runtime.FailJobArgs{
 		JobID:            jobID,
