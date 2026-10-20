@@ -534,6 +534,26 @@ func main() {
 	app.Post("/engine-rest/tasks/:id/unclaim", taskCtrl.UnClaim)
 	app.Post("/engine-rest/tasks/:id/complete", processInstanceCtrl.CompleteTask)
 
+	// Camunda 7 task API (/engine-rest/task, singular), its formats and
+	// status codes: a Camunda 7 application drives user tasks unchanged.
+	c7TaskCtrl := api.NewCamunda7TaskController(db, taskEventDispatcher)
+	app.Get("/engine-rest/task", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.List)
+	app.Post("/engine-rest/task", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.List)
+	app.Get("/engine-rest/task/count", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.Count)
+	app.Post("/engine-rest/task/count", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.Count)
+	app.Get("/engine-rest/task/:id", c7TaskCtrl.Get)
+	app.Post("/engine-rest/task/:id/claim", c7TaskCtrl.Claim)
+	app.Post("/engine-rest/task/:id/unclaim", c7TaskCtrl.Unclaim)
+	app.Post("/engine-rest/task/:id/assignee", c7TaskCtrl.SetAssignee)
+	app.Post("/engine-rest/task/:id/complete", c7TaskCtrl.Complete)
+	app.Post("/engine-rest/task/:id/submit-form", c7TaskCtrl.Complete)
+	app.Get("/engine-rest/task/:id/form", c7TaskCtrl.Form)
+	app.Get("/engine-rest/task/:id/form-variables", c7TaskCtrl.Variables)
+	app.Get("/engine-rest/task/:id/variables", c7TaskCtrl.Variables)
+	app.Post("/engine-rest/task/:id/variables", c7TaskCtrl.ModifyVariables)
+	app.Get("/engine-rest/task/:id/variables/:name", c7TaskCtrl.Variable)
+	app.Put("/engine-rest/task/:id/variables/:name", c7TaskCtrl.PutVariable)
+
 	// ============================================================
 	// JOB ROUTES
 	// ============================================================

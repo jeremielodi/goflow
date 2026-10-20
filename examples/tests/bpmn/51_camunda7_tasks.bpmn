@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+  id="Definitions_C7Tasks"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Suite 51: a Camunda 7 style model driven through /engine-rest/task. -->
+
+  <bpmn:process id="C7Tasks51" isExecutable="true">
+    <bpmn:startEvent id="c7_start"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="c7_start" targetRef="c7_review"/>
+    <bpmn:userTask id="c7_review" name="Review order" camunda:formKey="embedded:app:forms/review.html"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="c7_review" targetRef="c7_approve"/>
+    <bpmn:userTask id="c7_approve" name="Approve order"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="c7_approve" targetRef="c7_end"/>
+    <bpmn:endEvent id="c7_end"/>
+  </bpmn:process>
+</bpmn:definitions>

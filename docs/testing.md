@@ -49,7 +49,7 @@ npx ts-node run_all.ts
 | 26 | Event Log Shadow Mode (observability only) |
 | 27 | Write path: topology, concurrent commands on one instance, 30 instances at once, messages across partitions, refusals (runs in both modes) |
 
-**BPMN coverage and Camunda 8 semantics** (35–50):
+**BPMN coverage, Camunda 8 semantics, Camunda 7 task API** (35–51):
 
 | Suite | Feature |
 |---|---|
@@ -69,5 +69,6 @@ npx ts-node run_all.ts
 | 48 | Variable scopes and multi-instance |
 | 49 | Call activities (variables, errors, escalations, termination) |
 | 50 | Message end events, runtime incidents, untyped tasks, nested compensation |
+| 51 | Camunda 7 task API (`/engine-rest/task`): query, count, claim, assignee, typed variables, complete |
 
 The same suites run against several instances behind the load balancer, and against the high-availability cluster (`COMPOSE_FILE` with the files of [Operations](operations.md#operations), plus `GOFLOW_REPLICAS=3` for several instances). With `WRITE_PATH=partitioned` they run on the partitioned write path, and with `COMPOSE_FILE="docker-compose.yaml;docker-compose.citus.yml"` on Citus.

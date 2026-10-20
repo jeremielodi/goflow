@@ -71,6 +71,30 @@ POST /engine-rest/tasks/:id/claim           { "assignee": "..." }
 POST /engine-rest/tasks/:id/unclaim
 ```
 
+### Camunda 7 task API (`/engine-rest/task`)
+
+Camunda 7's paths, query parameters, `TaskDto` and typed-variable formats, dates (`2013-01-23T13:42:42.000+0200`), status codes and error bodies (`{"type": "InvalidRequestException", "message": …}`), so a Camunda 7 application works unchanged:
+
+```http
+GET|POST /engine-rest/task                   query: processInstanceId(In), processDefinitionId/Key, taskId(In),
+                                             taskDefinitionKey(In), executionId, name(Like), assignee(Like),
+                                             assigned, unassigned, candidateGroup, tenantIdIn, active, suspended,
+                                             sortBy/sortOrder (or "sorting" in the POST body), firstResult, maxResults
+GET|POST /engine-rest/task/count             → { "count": n }
+GET  /engine-rest/task/:id
+POST /engine-rest/task/:id/claim             { "userId": "..." }   204; 500 TaskAlreadyClaimedException if someone else holds it
+POST /engine-rest/task/:id/unclaim           204
+POST /engine-rest/task/:id/assignee          { "userId": "..." | null }
+POST /engine-rest/task/:id/complete          { "variables": { "x": { "value": 1, "type": "Integer" } }, "withVariablesInReturn": false }
+POST /engine-rest/task/:id/submit-form       same as complete
+GET  /engine-rest/task/:id/form              { "key": "<camunda:formKey>" }
+GET  /engine-rest/task/:id/variables         typed: String, Boolean, Integer, Long, Double, Json (value as a JSON string), Null
+GET  /engine-rest/task/:id/form-variables
+GET  /engine-rest/task/:id/variables/:name
+PUT  /engine-rest/task/:id/variables/:name   { "value": ..., "type": ... }
+POST /engine-rest/task/:id/variables         { "modifications": { ... } }   (deletions not supported)
+```
+
 ## External Tasks (Service Workers)
 
 ```http
