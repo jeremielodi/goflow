@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
@@ -27,6 +29,8 @@ type MessageController struct {
 }
 
 func NewMessageController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *MessageController {
+	registerInstanceCommands(db, dispatcher)
+	cmdbus.RegisterError("no_matching_subscription", ErrNoMatchingSubscription)
 	return &MessageController{db: db, dispatcher: dispatcher, auditService: service.NewAuditService(db)}
 }
 
@@ -54,7 +58,7 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "messageName is required"})
 	}
 
-	processInstanceID, executionID, err := mc.Correlate(req.MessageName, req.CorrelationKeys, req.Variables)
+	processInstanceID, executionID, err := mc.Correlate(c.Context(), req.MessageName, req.CorrelationKeys, req.Variables)
 	if err != nil {
 		status := fiber.StatusInternalServerError
 		if errors.Is(err, ErrNoMatchingSubscription) {
@@ -71,8 +75,17 @@ func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 
 // Correlate resumes the first execution waiting for messageName (optionally
 // scoped by a single correlation key) and merges variables into that process
-// instance. Shared by the Camunda 7 style handler above and the v2 API.
-func (mc *MessageController) Correlate(messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
+// instance. Like a published message, it runs on the partition of its
+// correlation key.
+func (mc *MessageController) Correlate(ctx context.Context, messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
+	key := cmdbus.NameKey("message", messageName, fmt.Sprint(correlationKeys))
+	var out correlateOutcome
+	err := cmdbus.Do(ctx, cmdbus.Key(key), cmdCorrelateMessage,
+		correlateArgs{MessageName: messageName, CorrelationKeys: correlationKeys, Variables: variables}, &out)
+	return out.ProcessInstanceID, out.ExecutionID, err
+}
+
+func (mc *MessageController) correlate(messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
 	subRepo := repository.NewEventSubscriptionRepository(mc.db)
 
 	// Determine correlation filtering

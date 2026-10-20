@@ -2,470 +2,234 @@ package partition
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
+	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/segmentio/kafka-go"
-	"google.golang.org/protobuf/proto"
 
-	"github.com/jeremielodi/goflow/internal/engine"
-	"github.com/jeremielodi/goflow/internal/eventlog"
-	"github.com/jeremielodi/goflow/internal/eventlog/pb"
-	"github.com/jeremielodi/goflow/internal/events"
-	"github.com/jeremielodi/goflow/internal/repository"
-	"github.com/jeremielodi/goflow/internal/runtime"
-	"github.com/jeremielodi/goflow/internal/service"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 )
 
-// GroupID identifies the Kafka consumer group every GoFlow replica's
-// Partition Processor joins. Using kafka.ConsumerGroup directly (rather
-// than the higher-level kafka.Reader) gives one dedicated goroutine per
-// locally-assigned partition — see Run — which is what "one owner per
-// partition" actually needs, and gets real partition assignment/rebalance
-// across replicas from Kafka's own group protocol for free.
-const GroupID = "goflow-partition-processor"
+// GroupID is the consumer group every replica's Processor joins: Kafka
+// hands each partition to exactly one member, and moves it when a member
+// leaves or joins.
+const GroupID = "goflow-partition-owners"
 
-// Processor is the write side of Phase 1's partitioned engine — see the
-// package doc in validate.go. It never invents new BPMN semantics: every
-// command handler below ends by calling the exact same
-// service.StartProcessInstance(WithIDs) / runtime.ExecuteExecution /
-// service.CompleteJob functions the legacy synchronous HTTP/gRPC paths
-// already call, reusing their existing transactional writes and
-// audit/eventlog side effects verbatim. What's different is only *how*
-// they're invoked: in strict per-partition order, driven by a consumed
-// Kafka command instead of directly inside a request handler.
+// Processor owns the partitions Kafka assigns to this replica and runs
+// their commands, in order, one at a time per partition.
 type Processor struct {
-	db          *sqlx.DB
-	dispatcher  *events.TaskEventDispatcher
-	brokers     []string
-	group       *kafka.ConsumerGroup
-	processRepo *repository.ProcessRepository
+	brokers    []string
+	group      *kafka.ConsumerGroup
+	replies    *kafka.Writer
+	partitions int
+
+	mu    sync.RWMutex
+	owned map[int]bool
 }
 
-func NewProcessor(brokers []string, db *sqlx.DB, dispatcher *events.TaskEventDispatcher) (*Processor, error) {
+func NewProcessor(brokers []string, partitions int) (*Processor, error) {
 	group, err := kafka.NewConsumerGroup(kafka.ConsumerGroupConfig{
 		ID:      GroupID,
 		Brokers: brokers,
-		Topics:  []string{eventlog.CommandsTopic},
+		Topics:  []string{CommandsTopic},
+		Dialer:  &kafka.Dialer{ClientID: clientID(), Timeout: 10 * time.Second, DualStack: true},
+		ErrorLogger: kafka.LoggerFunc(func(msg string, args ...interface{}) {
+			log.Printf("partition owner: kafka: "+msg, args...)
+		}),
+		// A stopped replica's partitions move to the others within this.
+		SessionTimeout:    6 * time.Second,
+		HeartbeatInterval: time.Second,
+		RebalanceTimeout:  30 * time.Second,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("partition processor: failed to join consumer group: %w", err)
+		return nil, err
 	}
-	return &Processor{
-		db:          db,
-		dispatcher:  dispatcher,
-		brokers:     brokers,
-		group:       group,
-		processRepo: repository.NewProcessRepository(db),
-	}, nil
+	p := &Processor{brokers: brokers, group: group, replies: newWriter(brokers, RepliesTopic), partitions: partitions, owned: map[int]bool{}}
+	cmdbus.SetOwnership(p.owns)
+	return p, nil
 }
 
-// Run joins the consumer group and, for every partition this replica is
-// assigned in each generation, starts a dedicated goroutine consuming that
-// partition alone — see runPartition. Blocks until ctx is cancelled.
+// owns reports whether this replica currently owns key's partition.
+func (p *Processor) owns(key uuid.UUID) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.owned[cmdbus.PartitionOf(key, p.partitions)]
+}
+
+func (p *Processor) setOwned(partition int, owned bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if owned {
+		p.owned[partition] = true
+	} else {
+		delete(p.owned, partition)
+	}
+}
+
+// Run takes part in the group until ctx ends: for every partition this
+// replica gets, a goroutine runs its commands (see own).
 func (p *Processor) Run(ctx context.Context) {
 	defer p.group.Close()
+	defer p.replies.Close()
 	for {
-		if ctx.Err() != nil {
-			return
-		}
 		gen, err := p.group.Next(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("partition processor: failed to get next generation: %v", err)
+			log.Printf("partition owner: joining the group: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
-		for topic, assignments := range gen.Assignments {
-			for _, assignment := range assignments {
-				partitionID, offset := assignment.ID, assignment.Offset
-				gen.Start(func(genCtx context.Context) {
-					p.runPartition(genCtx, gen, topic, partitionID, offset)
-				})
-			}
+		owned := make([]int, 0, len(gen.Assignments[CommandsTopic]))
+		for _, a := range gen.Assignments[CommandsTopic] {
+			owned = append(owned, a.ID+1)
+		}
+		log.Printf("partition owner: generation %d, owning partitions %v", gen.ID, owned)
+		for _, assignment := range gen.Assignments[CommandsTopic] {
+			partition, offset := assignment.ID, assignment.Offset
+			gen.Start(func(genCtx context.Context) {
+				p.own(genCtx, gen, partition, offset)
+			})
 		}
 	}
 }
 
-// runPartition owns exactly one partition for the lifetime of the current
-// generation — reassigned (to this or another replica) on the next
-// rebalance. It has no per-instance in-memory state at all: every command
-// handler reads/writes straight through to Postgres via the reused
-// service/runtime functions, so a rebalance handoff is always safe —
-// there's nothing to warm up or hand off, the next owner just picks up
-// wherever those functions already left Postgres.
-func (p *Processor) runPartition(ctx context.Context, gen *kafka.Generation, topic string, partitionID int, offset int64) {
+// own runs one partition's commands for as long as this replica owns it.
+// A command being run when the partition is taken away (genCtx ends)
+// finishes first: Kafka gives the partition to its next owner only once
+// this returns, so two replicas never run commands of one partition at the
+// same time.
+func (p *Processor) own(genCtx context.Context, gen *kafka.Generation, partition int, offset int64) {
+	p.setOwned(partition, true)
+	defer p.setOwned(partition, false)
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:   p.brokers,
-		Topic:     topic,
-		Partition: partitionID,
+		Topic:     CommandsTopic,
+		Partition: partition,
+		MaxWait:   50 * time.Millisecond,
 	})
 	defer reader.Close()
-	reader.SetOffset(offset)
+	if offset >= 0 {
+		reader.SetOffset(offset)
+	} else {
+		reader.SetOffset(kafka.FirstOffset)
+	}
 
+	// The first command read after taking a partition over may have been
+	// run already: its previous owner died before acknowledging it.
+	first := true
 	for {
-		msg, err := reader.ReadMessage(ctx)
+		msg, err := reader.FetchMessage(genCtx)
 		if err != nil {
-			if ctx.Err() != nil {
+			if genCtx.Err() != nil {
 				return
 			}
-			log.Printf("partition processor: partition %d read error: %v", partitionID, err)
+			log.Printf("partition owner: partition %d: %v", partition, err)
+			time.Sleep(time.Second)
 			continue
 		}
 
-		if err := p.handle(ctx, msg.Value); err != nil {
-			// Not committing on failure means this message is redelivered
-			// (to this or whichever replica owns the partition next) —
-			// every handler below is written to be safe to redeliver, so
-			// this is "retry", not "stuck".
-			log.Printf("partition processor: partition %d offset %d failed, will retry: %v", partitionID, msg.Offset, err)
-			continue
+		var cmd cmdbus.Command
+		if err := json.Unmarshal(msg.Value, &cmd); err != nil {
+			log.Printf("partition owner: partition %d offset %d: malformed command, skipped: %v", partition, msg.Offset, err)
+		} else if !p.run(genCtx, partition, cmd, first) {
+			return // partition taken away while retrying: its next owner runs it
 		}
+		first = false
 
-		if err := gen.CommitOffsets(map[string]map[int]int64{topic: {partitionID: msg.Offset + 1}}); err != nil {
-			log.Printf("partition processor: partition %d failed to commit offset %d: %v", partitionID, msg.Offset, err)
-		}
-	}
-}
-
-func (p *Processor) handle(ctx context.Context, data []byte) error {
-	var env pb.CommandEnvelope
-	if err := proto.Unmarshal(data, &env); err != nil {
-		// A malformed command can never succeed on retry — log and
-		// acknowledge it (return nil) so it doesn't wedge the partition.
-		log.Printf("partition processor: malformed command envelope: %v", err)
-		return nil
-	}
-
-	switch cmd := env.Command.(type) {
-	case *pb.CommandEnvelope_StartProcess:
-		return p.handleStartProcess(ctx, cmd.StartProcess)
-	case *pb.CommandEnvelope_CompleteJob:
-		return p.handleCompleteJob(ctx, cmd.CompleteJob)
-	case *pb.CommandEnvelope_FailJob:
-		return p.handleFailJob(ctx, cmd.FailJob)
-	case *pb.CommandEnvelope_SetJobRetries:
-		return p.handleSetJobRetries(cmd.SetJobRetries)
-	case *pb.CommandEnvelope_ResolveIncident:
-		return p.handleResolveIncident(cmd.ResolveIncident)
-	case *pb.CommandEnvelope_TimerFired:
-		return p.handleTimerFired(ctx, cmd.TimerFired)
-	case *pb.CommandEnvelope_Terminate:
-		return p.handleTerminate(cmd.Terminate)
-	default:
-		log.Printf("partition processor: unknown command type for instance %s", env.ProcessInstanceId)
-		return nil
-	}
-}
-
-func (p *Processor) handleStartProcess(ctx context.Context, cmd *pb.StartProcessCommand) error {
-	instanceID, err := uuid.Parse(cmd.ProcessInstanceId)
-	if err != nil {
-		return fmt.Errorf("invalid process_instance_id %q: %w", cmd.ProcessInstanceId, err)
-	}
-	execID, err := uuid.Parse(cmd.ExecutionId)
-	if err != nil {
-		return fmt.Errorf("invalid execution_id %q: %w", cmd.ExecutionId, err)
-	}
-	definitionID, err := uuid.Parse(cmd.ProcessDefinitionId)
-	if err != nil {
-		return fmt.Errorf("invalid process_definition_id %q: %w", cmd.ProcessDefinitionId, err)
-	}
-
-	var tenantID *string
-	if cmd.TenantId != "" {
-		t := cmd.TenantId
-		tenantID = &t
-	}
-	variables := map[string]interface{}{}
-	if cmd.VariablesJson != "" {
-		if err := json.Unmarshal([]byte(cmd.VariablesJson), &variables); err != nil {
-			return fmt.Errorf("invalid variables JSON: %w", err)
+		if err := gen.CommitOffsets(map[string]map[int]int64{CommandsTopic: {partition: msg.Offset + 1}}); err != nil {
+			log.Printf("partition owner: partition %d: acknowledging offset %d: %v", partition, msg.Offset, err)
 		}
 	}
-
-	def, err := p.processRepo.FindProcessDefinitionByID(definitionID)
-	if err != nil {
-		return fmt.Errorf("load definition %s: %w", definitionID, err)
-	}
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return fmt.Errorf("parse graph: %w", err)
-	}
-
-	startErr := service.StartProcessInstanceWithIDs(p.db, &graph, definitionID, instanceID, execID, tenantID, variables)
-	switch {
-	case startErr == nil:
-		rt := runtime.NewRuntime(&graph, p.db, p.dispatcher)
-		if err := rt.ExecuteExecution(ctx, execID); err != nil {
-			return fmt.Errorf("execute instance %s: %w", instanceID, err)
-		}
-		return nil
-
-	case errors.Is(startErr, service.ErrProcessAlreadyStarted):
-		// Redelivery after a crash between StartProcessInstanceWithIDs's
-		// commit (which already published ProcessStarted — the Command
-		// Gateway's wait may have already unblocked the original caller)
-		// and ExecuteExecution finishing. Resume iff status == 'active':
-		// every wait-state executor (executeServiceTask -> 'waiting',
-		// executeEndEvent -> 'completed') flips status away from 'active'
-		// atomically with its own side effect, in the same transaction —
-		// unlike current_element_id, which ExecuteExecution's gateway-walk
-		// case updates BEFORE the next node's own handler commits (so a
-		// crash between "gateway resolved to taskA" and "taskA's job
-		// committed" would leave current_element_id == taskA's ID with no
-		// job yet — checking current_element_id against the start node
-		// alone would misdiagnose this as "already fully applied" and
-		// permanently strand the instance). status == 'active' is the only
-		// state where nothing durable has happened yet at the current node.
-		var status string
-		if qerr := p.db.Get(&status, `SELECT status FROM public.executions WHERE id = $1`, execID); qerr != nil {
-			return fmt.Errorf("check execution state for %s: %w", execID, qerr)
-		}
-		if status == "active" {
-			rt := runtime.NewRuntime(&graph, p.db, p.dispatcher)
-			if err := rt.ExecuteExecution(ctx, execID); err != nil {
-				return fmt.Errorf("resume instance %s: %w", instanceID, err)
-			}
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("start process instance %s: %w", instanceID, startErr)
-	}
 }
 
-func (p *Processor) handleCompleteJob(ctx context.Context, cmd *pb.CompleteJobCommand) error {
-	jobID, err := uuid.Parse(cmd.JobId)
-	if err != nil {
-		return fmt.Errorf("invalid job_id %q: %w", cmd.JobId, err)
-	}
-	variables := map[string]interface{}{}
-	if cmd.VariablesJson != "" {
-		if err := json.Unmarshal([]byte(cmd.VariablesJson), &variables); err != nil {
-			return fmt.Errorf("invalid variables JSON: %w", err)
+// run executes cmd and replies to whoever waits. An error that is an
+// answer (job not found…) is replied; one meaning the database is out of
+// reach is retried, as a redelivery, until it works or the partition goes
+// to another replica (false).
+func (p *Processor) run(genCtx context.Context, partition int, cmd cmdbus.Command, redelivered bool) bool {
+	delay := 200 * time.Millisecond
+	for {
+		ctx := context.Background()
+		if redelivered {
+			ctx = cmdbus.WithRedelivered(ctx)
+		}
+		reply, err := cmdbus.Execute(ctx, cmd)
+		if err == nil || !transient(err) {
+			p.reply(cmd, reply)
+			return true
+		}
+		log.Printf("partition owner: partition %d: %s failed, retrying in %s: %v", partition, cmd.Op, delay, err)
+		select {
+		case <-genCtx.Done():
+			return false
+		case <-time.After(delay):
+		}
+		redelivered = true
+		if delay < 5*time.Second {
+			delay *= 2
 		}
 	}
-
-	result, err := service.CompleteJob(p.db, jobID, variables)
-	if errors.Is(err, service.ErrJobInvalidState) {
-		// service.CompleteJob's own transaction (mark job completed +
-		// advance the execution pointer) already committed on a prior
-		// attempt, but the SUBSEQUENT ExecuteExecution walk below is a
-		// separate commit — a crash in between is real and redeliverable,
-		// the mirror image of handleStartProcess's ErrProcessAlreadyStarted
-		// gap above. Check whether that walk still needs to happen.
-		return p.resumeIfStranded(ctx, jobID)
-	}
-	if err != nil {
-		return fmt.Errorf("complete job %s: %w", jobID, err)
-	}
-	if result.ProcessCompleted {
-		// service.CompleteJob only completes the process itself when the
-		// service task node has zero outgoing flows — not either of this
-		// engine's validated shapes (every task flows to a gateway or an
-		// end event via an explicit sequence flow), but handled anyway for
-		// robustness.
-		return nil
-	}
-
-	// The normal case for both validated shapes: every branch task's sole
-	// outgoing flow targets the end event directly (ValidateShape enforces
-	// this), so service.CompleteJob merely advanced the execution's
-	// pointer to that end node — exactly like the legacy REST/gRPC
-	// handlers, resuming via runtime.ExecuteExecution is what actually
-	// reaches it and completes the process.
-	rt := runtime.NewRuntime(result.Graph, p.db, p.dispatcher)
-	if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
-		return fmt.Errorf("resume execution after completing job %s: %w", jobID, err)
-	}
-	return nil
 }
 
-func (p *Processor) handleFailJob(ctx context.Context, cmd *pb.FailJobCommand) error {
-	jobID, err := uuid.Parse(cmd.JobId)
-	if err != nil {
-		return fmt.Errorf("invalid job_id %q: %w", cmd.JobId, err)
-	}
-
-	// service.FailJob has no ErrJobInvalidState-style sentinel for "this
-	// job's outcome was already applied by a prior attempt" the way
-	// CompleteJob does — check the job's status ourselves before ever
-	// calling it, since re-running FailJob on an already-failed/already-
-	// reset job would redo its Postgres writes (harmless for the plain
-	// status fields, but the boundary-trigger branch would re-run
-	// UpdateExecutionNodeTx and could overwrite an execution that already
-	// advanced further via a completed resume).
-	var status string
-	if err := p.db.Get(&status, `SELECT status FROM public.jobs WHERE id = $1`, jobID); err != nil {
-		return fmt.Errorf("check job state for %s: %w", jobID, err)
-	}
-	if status != "locked" {
-		return p.resumeIfStranded(ctx, jobID)
-	}
-
-	result, err := service.FailJob(p.db, jobID, int(cmd.RetriesRemaining), cmd.ErrorMessage, cmd.ErrorCode)
-	if err != nil {
-		return fmt.Errorf("fail job %s: %w", jobID, err)
-	}
-	if !result.BoundaryTriggered {
-		// Either a plain retry reset (job goes back to pending, a worker
-		// will fetch it again later) or a permanent failure with an
-		// incident created (service.FailJob's own transaction already
-		// committed everything atomically) — neither needs a resume.
-		return nil
-	}
-
-	// service.FailJob's boundary-trigger branch already committed moving
-	// the execution's pointer to the boundary event's node — exactly like
-	// service.CompleteJob's non-terminal case, resuming via
-	// runtime.ExecuteExecution is what actually walks from there (the
-	// ErrorBoundaryEventType case in runtime.go is already generic, same
-	// as every other node type reused by this package).
-	rt := runtime.NewRuntime(result.Graph, p.db, p.dispatcher)
-	if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
-		return fmt.Errorf("resume execution after boundary-triggered failure for job %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// handleSetJobRetries and handleResolveIncident, unlike every handler
-// above, never trigger a follow-up ExecuteExecution walk — neither ever
-// moves an execution's graph position — so a redelivered command is
-// simply safe to re-apply as-is: no status check, no resumeIfStranded, no
-// stranding case at all.
-
-func (p *Processor) handleSetJobRetries(cmd *pb.SetJobRetriesCommand) error {
-	jobID, err := uuid.Parse(cmd.JobId)
-	if err != nil {
-		return fmt.Errorf("invalid job_id %q: %w", cmd.JobId, err)
-	}
-	if err := service.SetJobRetries(p.db, jobID, int(cmd.Retries)); err != nil {
-		return fmt.Errorf("set retries for job %s: %w", jobID, err)
-	}
-	return nil
-}
-
-func (p *Processor) handleResolveIncident(cmd *pb.ResolveIncidentCommand) error {
-	incidentID, err := uuid.Parse(cmd.IncidentId)
-	if err != nil {
-		return fmt.Errorf("invalid incident_id %q: %w", cmd.IncidentId, err)
-	}
-	if err := service.ResolveIncident(p.db, incidentID); err != nil {
-		return fmt.Errorf("resolve incident %s: %w", incidentID, err)
-	}
-	return nil
-}
-
-// handleTimerFired resumes an execution that was parked waiting for a
-// timer — the Phase 6 counterpart of Start/Complete/Fail's redelivery
-// safety, but simpler: executeIntermediateTimer (internal/runtime/executor_timer.go)
-// sets executions.status = 'waiting' when it creates the timer job, the
-// exact same convention executeServiceTask uses for jobs, so "status is
-// still 'waiting'" is the correct "safe to resume" signal here too.
-func (p *Processor) handleTimerFired(ctx context.Context, cmd *pb.TimerFiredCommand) error {
-	execID, err := uuid.Parse(cmd.ExecutionId)
-	if err != nil {
-		return fmt.Errorf("invalid execution_id %q: %w", cmd.ExecutionId, err)
-	}
-
-	var row struct {
-		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
-		Status            string    `db:"status"`
-	}
-	if err := p.db.Get(&row, `SELECT process_instance_id, status FROM public.executions WHERE id = $1`, execID); err != nil {
-		return fmt.Errorf("check execution state for %s: %w", execID, err)
-	}
-	if row.Status != "waiting" {
-		// Already applied by a prior attempt at this exact command
-		// (redelivery after a commit-then-crash) — a safe no-op.
-		return nil
-	}
-
-	if _, _, err := service.ResumeTimerExecution(p.db, p.dispatcher, row.ProcessInstanceID, execID, cmd.TargetNodeId); err != nil {
-		if errors.Is(err, service.ErrStaleTimer) {
-			return nil // its element was left meanwhile: nothing to resume
+func (p *Processor) reply(cmd cmdbus.Command, reply cmdbus.Reply) {
+	if cmd.ReplyTo == "" {
+		if reply.Error != "" {
+			log.Printf("partition owner: %s for %s: %s", cmd.Op, cmd.Key, reply.Error)
 		}
-		return fmt.Errorf("resume timer execution %s: %w", execID, err)
+		return
 	}
-
-	engineRepo := repository.NewEngineRepository(p.db, p.dispatcher)
-	graph, err := engineRepo.GetProcessGraphByInstanceID(row.ProcessInstanceID)
+	value, err := json.Marshal(reply)
 	if err != nil {
-		return fmt.Errorf("load graph to resume timer execution %s: %w", execID, err)
+		log.Printf("partition owner: encoding the reply to %s: %v", cmd.Op, err)
+		return
 	}
-	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
-	if err := rt.ExecuteExecution(ctx, execID); err != nil {
-		return fmt.Errorf("execute after timer fired for %s: %w", execID, err)
+	msg := kafka.Message{Key: []byte(replyKey(cmd.ReplyTo).String()), Value: value}
+	for attempt := 0; attempt < 5; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = p.replies.WriteMessages(ctx, msg)
+		cancel()
+		if err == nil {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	return nil
+	log.Printf("partition owner: replying to %s: %v", cmd.Op, err)
 }
 
-// handleTerminate (gap-closing pass 2) reuses service.TerminateProcessInstance
-// verbatim — it's already a single, self-contained operation (transaction +
-// cascade cleanup + archive), not something to reimplement here. Unlike
-// every handler above, redelivery safety is keyed off "does the row still
-// exist" rather than a status check: a prior attempt's success already
-// archived-and-deleted the instance's live rows, so a second FindByID
-// genuinely returns ErrProcessInstanceNotFound — treated as a safe no-op.
-// No follow-up ExecuteExecution walk needed; termination doesn't move to a
-// next node.
-func (p *Processor) handleTerminate(cmd *pb.TerminateCommand) error {
-	instanceID, err := uuid.Parse(cmd.ProcessInstanceId)
-	if err != nil {
-		return fmt.Errorf("invalid process_instance_id %q: %w", cmd.ProcessInstanceId, err)
+// transient tells an error worth retrying the same command for: the
+// database is unreachable, restarting, failing over, or picked this
+// transaction to abort.
+func transient(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, driver.ErrBadConn) {
+		return true
 	}
-
-	err = service.TerminateProcessInstance(p.db, p.dispatcher, instanceID, cmd.Reason)
-	if err != nil && !errors.Is(err, service.ErrProcessInstanceNotFound) {
-		return fmt.Errorf("terminate process instance %s: %w", instanceID, err)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case strings.HasPrefix(pgErr.Code, "08"), // connection exception
+			pgErr.Code == "57P01", pgErr.Code == "57P02", pgErr.Code == "57P03", // shutdown, cannot connect now
+			pgErr.Code == "25006",                        // read-only: a replica promoted away from us
+			pgErr.Code == "40001", pgErr.Code == "40P01": // serialization failure, deadlock
+			return true
+		}
+		return false
 	}
-	return nil
-}
-
-// resumeIfStranded handles redelivery where a job's terminal state was
-// already reached by a prior attempt (CompleteJobCommand's
-// ErrJobInvalidState branch, or FailJobCommand's own "job no longer
-// locked" check — see handleFailJob) but the SUBSEQUENT ExecuteExecution
-// walk may not have run yet. If the owning execution is still 'active'
-// (see handleStartProcess's identical reasoning), that walk never happened
-// and must be resumed now; otherwise a prior attempt already carried it
-// through (or the job's outcome never needed one, e.g. a plain retry reset
-// or an incident with no matching boundary) and this is a safe no-op.
-func (p *Processor) resumeIfStranded(ctx context.Context, jobID uuid.UUID) error {
-	var row struct {
-		ExecutionID       uuid.UUID `db:"execution_id"`
-		ProcessInstanceID uuid.UUID `db:"process_instance_id"`
-		Status            string    `db:"status"`
+	var connErr *pgconn.ConnectError
+	if errors.As(err, &connErr) {
+		return true
 	}
-	err := p.db.Get(&row, `
-		SELECT j.execution_id, j.process_instance_id, e.status
-		FROM public.jobs j
-		JOIN public.executions e ON e.id = j.execution_id
-		WHERE j.id = $1
-	`, jobID)
-	if err != nil {
-		return fmt.Errorf("check execution state for job %s: %w", jobID, err)
-	}
-	if row.Status != "active" {
-		return nil
-	}
-
-	engineRepo := repository.NewEngineRepository(p.db, p.dispatcher)
-	graph, err := engineRepo.GetProcessGraphByInstanceID(row.ProcessInstanceID)
-	if err != nil {
-		return fmt.Errorf("load graph to resume job %s: %w", jobID, err)
-	}
-	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
-	if err := rt.ExecuteExecution(ctx, row.ExecutionID); err != nil {
-		return fmt.Errorf("resume execution after already-completed job %s: %w", jobID, err)
-	}
-	return nil
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") || strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset") || strings.Contains(msg, "bad connection")
 }

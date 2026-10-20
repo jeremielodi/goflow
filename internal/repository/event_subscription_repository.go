@@ -41,20 +41,41 @@ func (r *EventSubscriptionRepository) FindByMessageName(
 	var subs []EventSubscription
 
 	if correlationVarName != "" && correlationVarValue != "" {
-		// Filter by process variable value
-		err := r.db.Select(&subs, `
-			SELECT es.id, es.process_instance_id, es.execution_id, es.event_type,
-			       es.event_name, es.correlation_key, es.target_element_id,
-			       es.created_at, es.consumed_at
-			FROM event_subscriptions es
-			JOIN variables v ON v.process_instance_id = es.process_instance_id
-			WHERE es.event_type = 'message'
-			  AND es.event_name = $1
-			  AND es.consumed_at IS NULL
-			  AND v.data->>$2 = $3
-			ORDER BY es.created_at ASC
-		`, messageName, correlationVarName, correlationVarValue)
-		return subs, err
+		// Filter by process variable value. Two queries, not a join: on
+		// Citus the subscriptions stay on the coordinator while the
+		// variables are sharded.
+		var all []EventSubscription
+		if err := r.db.Select(&all, `
+			SELECT id, process_instance_id, execution_id, event_type,
+			       event_name, correlation_key, target_element_id,
+			       created_at, consumed_at
+			FROM event_subscriptions
+			WHERE event_type = 'message' AND event_name = $1 AND consumed_at IS NULL
+			ORDER BY created_at ASC
+		`, messageName); err != nil || len(all) == 0 {
+			return nil, err
+		}
+		ids := make([]string, len(all))
+		for i, s := range all {
+			ids[i] = s.ProcessInstanceID.String()
+		}
+		var matching []uuid.UUID
+		if err := r.db.Select(&matching, `
+			SELECT process_instance_id FROM variables
+			WHERE process_instance_id = ANY($1::uuid[]) AND data->>$2 = $3
+		`, ids, correlationVarName, correlationVarValue); err != nil {
+			return nil, err
+		}
+		match := make(map[uuid.UUID]bool, len(matching))
+		for _, id := range matching {
+			match[id] = true
+		}
+		for _, s := range all {
+			if match[s.ProcessInstanceID] {
+				subs = append(subs, s)
+			}
+		}
+		return subs, nil
 	}
 
 	err := r.db.Select(&subs, `

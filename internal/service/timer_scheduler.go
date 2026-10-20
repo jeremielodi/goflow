@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
@@ -19,39 +20,19 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-// TimerPartitionRouter lets a due timer belonging to a partitioned-write-
-// path instance be routed through the Command Gateway (a produced
-// TimerFiredCommand) instead of this package's own direct
-// ResumeTimerExecution write — see architecture/event-sourced-kafka-design.md
-// Phase 6. Implemented by internal/partition, wired only in main.go: this
-// package cannot import internal/partition directly, since
-// internal/partition already imports internal/service (the same
-// dependency-inversion pattern used throughout this codebase's Kafka work
-// whenever a lower layer needs to call into a higher one).
-//
-// Unlike every other command in this series (Start/Complete/Fail/
-// SetRetries/ResolveIncident), FireTimer has no caller waiting for a
-// synchronous response — TimerScheduler's background poll loop doesn't
-// need to block on confirmation before moving to the next due timer, so
-// there's no produce-then-wait bridge here, just a produce.
-type TimerPartitionRouter interface {
-	// FireTimer returns (true, nil) if timer's instance is partitioned and
-	// was handled by producing a command — the caller must NOT also run
-	// ResumeTimerExecution for it. Returns (false, nil) for a legacy
-	// instance (including lookup errors — the legacy path is always a
-	// safe fallback).
-	FireTimer(ctx context.Context, timer models.TimerJob) (handled bool, err error)
-}
+// CmdFireTimer fires a due timer of a process instance: a command (see
+// package cmdbus), so in partitioned mode it runs on the replica owning
+// the instance's partition, whichever replica's scheduler claimed it.
+const CmdFireTimer = "FireTimer"
 
 type TimerScheduler struct {
-	db              *sqlx.DB
-	dispatcher      *events.TaskEventDispatcher
-	engineRepo      *repository.EngineRepository
-	stopChan        chan bool
-	resumer         func(ctx context.Context, execID uuid.UUID) error
-	auditService    *AuditService
-	partitionRouter TimerPartitionRouter
-	// startTimer fires a timer start event (runtime.FireStartTimer; the
+	db           *sqlx.DB
+	dispatcher   *events.TaskEventDispatcher
+	engineRepo   *repository.EngineRepository
+	stopChan     chan bool
+	resumer      func(ctx context.Context, execID uuid.UUID) error
+	auditService *AuditService
+	// startTimer fires a timer start event (runtime.PostStartTimer; the
 	// runtime package can't be imported from here).
 	startTimer func(ctx context.Context, timer models.TimerJob) error
 }
@@ -61,16 +42,24 @@ func (s *TimerScheduler) SetStartTimerHandler(h func(ctx context.Context, timer 
 	s.startTimer = h
 }
 
-func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher, partitionRouter TimerPartitionRouter) *TimerScheduler {
-	return &TimerScheduler{
-		db:              db,
-		dispatcher:      dispatcher,
-		engineRepo:      repository.NewEngineRepository(db, dispatcher),
-		stopChan:        make(chan bool),
-		resumer:         resumer,
-		auditService:    NewAuditService(db),
-		partitionRouter: partitionRouter,
+func NewTimerScheduler(db *sqlx.DB, resumer func(ctx context.Context, execID uuid.UUID) error, dispatcher *events.TaskEventDispatcher) *TimerScheduler {
+	s := &TimerScheduler{
+		db:           db,
+		dispatcher:   dispatcher,
+		engineRepo:   repository.NewEngineRepository(db, dispatcher),
+		stopChan:     make(chan bool),
+		resumer:      resumer,
+		auditService: NewAuditService(db),
 	}
+	cmdbus.Register(CmdFireTimer, func(ctx context.Context, raw json.RawMessage) (any, error) {
+		var timer models.TimerJob
+		if err := json.Unmarshal(raw, &timer); err != nil {
+			return nil, err
+		}
+		s.fireTimer(ctx, timer)
+		return nil, nil
+	})
+	return s
 }
 
 // Start begins the timer scheduler poller
@@ -126,12 +115,9 @@ func (s *TimerScheduler) processDueTimers(ctx context.Context) {
 	}
 }
 
-// triggerTimer triggers a single timer. For a partitioned-write-path
-// instance, the partitionRouter takes over the execution-resume step
-// entirely (via a produced command, applied later by the owning
-// Partition Processor) — this function only still handles cycle
-// rescheduling and the TimerTriggered observability event for that case,
-// since neither touches executions.
+// triggerTimer hands a claimed timer to whoever fires it: the owner of
+// its instance's partition (directly in direct mode), or, for a timer
+// start event, the start handler.
 func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob) {
 	log.Printf("Triggering timer %s for process instance %s", timer.ID, timer.ProcessInstanceID)
 
@@ -146,28 +132,25 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 		return
 	}
 
+	if err := cmdbus.Post(ctx, cmdbus.Key(timer.ProcessInstanceID), CmdFireTimer, timer); err != nil {
+		log.Printf("timer %s: %v", timer.ID, err)
+		if cmdbus.Partitioned() {
+			// Never reached its partition: claim it again on the next poll.
+			if _, uerr := s.db.Exec(`UPDATE public.timer_jobs SET is_triggered = false, triggered_at = NULL WHERE id = $1`, timer.ID); uerr != nil {
+				log.Printf("timer %s: re-arming after a failed send: %v", timer.ID, uerr)
+			}
+		}
+	}
+}
+
+// fireTimer moves the timer's execution on, arms a cycle's next
+// occurrence and continues the process.
+func (s *TimerScheduler) fireTimer(ctx context.Context, timer models.TimerJob) {
 	var execID uuid.UUID
 	if timer.ExecutionID != nil {
 		execID = *timer.ExecutionID
 	}
 
-	if s.partitionRouter != nil && execID != uuid.Nil {
-		handled, err := s.partitionRouter.FireTimer(ctx, timer)
-		if err != nil {
-			log.Printf("timer %s: partition router failed: %v", timer.ID, err)
-			return
-		}
-		if handled {
-			s.scheduleNextCycleIfNeeded(ctx, timer)
-			LogAuditErr("timer triggered", s.auditService.LogTimerTriggered(timer.ProcessInstanceID, timer.ID, timer.EventType))
-			if p := eventlog.Global(); p != nil {
-				p.TimerTriggered(timer.ProcessInstanceID.String(), timer.ID.String(), timer.EventType)
-			}
-			return
-		}
-	}
-
-	// Legacy path — unchanged behavior for every non-partitioned instance.
 	if execID != uuid.Nil {
 		targetNodeID, err := ParseTimerTargetNode(timer.Payload)
 		if err != nil {
@@ -196,7 +179,6 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 	// Continue execution after ResumeTimerExecution's own transaction
 	// committed.
 	if execID != uuid.Nil && s.resumer != nil {
-		time.Sleep(100 * time.Millisecond)
 		log.Printf("🔄 Continuing execution %s after timer", execID)
 		if err := s.resumer(ctx, execID); err != nil {
 			log.Printf("❌ Failed to continue execution after timer: %v", err)
@@ -205,9 +187,7 @@ func (s *TimerScheduler) triggerTimer(ctx context.Context, timer models.TimerJob
 }
 
 // scheduleNextCycleIfNeeded inserts the next timer_jobs row for a cycle
-// timer. Only ever touches timer_jobs, never executions — safe to run
-// unconditionally regardless of write path, so it's shared by both the
-// legacy and partitioned branches of triggerTimer above.
+// timer.
 func (s *TimerScheduler) scheduleNextCycleIfNeeded(ctx context.Context, timer models.TimerJob) {
 	var payload map[string]interface{}
 	if len(timer.Payload) > 0 {

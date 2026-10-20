@@ -60,7 +60,13 @@ func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicC
 			FOR UPDATE SKIP LOCKED
 		`
 
-		err := tx.Select(&jobs, lockQuery, topic.TopicName, maxTasks)
+		lockedUntil := time.Now().Add(time.Duration(topic.LockDuration) * time.Millisecond)
+		var err error
+		if distributedClaims.Load() {
+			jobs, err = claimJobsTx(tx, topic.TopicName, workerID, lockedUntil, maxTasks)
+		} else {
+			err = tx.Select(&jobs, lockQuery, topic.TopicName, maxTasks)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -92,8 +98,11 @@ func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicC
 			for i := range jobs {
 				jobs[i].CurrentElementID = elemByID[jobs[i].ExecutionID]
 			}
-			// Lock the jobs using adapter pattern
-			lockedUntil := time.Now().Add(time.Duration(topic.LockDuration) * time.Millisecond)
+			if distributedClaims.Load() {
+				// Already locked, one by one, by claimJobsTx.
+				result = append(result, TopicJobs{TopicName: topic.TopicName, Jobs: jobs})
+				continue
+			}
 
 			// Build IN clause with proper placeholders
 			placeholders := make([]string, len(jobs))
@@ -130,19 +139,31 @@ func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicC
 func (r *ExternalTaskRepository) GetJobWithExecutionTx(tx *sqlx.Tx, jobID uuid.UUID) (*JobWithExecution, error) {
 	var result JobWithExecution
 
+	// The job row stays locked until tx ends: two completions (or a
+	// completion and a failure) of one job can't both see it 'locked'. The
+	// instance comes first so the locking query targets one instance —
+	// the only kind of FOR UPDATE Citus accepts on a distributed table.
+	var instanceID uuid.UUID
+	if err := tx.Get(&instanceID, `SELECT process_instance_id FROM public.jobs WHERE id = $1`, jobID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
 	query := `
-		SELECT 
-			j.execution_id, 
-			j.process_instance_id, 
-			e.current_element_id, 
+		SELECT
+			j.execution_id,
+			j.process_instance_id,
+			e.current_element_id,
 			j.status,
 			j.retries
 		FROM public.jobs j
-		JOIN public.executions e ON e.id = j.execution_id
-		WHERE j.id = $1
+		JOIN public.executions e ON e.process_instance_id = j.process_instance_id AND e.id = j.execution_id
+		WHERE j.process_instance_id = $1 AND j.id = $2
+		FOR UPDATE OF j
 	`
 
-	err := tx.QueryRowx(query, jobID).StructScan(&result)
+	err := tx.QueryRowx(query, instanceID, jobID).StructScan(&result)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -153,58 +174,34 @@ func (r *ExternalTaskRepository) GetJobWithExecutionTx(tx *sqlx.Tx, jobID uuid.U
 	return &result, nil
 }
 
-// CompleteJob marks a job as completed
-func (r *ExternalTaskRepository) CompleteJobTx(tx *sqlx.Tx, jobID uuid.UUID) error {
-	adapter := database.NewDabaseAdapter(r.db)
+// The job writes below name the job's process instance: on Citus that
+// sends each to the one shard holding the job.
 
-	_, err := adapter.Update("public.jobs",
-		[]database.QueryParameter{
-			{Key: "status", Value: "completed"},
-			{Key: "completed_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: jobID},
-	)
+// CompleteJobTx marks a job as completed.
+func (r *ExternalTaskRepository) CompleteJobTx(tx *sqlx.Tx, processInstanceID, jobID uuid.UUID) error {
+	_, err := tx.Exec(`
+		UPDATE public.jobs SET status = 'completed', completed_at = NOW()
+		WHERE process_instance_id = $1 AND id = $2`, processInstanceID, jobID)
 	return err
 }
 
-// FailJobPermanently marks a job as failed with no more retries
-func (r *ExternalTaskRepository) FailJobPermanentlyTx(tx *sqlx.Tx, jobID uuid.UUID, errorMessage string, errorCode string) error {
+// FailJobPermanentlyTx marks a job as failed with no more retries.
+func (r *ExternalTaskRepository) FailJobPermanentlyTx(tx *sqlx.Tx, processInstanceID, jobID uuid.UUID, errorMessage string, errorCode string) error {
 	_, err := tx.Exec(`
 		UPDATE public.jobs
 		SET status = 'failed', error_message = $1, error_code = $2, updated_at = NOW()
-		WHERE id = $3
-	`, errorMessage, errorCode, jobID)
+		WHERE process_instance_id = $3 AND id = $4
+	`, errorMessage, errorCode, processInstanceID, jobID)
 	return err
 }
 
-// ResetJobForRetry resets a job to pending state with decremented retries
-func (r *ExternalTaskRepository) ResetJobForRetryTx(tx *sqlx.Tx, jobID uuid.UUID, retries int, errorMessage string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.jobs",
-		[]database.QueryParameter{
-			{Key: "retries", Value: retries},
-			{Key: "status", Value: "pending"},
-			{Key: "locked_by", Value: nil},
-			{Key: "locked_until", Value: nil},
-			{Key: "error_message", Value: errorMessage},
-		},
-		database.QueryParameter{Key: "id", Value: jobID},
-	)
-	return err
-}
-
-// UpdateJobStatus updates the status of a job
-func (r *ExternalTaskRepository) UpdateJobStatusTx(tx *sqlx.Tx, jobID uuid.UUID, status string) error {
-	adapter := database.NewDabaseAdapter(r.db)
-
-	_, err := adapter.Update("public.jobs",
-		[]database.QueryParameter{
-			{Key: "status", Value: status},
-			{Key: "updated_at", Value: time.Now()},
-		},
-		database.QueryParameter{Key: "id", Value: jobID},
-	)
+// ResetJobForRetryTx puts a job back to pending with its remaining retries.
+func (r *ExternalTaskRepository) ResetJobForRetryTx(tx *sqlx.Tx, processInstanceID, jobID uuid.UUID, retries int, errorMessage string) error {
+	_, err := tx.Exec(`
+		UPDATE public.jobs
+		SET retries = $1, status = 'pending', locked_by = NULL, locked_until = NULL, error_message = $2
+		WHERE process_instance_id = $3 AND id = $4
+	`, retries, errorMessage, processInstanceID, jobID)
 	return err
 }
 
@@ -240,7 +237,7 @@ func (r *ExternalTaskRepository) GetProcessDefinitionGraphTx(tx *sqlx.Tx, instan
 // WHERE condition) — process_instance_id is needed alongside id for
 // single-shard Citus routing.
 func (r *ExternalTaskRepository) CompleteExecutionTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID) error {
-	_, err := r.db.Exec(`
+	_, err := tx.Exec(`
 		UPDATE public.executions
 		SET status = 'completed', is_active = false, updated_at = NOW()
 		WHERE process_instance_id = $1 AND id = $2
@@ -251,7 +248,7 @@ func (r *ExternalTaskRepository) CompleteExecutionTx(tx *sqlx.Tx, processInstanc
 // UpdateExecutionCurrentNode updates the current node of an execution. Same
 // direct-SQL reasoning as CompleteExecutionTx above.
 func (r *ExternalTaskRepository) UpdateExecutionCurrentNodeTx(tx *sqlx.Tx, processInstanceID, execID uuid.UUID, nextNodeID string) error {
-	_, err := r.db.Exec(`
+	_, err := tx.Exec(`
 		UPDATE public.executions
 		SET current_element_id = $1, status = 'active', updated_at = NOW()
 		WHERE process_instance_id = $2 AND id = $3

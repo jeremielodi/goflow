@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -222,28 +220,20 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 
 	normalizedVars := normalizeVariablesForExternal(req.Variables)
 
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): jobs
-	// belonging to a partitioned-write-path instance complete via the
-	// Command Gateway instead of service.CompleteJob's direct Postgres
-	// transaction.
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.CompleteJob(instanceID, jobID, normalizedVars); err != nil {
-			return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
-		}
-		return c.JSON(fiber.Map{
-			"title":   "Success",
-			"message": "process completed",
-			"jobId":   jobID,
-		})
-	}
-
-	result, err := service.CompleteJob(ctrl.db, jobID, normalizedVars)
+	result, err := runtime.CompleteJob(c.Context(), ctrl.db, jobID, normalizedVars)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrJobNotFound):
 			return c.Status(404).JSON(fiber.Map{"title": "Not Found", "message": "job not found"})
 		case errors.Is(err, service.ErrJobInvalidState):
 			return c.Status(400).JSON(fiber.Map{"title": "Invalid State", "message": err.Error()})
+		case errors.Is(err, runtime.ErrExecutionFailed):
+			log.Printf("Execution resume error: %v", err)
+			return c.Status(500).JSON(fiber.Map{
+				"title":   "Execution Error",
+				"message": "failed to resume process execution",
+				"error":   err.Error(),
+			})
 		default:
 			return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
 		}
@@ -254,17 +244,6 @@ func (ctrl *ExternalTaskController) CompleteTask(c *fiber.Ctx) error {
 			"title":   "Success",
 			"message": "process completed",
 			"jobId":   jobID,
-		})
-	}
-
-	// Resume current execution.
-	rt := runtime.NewRuntime(result.Graph, ctrl.db, ctrl.dispatcher)
-	if err := rt.ExecuteExecution(c.Context(), result.ExecutionID); err != nil {
-		log.Printf("Execution resume error: %v", err)
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Execution Error",
-			"message": "failed to resume process execution",
-			"error":   err.Error(),
 		})
 	}
 
@@ -298,30 +277,22 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 	// already "count to leave remaining after this failure".
 	newRetries := req.Retries - 1
 
-	// Phase 5 (see architecture/event-sourced-kafka-design.md): jobs
-	// belonging to a partitioned-write-path instance fail via the Command
-	// Gateway instead of service.FailJob's direct Postgres transaction.
-	// The bridge doesn't expose which of FailJob's three outcomes occurred
-	// (retry reset / incident / boundary trigger), so it returns one
-	// generic success message rather than reverse-engineering one —
-	// callers only need a 200, and Camunda 7's own API doesn't guarantee a
-	// specific message string here either.
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.FailJob(instanceID, jobID, newRetries, req.ErrorMessage, req.ErrorCode); err != nil {
-			return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
-		}
-		return c.JSON(fiber.Map{"title": "Success", "message": "failure processed"})
+	result, err := runtime.FailJob(c.Context(), ctrl.db, runtime.FailJobArgs{
+		JobID:            jobID,
+		RetriesRemaining: newRetries,
+		ErrorMessage:     req.ErrorMessage,
+		ErrorCode:        req.ErrorCode,
+	})
+	if errors.Is(err, service.ErrJobNotFound) {
+		return c.Status(404).JSON(fiber.Map{"title": "Not Found", "message": "job not found"})
 	}
-
-	result, err := service.FailJob(ctrl.db, jobID, newRetries, req.ErrorMessage, req.ErrorCode)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"title": "Error", "message": err.Error()})
 	}
 
 	if result.BoundaryTriggered {
-		rt := runtime.NewRuntime(result.Graph, ctrl.db, ctrl.dispatcher)
-		if resumeErr := rt.ExecuteExecution(c.Context(), result.ExecutionID); resumeErr != nil {
-			log.Printf("Error boundary execution failed: %v", resumeErr)
+		if result.ContinueError != "" {
+			log.Printf("Error boundary execution failed: %s", result.ContinueError)
 		}
 		return c.JSON(fiber.Map{
 			"title":   "Success",
@@ -329,10 +300,9 @@ func (ctrl *ExternalTaskController) HandleFailure(c *fiber.Ctx) error {
 		})
 	}
 
-	if result.PropagateError {
-		rt := runtime.NewRuntime(nil, ctrl.db, ctrl.dispatcher)
-		if _, err := rt.PropagateErrorToCaller(context.Background(), result.ProcessInstanceID, req.ErrorCode); err != nil {
-			log.Printf("Propagating BPMN error %s to the calling process failed: %v", req.ErrorCode, err)
+	if result.PropagatedToCaller {
+		if result.ContinueError != "" {
+			log.Printf("Propagating BPMN error %s to the calling process failed: %s", req.ErrorCode, result.ContinueError)
 		}
 		return c.JSON(fiber.Map{
 			"title":   "Success",

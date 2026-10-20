@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
@@ -127,7 +128,7 @@ func StartConditionalWatcher(ctx context.Context, db *sqlx.DB, dispatcher *event
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := checkConditions(db, dispatcher, nil); err != nil {
+				if err := recheckConditions(ctx, db, dispatcher, nil); err != nil {
 					log.Printf("conditional watcher: %v", err)
 				}
 			case id := <-changed:
@@ -148,12 +149,37 @@ func StartConditionalWatcher(ctx context.Context, db *sqlx.DB, dispatcher *event
 				for i := range ids {
 					list = append(list, i)
 				}
-				if err := checkConditions(db, dispatcher, list); err != nil {
+				if err := recheckConditions(ctx, db, dispatcher, list); err != nil {
 					log.Printf("conditional watcher: %v", err)
 				}
 			}
 		}
 	}()
+}
+
+// recheckConditions re-evaluates the conditions of the given instances
+// (all with nil). Partitioned, each instance's check is a command on its
+// partition, issued by the replica owning it only.
+func recheckConditions(ctx context.Context, db *sqlx.DB, dispatcher *events.TaskEventDispatcher, instances []uuid.UUID) error {
+	if !cmdbus.Partitioned() {
+		return checkConditions(db, dispatcher, instances)
+	}
+	if instances == nil {
+		if err := db.Select(&instances, `
+			SELECT DISTINCT process_instance_id FROM event_subscriptions
+			WHERE event_type = 'conditional' AND consumed_at IS NULL`); err != nil {
+			return err
+		}
+	}
+	for _, id := range instances {
+		if !cmdbus.OwnedHere(id) {
+			continue
+		}
+		if err := cmdbus.Post(ctx, cmdbus.Key(id), CmdCheckConditions, checkConditionsArgs{InstanceID: id}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type conditionalSubscription struct {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -167,11 +168,11 @@ func SetLocalVariablesTx(tx *sqlx.Tx, instanceID, scopeID uuid.UUID, vars map[st
 	}
 	_, err = tx.Exec(`
 		INSERT INTO public.scope_variables (process_instance_id, scope_id, data, updated_at)
-		VALUES ($1, $2, $3, NOW())
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (process_instance_id, scope_id)
-		DO UPDATE SET data = public.scope_variables.data || EXCLUDED.data, updated_at = NOW()
-	`, instanceID, scopeID, data)
-	return err
+		DO UPDATE SET data = public.scope_variables.data || EXCLUDED.data, updated_at = EXCLUDED.updated_at
+	`, instanceID, scopeID, data, time.Now())
+	return notifyVariables(tx, instanceID, err)
 }
 
 // SetVariablesTx sets vars from execID's scope outwards: each one updates
@@ -228,11 +229,12 @@ func SetVariablesTx(tx *sqlx.Tx, instanceID, execID uuid.UUID, vars map[string]i
 		}
 		if _, err := tx.Exec(`
 			INSERT INTO public.variables (id, process_instance_id, data, updated_at)
-			VALUES ($1, $2, $3, NOW())
-			ON CONFLICT (process_instance_id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()
-		`, uuid.New(), instanceID, data); err != nil {
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (process_instance_id) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
+		`, uuid.New(), instanceID, data, time.Now()); err != nil {
 			return fmt.Errorf("instance variables: %w", err)
 		}
+		return notifyVariables(tx, instanceID, nil)
 	}
 	return nil
 }

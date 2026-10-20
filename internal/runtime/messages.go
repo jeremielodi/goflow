@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/common"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
@@ -189,23 +191,8 @@ type openMessageSubscription struct {
 // GoFlow's gRPC and /v2 publish did before correlation keys existed, kept
 // so processes deployed for it keep working.
 func correlateToSubscriptions(ctx context.Context, db *sqlx.DB, dispatcher *events.TaskEventDispatcher, name, key string, vars map[string]interface{}, storedID *uuid.UUID, onlyProcess string, done map[string]bool) ([]uuid.UUID, error) {
-	var subs []openMessageSubscription
-	if err := db.Select(&subs, `
-		SELECT s.id, s.process_instance_id, s.execution_id, s.target_element_id, d.process_key
-		FROM event_subscriptions s
-		JOIN process_instances p ON p.id = s.process_instance_id
-		JOIN process_definitions d ON d.id = p.process_definition_id
-		WHERE s.event_type = 'message' AND s.event_name = $1 AND s.consumed_at IS NULL
-		  AND (COALESCE(s.correlation_key, '') = $2
-		       OR ($2 <> '' AND COALESCE(s.correlation_key, '') = '' AND EXISTS (
-		             SELECT 1 FROM variables v
-		             WHERE v.process_instance_id = s.process_instance_id AND v.data ->> 'correlationKey' = $2)))
-		  AND ($3 = '' OR d.process_key = $3)
-		  AND ($4::uuid IS NULL OR NOT EXISTS (
-		        SELECT 1 FROM published_message_correlations c
-		        WHERE c.published_message_id = $4 AND c.process_key = d.process_key))
-		ORDER BY d.process_key, s.created_at
-	`, name, key, onlyProcess, storedID); err != nil {
+	subs, err := openMessageSubscriptions(db, name, key, onlyProcess, storedID)
+	if err != nil {
 		return nil, err
 	}
 	var correlated []uuid.UUID
@@ -402,15 +389,23 @@ func startOneByMessage(ctx context.Context, db *sqlx.DB, dispatcher *events.Task
 		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('message_start:' || $1 || ':' || $2))`, t.ProcessKey, msg.CorrelationKey); err != nil {
 			return uuid.Nil, err
 		}
-		var active bool
-		if err := tx.Get(&active, `
-			SELECT EXISTS (SELECT 1 FROM event_subscriptions s
-			               JOIN process_instances p ON p.id = s.process_instance_id
-			               WHERE s.event_type = 'message_start' AND s.event_name = $1
-			                 AND s.correlation_key = $2 AND s.consumed_at IS NULL
-			                 AND p.ended_at IS NULL)
+		// Two queries rather than a join: on Citus the subscriptions stay
+		// on the coordinator while the instances are sharded.
+		var started []uuid.UUID
+		if err := tx.Select(&started, `
+			SELECT process_instance_id FROM event_subscriptions
+			WHERE event_type = 'message_start' AND event_name = $1
+			  AND correlation_key = $2 AND consumed_at IS NULL
 		`, t.ProcessKey, msg.CorrelationKey); err != nil {
 			return uuid.Nil, err
+		}
+		active := false
+		if len(started) > 0 {
+			if err := tx.Get(&active, `
+				SELECT EXISTS (SELECT 1 FROM process_instances WHERE id = ANY($1::uuid[]) AND ended_at IS NULL)
+			`, pqUUIDs(started)); err != nil {
+				return uuid.Nil, err
+			}
 		}
 		if active {
 			return uuid.Nil, nil
@@ -494,7 +489,7 @@ func (m keptMessage) published() PublishedMessage {
 // instances of processes they haven't gone to yet (a process deployed
 // later, or one whose instance for the same correlation key has ended).
 func sweepPublishedMessages(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) error {
-	if _, err := db.Exec(`DELETE FROM published_messages WHERE expires_at <= NOW()`); err != nil {
+	if _, err := db.Exec(`DELETE FROM published_messages WHERE expires_at <= $1`, time.Now()); err != nil {
 		return err
 	}
 	var live int
@@ -503,32 +498,28 @@ func sweepPublishedMessages(db *sqlx.DB, dispatcher *events.TaskEventDispatcher)
 	}
 
 	ctx := context.Background()
-	var toSubscriptions []keptMessage
-	if err := db.Select(&toSubscriptions, `
-		SELECT DISTINCT ON (m.id, d.process_key)
-		       m.id, m.name, m.correlation_key, m.variables, m.tenant_id, d.process_key
-		FROM published_messages m
-		JOIN event_subscriptions s
-		  ON s.event_type = 'message' AND s.event_name = m.name AND s.consumed_at IS NULL
-		 AND (COALESCE(s.correlation_key, '') = m.correlation_key
-		      OR (m.correlation_key <> '' AND COALESCE(s.correlation_key, '') = '' AND EXISTS (
-		            SELECT 1 FROM variables v
-		            WHERE v.process_instance_id = s.process_instance_id AND v.data ->> 'correlationKey' = m.correlation_key)))
-		JOIN process_instances p ON p.id = s.process_instance_id
-		JOIN process_definitions d ON d.id = p.process_definition_id
-		WHERE m.expires_at > NOW()
-		  AND NOT EXISTS (SELECT 1 FROM published_message_correlations c
-		                  WHERE c.published_message_id = m.id AND c.process_key = d.process_key)
-		ORDER BY m.id, d.process_key
-		LIMIT 200
-	`); err != nil {
+	// Kept messages, then for each the processes whose open subscriptions
+	// it still has to reach (see openMessageSubscriptions).
+	var kept []keptMessage
+	if err := db.Select(&kept, `
+		SELECT id, name, correlation_key, variables, tenant_id, '' AS process_key
+		FROM published_messages WHERE expires_at > $1
+		ORDER BY id LIMIT 200
+	`, time.Now()); err != nil {
 		return err
 	}
-	for _, m := range toSubscriptions {
+	for _, m := range kept {
 		id := m.ID
-		msg := m.published()
-		if _, err := correlateToSubscriptions(ctx, db, dispatcher, msg.Name, msg.CorrelationKey, msg.Variables, &id, m.ProcessKey, map[string]bool{}); err != nil {
-			log.Printf("published message %s: %v", m.ID, err)
+		subs, err := openMessageSubscriptions(db, m.Name, m.CorrelationKey, "", &id)
+		if err != nil {
+			return err
+		}
+		seen := map[string]bool{}
+		for _, s := range subs {
+			if !seen[s.ProcessKey] {
+				seen[s.ProcessKey] = true
+				deliverKept(ctx, db, dispatcher, keptDelivery{ID: m.ID, Message: m.published(), ProcessKey: s.ProcessKey})
+			}
 		}
 	}
 
@@ -550,10 +541,145 @@ func sweepPublishedMessages(db *sqlx.DB, dispatcher *events.TaskEventDispatcher)
 		return err
 	}
 	for _, m := range toStarts {
-		id := m.ID
-		if _, err := startByMessage(ctx, db, dispatcher, m.published(), &id, map[string]bool{}); err != nil {
-			log.Printf("published message %s: %v", m.ID, err)
-		}
+		deliverKept(ctx, db, dispatcher, keptDelivery{ID: m.ID, Message: m.published(), Start: true})
 	}
 	return nil
+}
+
+// keptDelivery is a kept message to correlate to the subscriptions of
+// ProcessKey's instances, or, with Start, to start processes with.
+type keptDelivery struct {
+	ID         uuid.UUID        `json:"id"`
+	Message    PublishedMessage `json:"message"`
+	ProcessKey string           `json:"processKey,omitempty"`
+	Start      bool             `json:"start,omitempty"`
+}
+
+// deliverKept delivers a kept message — partitioned, as a command on its
+// correlation key's partition, issued by the replica owning it only.
+func deliverKept(ctx context.Context, db *sqlx.DB, dispatcher *events.TaskEventDispatcher, d keptDelivery) {
+	if !cmdbus.Partitioned() {
+		if err := runKeptDelivery(ctx, db, dispatcher, d); err != nil {
+			log.Printf("published message %s: %v", d.ID, err)
+		}
+		return
+	}
+	key := cmdbus.NameKey("message", d.Message.TenantID, d.Message.Name, d.Message.CorrelationKey)
+	if !cmdbus.OwnedHere(key) {
+		return
+	}
+	if err := cmdbus.Post(ctx, cmdbus.Key(key), CmdDeliverKeptMessage, d); err != nil {
+		log.Printf("published message %s: %v", d.ID, err)
+	}
+}
+
+func runKeptDelivery(ctx context.Context, db *sqlx.DB, dispatcher *events.TaskEventDispatcher, d keptDelivery) error {
+	id := d.ID
+	var err error
+	if d.Start {
+		_, err = startByMessage(ctx, db, dispatcher, d.Message, &id, map[string]bool{})
+	} else {
+		_, err = correlateToSubscriptions(ctx, db, dispatcher, d.Message.Name, d.Message.CorrelationKey, d.Message.Variables, &id, d.ProcessKey, map[string]bool{})
+	}
+	return err
+}
+
+// openMessageSubscriptions returns the open subscriptions a message with
+// this name and key correlates to, oldest first within each process. Its
+// queries each read one kind of table — subscriptions, instances with
+// their definitions, variables, correlations — so that they run on Citus
+// too, where the subscriptions stay on the coordinator and the instances
+// are sharded.
+func openMessageSubscriptions(db *sqlx.DB, name, key, onlyProcess string, storedID *uuid.UUID) ([]openMessageSubscription, error) {
+	var rows []struct {
+		openMessageSubscription
+		CorrelationKey string    `db:"correlation_key"`
+		CreatedAt      time.Time `db:"created_at"`
+	}
+	if err := db.Select(&rows, `
+		SELECT id, process_instance_id, execution_id, target_element_id,
+		       COALESCE(correlation_key, '') AS correlation_key, created_at
+		FROM event_subscriptions
+		WHERE event_type = 'message' AND event_name = $1 AND consumed_at IS NULL
+		  AND (COALESCE(correlation_key, '') = $2 OR ($2 <> '' AND COALESCE(correlation_key, '') = ''))
+	`, name, key); err != nil || len(rows) == 0 {
+		return nil, err
+	}
+
+	instances := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		instances = append(instances, r.ProcessInstanceID)
+	}
+	var keys []struct {
+		ID         uuid.UUID `db:"id"`
+		ProcessKey string    `db:"process_key"`
+	}
+	if err := db.Select(&keys, `
+		SELECT p.id, d.process_key FROM process_instances p
+		JOIN process_definitions d ON d.id = p.process_definition_id
+		WHERE p.id = ANY($1::uuid[])`, pqUUIDs(instances)); err != nil {
+		return nil, err
+	}
+	processKey := make(map[uuid.UUID]string, len(keys))
+	for _, k := range keys {
+		processKey[k.ID] = k.ProcessKey
+	}
+
+	// A subscription without a correlation key matches the instance's
+	// "correlationKey" variable (see correlateToSubscriptions).
+	byVariable := map[uuid.UUID]bool{}
+	if key != "" {
+		var matching []uuid.UUID
+		if err := db.Select(&matching, `
+			SELECT process_instance_id FROM variables
+			WHERE process_instance_id = ANY($1::uuid[]) AND data ->> 'correlationKey' = $2`, pqUUIDs(instances), key); err != nil {
+			return nil, err
+		}
+		for _, id := range matching {
+			byVariable[id] = true
+		}
+	}
+
+	already := map[string]bool{}
+	if storedID != nil {
+		var done []string
+		if err := db.Select(&done, `SELECT process_key FROM published_message_correlations WHERE published_message_id = $1`, *storedID); err != nil {
+			return nil, err
+		}
+		for _, k := range done {
+			already[k] = true
+		}
+	}
+
+	var subs []openMessageSubscription
+	created := map[uuid.UUID]time.Time{}
+	for _, r := range rows {
+		pk, ok := processKey[r.ProcessInstanceID]
+		if !ok || (onlyProcess != "" && pk != onlyProcess) || already[pk] {
+			continue
+		}
+		if r.CorrelationKey != key && !byVariable[r.ProcessInstanceID] {
+			continue
+		}
+		s := r.openMessageSubscription
+		s.ProcessKey = pk
+		subs = append(subs, s)
+		created[s.ID] = r.CreatedAt
+	}
+	sort.SliceStable(subs, func(i, j int) bool {
+		if subs[i].ProcessKey != subs[j].ProcessKey {
+			return subs[i].ProcessKey < subs[j].ProcessKey
+		}
+		return created[subs[i].ID].Before(created[subs[j].ID])
+	})
+	return subs, nil
+}
+
+// pqUUIDs passes ids as a Postgres uuid[] parameter.
+func pqUUIDs(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out
 }

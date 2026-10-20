@@ -7,15 +7,13 @@
 package v2
 
 import (
-	"encoding/json"
 	"strings"
 
+	"errors"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -108,43 +106,17 @@ func (pc *ProcessInstanceController) CreateProcessInstance(c *fiber.Ctx) error {
 		}
 	}
 
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"title":  "INTERNAL_ERROR",
-			"detail": "failed to parse process graph",
-		})
-	}
-
 	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
 
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
-	// flagged write_path = 'partitioned' start via the Command Gateway
-	// instead of the legacy transactional path + rt.ExecuteExecution.
-	if def.WritePath == "partitioned" {
-		instanceID, _, err := partition.StartProcess(&def, tenantID, req.Variables)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-		}
-		return c.Status(fiber.StatusOK).JSON(fiber.Map{
-			"processInstanceKey":       instanceID,
-			"processDefinitionId":      def.ProcessKey,
-			"processDefinitionKey":     def.ID,
-			"processDefinitionVersion": def.Version,
-		})
-	}
-
-	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, tenantID, req.Variables)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-
-	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
-	if err := rt.ExecuteExecution(c.Context(), execID); err != nil {
+	instanceID, _, err := runtime.StartInstance(c.Context(), def.ID, tenantID, req.Variables)
+	if errors.Is(err, runtime.ErrExecutionFailed) {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"title":  "INTERNAL_ERROR",
 			"detail": "failed to execute process: " + err.Error(),
 		})
+	}
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
@@ -313,33 +285,9 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
-	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
-	// modification moves an execution's graph position directly, bypassing
-	// partition ownership. Not implemented through the Command Gateway —
-	// arbitrary token moves don't fit any of ValidateShape's narrow
-	// accepted shapes — so partitioned instances are explicitly rejected.
-	if writePath, lookupErr := partition.LookupInstanceOwner(pc.db, instanceID); lookupErr == nil && writePath == "partitioned" {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
-			"title": "MODIFICATION_FAILED", "detail": "process instance modification is not supported for partitioned-write-path instances",
-		})
-	}
-
-	inst, err := pc.processInstanceRepo.FindByID(instanceID)
-	if err != nil {
+	if _, err := pc.processInstanceRepo.FindByID(instanceID); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"title": "NOT_FOUND", "detail": "process instance not found or not active",
-		})
-	}
-
-	def, err := pc.processRepo.FindProcessDefinitionByID(inst.ProcessDefinitionID)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
-	}
-
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"title": "INTERNAL_ERROR", "detail": "failed to parse process graph",
 		})
 	}
 
@@ -348,8 +296,7 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 		moves[i] = runtime.MoveInstruction{SourceElementID: m.SourceElementId, TargetElementID: m.TargetElementId}
 	}
 
-	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
-	newExecutionIDs, err := rt.ModifyInstance(c.Context(), instanceID, moves)
+	newExecutionIDs, err := runtime.Modify(c.Context(), instanceID, moves)
 	if err != nil {
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
 			"title": "MODIFICATION_FAILED", "detail": err.Error(),

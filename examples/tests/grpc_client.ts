@@ -15,7 +15,7 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 
 const PROTO_PATH = path.join(__dirname, '..', '..', 'internal', 'zeebegrpc', 'proto', 'gateway.proto');
-const GRPC_ADDR = 'localhost:26500';
+const GRPC_ADDR = '127.0.0.1:26500';
 
 export class GrpcGatewayClient {
   private client: any;

@@ -86,7 +86,7 @@ func CompleteJob(db *sqlx.DB, jobID uuid.UUID, variables map[string]interface{})
 		return nil, fmt.Errorf("failed to update variables: %w", err)
 	}
 
-	if err := externalTaskRepo.CompleteJobTx(tx, jobID); err != nil {
+	if err := externalTaskRepo.CompleteJobTx(tx, processInstanceID, jobID); err != nil {
 		return nil, fmt.Errorf("failed to complete job: %w", err)
 	}
 
@@ -185,13 +185,20 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 	// Load job context up front — needed for audit logging on every
 	// branch, as well as the boundary-check/incident-creation below.
 	jobCtxEarly, jobCtxErr := externalTaskRepo.GetJobWithExecutionTx(tx, jobID)
+	if jobCtxErr != nil {
+		return nil, fmt.Errorf("failed to fetch job details: %w", jobCtxErr)
+	}
+	if jobCtxEarly == nil {
+		return nil, ErrJobNotFound
+	}
+	processInstanceID := jobCtxEarly.ProcessInstanceID
 
 	result := &FailJobResult{}
 
 	if retriesRemaining <= 0 {
 		result.PermanentlyFailed = true
 
-		if err := externalTaskRepo.FailJobPermanentlyTx(tx, jobID, errorMessage, errorCode); err != nil {
+		if err := externalTaskRepo.FailJobPermanentlyTx(tx, processInstanceID, jobID, errorMessage, errorCode); err != nil {
 			return nil, fmt.Errorf("failed to mark job as failed: %w", err)
 		}
 
@@ -298,7 +305,7 @@ func FailJob(db *sqlx.DB, jobID uuid.UUID, retriesRemaining int, errorMessage, e
 			}
 		}
 	} else {
-		if err := externalTaskRepo.ResetJobForRetryTx(tx, jobID, retriesRemaining, errorMessage); err != nil {
+		if err := externalTaskRepo.ResetJobForRetryTx(tx, processInstanceID, jobID, retriesRemaining, errorMessage); err != nil {
 			return nil, fmt.Errorf("failed to reset job for retry: %w", err)
 		}
 	}

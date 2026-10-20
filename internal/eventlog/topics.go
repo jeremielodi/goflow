@@ -9,23 +9,20 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// EnsureTopics idempotently creates Topic (goflow.process-events) and
-// CommandsTopic (goflow.process-commands) with numPartitions partitions
-// each and replicationFactor copies of each partition (only applied at
-// creation: an existing topic keeps its replication factor), bumping
-// Topic's partition count up if it already exists with fewer
-// — which it will the first time this runs after Phase 0, since that
-// shadow-mode topic was auto-created with Redpanda/Kafka's default of 1
-// partition (Phase 0 never needed partition-key affinity to matter for
-// correctness the way Phase 1's partition ownership does).
-//
-// Must run before any process definition is ever flipped to the
-// partitioned write path (see main.go) — bumping an existing topic's
-// partition count changes its future key->partition mapping, which is
-// only safe here because no partitioned-write-path instance exists yet to
-// have that mapping change out from under it. See
-// architecture/event-sourced-kafka-design.md for the full reasoning.
-func EnsureTopics(brokers []string, numPartitions, replicationFactor int) error {
+// TopicSpec is a topic EnsureTopics creates.
+type TopicSpec struct {
+	Name       string
+	Partitions int
+	// Fixed: the partition count must never change once the topic exists
+	// (a command topic, whose partition picks which replica owns an
+	// instance). A topic that isn't fixed is grown when it has fewer.
+	Fixed bool
+}
+
+// EnsureTopics idempotently creates the topics, with replicationFactor
+// copies of each partition (only applied at creation: an existing topic
+// keeps its replication factor).
+func EnsureTopics(brokers []string, replicationFactor int, topics ...TopicSpec) error {
 	if len(brokers) == 0 {
 		return fmt.Errorf("eventlog: no brokers configured")
 	}
@@ -47,28 +44,31 @@ func EnsureTopics(brokers []string, numPartitions, replicationFactor int) error 
 	}
 	defer controllerConn.Close()
 
-	if err := controllerConn.CreateTopics(
-		kafka.TopicConfig{Topic: Topic, NumPartitions: numPartitions, ReplicationFactor: replicationFactor},
-		kafka.TopicConfig{Topic: CommandsTopic, NumPartitions: numPartitions, ReplicationFactor: replicationFactor},
-	); err != nil {
+	configs := make([]kafka.TopicConfig, len(topics))
+	for i, t := range topics {
+		configs[i] = kafka.TopicConfig{Topic: t.Name, NumPartitions: t.Partitions, ReplicationFactor: replicationFactor}
+	}
+	// A no-op (not an error) for a topic that already exists, whatever its
+	// partition count.
+	if err := controllerConn.CreateTopics(configs...); err != nil {
 		return fmt.Errorf("eventlog: create topics: %w", err)
 	}
 
-	// CreateTopics is a no-op (not an error) for a topic that already
-	// exists, regardless of its current partition count, so check each
-	// topic's *actual* current count before ever asking to bump it —
-	// asking Kafka/Redpanda to "increase" a topic to a count it's already
-	// at (or above) is a hard error (INVALID_REQUEST here, not the more
-	// specific INVALID_PARTITION_INCREASE code some brokers return), not
-	// a benign no-op like CreateTopics's redeploy case.
+	// Asking to "increase" a topic to the count it already has is an
+	// error, so only grow the ones that really have fewer.
 	toBump := []kafka.TopicPartitionsConfig{}
-	for _, topic := range []string{Topic, CommandsTopic} {
-		partitions, err := conn.ReadPartitions(topic)
+	for _, t := range topics {
+		partitions, err := conn.ReadPartitions(t.Name)
 		if err != nil {
-			return fmt.Errorf("eventlog: read partitions for %s: %w", topic, err)
+			return fmt.Errorf("eventlog: read partitions for %s: %w", t.Name, err)
 		}
-		if len(partitions) < numPartitions {
-			toBump = append(toBump, kafka.TopicPartitionsConfig{Name: topic, Count: int32(numPartitions)})
+		switch {
+		case len(partitions) == t.Partitions:
+		case t.Fixed:
+			return fmt.Errorf("eventlog: topic %s has %d partitions, %d configured: the partition count can't change once instances exist (keep KAFKA_PARTITIONS=%d)",
+				t.Name, len(partitions), t.Partitions, len(partitions))
+		case len(partitions) < t.Partitions:
+			toBump = append(toBump, kafka.TopicPartitionsConfig{Name: t.Name, Count: int32(t.Partitions)})
 		}
 	}
 	if len(toBump) == 0 {

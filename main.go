@@ -15,12 +15,12 @@ import (
 	"github.com/jeremielodi/goflow/internal/api"
 	apiv2 "github.com/jeremielodi/goflow/internal/api/v2"
 	"github.com/jeremielodi/goflow/internal/citus"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/eventlog"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/listeners"
 	"github.com/jeremielodi/goflow/internal/metrics"
-	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/retention"
@@ -123,6 +123,15 @@ func main() {
 		if err := citus.EnsureDistributedTables(db); err != nil {
 			log.Fatalln("citus: failed to ensure distributed tables: ", err)
 		}
+		coordinatorPort, _ := strconv.Atoi(util.DotEnvVariable("DB_PORT"))
+		if coordinatorPort == 0 {
+			coordinatorPort = 5432
+		}
+		if err := citus.EnsureLocalTablesInMetadata(db, util.DotEnvVariable("DB_HOST"), coordinatorPort); err != nil {
+			log.Fatalln("citus: failed to add the local tables to the metadata: ", err)
+		}
+		repository.SetDistributedClaims(true)
+		repository.SetAppVariableNotify(true)
 		log.Println("✅ Citus reference + distributed tables ensured (workers:", workersEnv, ")")
 	}
 
@@ -159,18 +168,20 @@ func main() {
 	// Create task event dispatcher
 	taskEventDispatcher := events.NewTaskEventDispatcher()
 
-	// Phase 1 partitioned write path (see
-	// architecture/event-sourced-kafka-design.md) — reuses the same
-	// KAFKA_BROKERS config as Phase 0 above; if that wasn't set, this
-	// stays fully disabled too (eventlog.GlobalCommand()/GlobalConsumer()
-	// stay nil, and every process definition either already defaults to
-	// write_path='legacy' or was never flippable in the first place since
-	// PATCH .../write-path itself needs this running to be meaningful).
-	var timerRouter service.TimerPartitionRouter
+	// Kafka topics and the write path (see package cmdbus). Partition
+	// counts: the command topic's can never change once instances exist.
+	kafkaPartitions := 12
+	if v := util.DotEnvVariable("KAFKA_PARTITIONS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			log.Fatalf("KAFKA_PARTITIONS must be a whole number >= 1, got %q", v)
+		}
+		kafkaPartitions = n
+	}
+	var kafkaBrokers []string
+	replicationFactor := 1
 	if eventLogConsumer != nil {
-		brokers := strings.Split(util.DotEnvVariable("KAFKA_BROKERS"), ",")
-		const partitionCount = 12
-		replicationFactor := 1
+		kafkaBrokers = strings.Split(util.DotEnvVariable("KAFKA_BROKERS"), ",")
 		if v := util.DotEnvVariable("KAFKA_REPLICATION_FACTOR"); v != "" {
 			rf, err := strconv.Atoi(v)
 			if err != nil || rf < 1 {
@@ -178,26 +189,17 @@ func main() {
 			}
 			replicationFactor = rf
 		}
-		if err := eventlog.EnsureTopics(brokers, partitionCount, replicationFactor); err != nil {
-			log.Fatalln("partition processor: failed to ensure Kafka topics: ", err)
+		topics := []eventlog.TopicSpec{{Name: eventlog.Topic, Partitions: kafkaPartitions}}
+		if writePathPartitioned() {
+			topics = append(topics,
+				eventlog.TopicSpec{Name: partition.CommandsTopic, Partitions: kafkaPartitions, Fixed: true},
+				eventlog.TopicSpec{Name: partition.RepliesTopic, Partitions: kafkaPartitions, Fixed: true})
 		}
-		eventlog.SetGlobalCommandProducer(eventlog.NewCommandProducer(brokers))
-		eventlog.SetGlobalConsumer(eventLogConsumer)
-
-		processor, err := partition.NewProcessor(brokers, db, taskEventDispatcher)
-		if err != nil {
-			log.Fatalln("partition processor: ", err)
+		if err := eventlog.EnsureTopics(kafkaBrokers, replicationFactor, topics...); err != nil {
+			log.Fatalln("Kafka topics: ", err)
 		}
-		go processor.Run(context.Background())
-		log.Println("✅ Partition processor started (partitions:", partitionCount, ")")
-
-		// Phase 6 (see architecture/event-sourced-kafka-design.md): routes
-		// a due timer belonging to a partitioned-write-path instance
-		// through the Command Gateway instead of TimerScheduler's own
-		// direct resume write — see service.TimerPartitionRouter's doc
-		// comment for why this needs a dependency-inversion interface
-		// rather than a plain function call.
-		timerRouter = partition.NewTimerRouter(db)
+	} else if writePathPartitioned() {
+		log.Fatalln("WRITE_PATH=partitioned needs KAFKA_BROKERS")
 	}
 
 	// Create SSE listener for real-time events
@@ -350,10 +352,25 @@ func main() {
 	v2FlownodeInstanceCtrl := apiv2.NewFlownodeInstanceController(db)
 	v2VariableCtrl := apiv2.NewVariableController(db)
 
-	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher, timerRouter)
-	timerScheduler.SetStartTimerHandler(func(ctx context.Context, job models.TimerJob) error {
-		return runtime.FireStartTimer(ctx, db, taskEventDispatcher, job)
-	})
+	runtime.RegisterCommands(db, taskEventDispatcher, taskService)
+	timerScheduler := service.NewTimerScheduler(db, resumer, taskEventDispatcher)
+	timerScheduler.SetStartTimerHandler(runtime.PostStartTimer)
+
+	// Every command is registered: in partitioned mode, take part in
+	// owning the partitions and send commands to their owners.
+	if writePathPartitioned() {
+		processor, err := partition.NewProcessor(kafkaBrokers, kafkaPartitions)
+		if err != nil {
+			log.Fatalln("partition owner: ", err)
+		}
+		go processor.Run(context.Background())
+		cmdbus.SetTransport(partition.NewTransport(context.Background(), kafkaBrokers, kafkaPartitions, commandTimeout(util)))
+		partition.SetTopologySource(kafkaBrokers, kafkaPartitions, replicationFactor)
+		log.Println("✅ Write path: partitioned (Kafka partitions:", kafkaPartitions, ")")
+	} else {
+		log.Println("✅ Write path: direct")
+	}
+
 	go timerScheduler.Start(context.Background())
 	runtime.StartConditionalWatcher(context.Background(), db, taskEventDispatcher, database.ConnStringForListener(util))
 	runtime.StartMessageSweeper(context.Background(), db, taskEventDispatcher)
@@ -479,10 +496,6 @@ func main() {
 	app.Get("/engine-rest/process-definition", processDefinitionCtrl.ListDefinitions)
 	app.Get("/engine-rest/process-definition/:id", processDefinitionCtrl.GetDefinition)
 	app.Post("/engine-rest/process-definition/:id/start", processDefinitionCtrl.StartByDefinitionID)
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): flips a
-	// definition onto the Kafka-partitioned write path, gated by a
-	// deploy-time BPMN-shape validator.
-	app.Patch("/engine-rest/process-definition/:id/write-path", processDefinitionCtrl.SetWritePath)
 
 	// Per-resource process permissions (see process_authorization_service.go) —
 	// each handler itself requires MANAGE on :key, so no route-level gate here.
@@ -579,6 +592,7 @@ func main() {
 
 	app.Post("/v2/resources/deployments", processDefinitionCtrl.DeployBPMN)
 
+	app.Get("/v2/topology", apiv2.GetTopology)
 	app.Post("/v2/process-instances", v2ProcessInstanceCtrl.CreateProcessInstance)
 	app.Get("/v2/process-instances/:id", v2ProcessInstanceCtrl.GetProcessInstance)
 	app.Post("/v2/process-instances/search", v2ProcessInstanceCtrl.SearchProcessInstances)
@@ -717,4 +731,32 @@ func main() {
 	log.Println("   Ready to accept requests")
 
 	app.Listen(":8080")
+}
+
+// writePathPartitioned reports whether WRITE_PATH selects the
+// partitioned write path (see package cmdbus); "direct", the default,
+// otherwise.
+func writePathPartitioned() bool {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("WRITE_PATH"))); v {
+	case "", "direct":
+		return false
+	case "partitioned":
+		return true
+	default:
+		log.Fatalf("WRITE_PATH must be direct or partitioned, got %q", v)
+		return false
+	}
+}
+
+// commandTimeout is how long a request waits for its command to run on
+// the owner of its partition (COMMAND_TIMEOUT, a Go duration; 30s).
+func commandTimeout(util common.Util) time.Duration {
+	if v := util.DotEnvVariable("COMMAND_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			log.Fatalf("COMMAND_TIMEOUT must be a positive duration (e.g. 30s), got %q", v)
+		}
+		return d
+	}
+	return 30 * time.Second
 }

@@ -1,17 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/internal/partition"
+	"github.com/jeremielodi/goflow/internal/cmdbus"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -31,6 +28,7 @@ type ProcessInstanceController struct {
 }
 
 func NewProcessInstanceController(db *sqlx.DB, taskService *service.TaskService, workerPool *worker.WorkerPool, dispatcher *events.TaskEventDispatcher) *ProcessInstanceController {
+	registerInstanceCommands(db, dispatcher)
 	return &ProcessInstanceController{
 		db:                  db,
 		taskService:         taskService,
@@ -249,35 +247,14 @@ func (pc *ProcessInstanceController) SetProcessVariables(c *fiber.Ctx) error {
 		})
 	}
 
-	// Normalize variables
-	normalizedVars := normalizeVariables(variables)
-
-	// Get existing variables
-	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdEditVariables,
+		editVariablesArgs{InstanceID: instanceID, Set: normalizeVariables(variables), AuditAll: true}, nil)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
 		})
 	}
-	oldVars := make(map[string]interface{}, len(existingVars))
-	for k, v := range existingVars {
-		oldVars[k] = v
-	}
-
-	// Merge variables
-	for k, v := range normalizedVars {
-		existingVars[k] = v
-	}
-
-	// Save variables
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, existingVars); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-	service.LogAuditErr("variables updated", pc.auditService.LogVariablesUpdated(instanceID, oldVars, existingVars))
 
 	return c.Status(204).Send(nil)
 }
@@ -316,31 +293,14 @@ func (pc *ProcessInstanceController) SetProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get existing variables
-	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdEditVariables,
+		editVariablesArgs{InstanceID: instanceID, Set: map[string]interface{}{varName: req.Value}}, nil)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
 		})
 	}
-
-	// Set variable
-	oldValue := existingVars[varName]
-	existingVars[varName] = req.Value
-
-	// Save variables
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, existingVars); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-	service.LogAuditErr("variables updated", pc.auditService.LogVariablesUpdated(
-		instanceID,
-		map[string]interface{}{varName: oldValue},
-		map[string]interface{}{varName: req.Value},
-	))
 
 	return c.Status(204).Send(nil)
 }
@@ -371,20 +331,9 @@ func (pc *ProcessInstanceController) DeleteProcessVariable(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get existing variables
-	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdEditVariables,
+		editVariablesArgs{InstanceID: instanceID, Unset: []string{varName}}, nil)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	// Delete variable
-	delete(existingVars, varName)
-
-	// Save variables
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, existingVars); err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
@@ -412,8 +361,9 @@ func (pc *ProcessInstanceController) DeleteProcessVariables(c *fiber.Ctx) error 
 		})
 	}
 
-	// Save empty variables
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, make(map[string]interface{})); err != nil {
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdEditVariables,
+		editVariablesArgs{InstanceID: instanceID, Clear: true}, nil)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
@@ -472,51 +422,20 @@ func (pc *ProcessInstanceController) StartProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Internal Server Error",
-			"message": "failed to parse process graph",
-			"error":   err.Error(),
-		})
-	}
-
 	tenantID := common.InstanceTenant(def.TenantID, common.GetTenantId(c))
 
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
-	// flagged write_path = 'partitioned' start via the Command Gateway
-	// instead of the legacy transactional path + rt.ExecuteExecution.
-	if def.WritePath == "partitioned" {
-		instanceID, execID, err := partition.StartProcess(&def, tenantID, normalizedVars)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"title": "Internal Error", "message": err.Error()})
-		}
-		return c.JSON(fiber.Map{
-			"processInstanceId": instanceID,
-			"executionId":       execID,
-			"processKey":        def.ProcessKey,
-			"version":           def.Version,
-			"message":           "process started successfully",
-		})
-	}
-
-	instanceID, execID, err := service.StartProcessInstance(pc.db, &graph, def.ID, tenantID, normalizedVars)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"title":   "Database Error",
-			"message": err.Error(),
-		})
-	}
-
-	// Run the runtime
-	rt := runtime.NewRuntime(&graph, pc.db, pc.dispatcher)
-	ctx := c.Context()
-	err = rt.ExecuteExecution(ctx, execID)
-	if err != nil {
+	instanceID, execID, err := runtime.StartInstance(c.Context(), def.ID, tenantID, normalizedVars)
+	if errors.Is(err, runtime.ErrExecutionFailed) {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Execution Error",
 			"message": "failed to execute process",
 			"error":   err.Error(),
+		})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{
+			"title":   "Database Error",
+			"message": err.Error(),
 		})
 	}
 
@@ -558,7 +477,7 @@ func (pc *ProcessInstanceController) CompleteTask(c *fiber.Ctx) error {
 	// Normalize variables (supports both simple and typed formats)
 	normalizedVars := normalizeVariables(req.Variables)
 
-	err = pc.taskService.CompleteTask(c.Context(), taskID, normalizedVars)
+	err = runtime.CompleteUserTask(c.Context(), pc.db, taskID, normalizedVars)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"title":   "Error",
@@ -732,22 +651,13 @@ func (pc *ProcessInstanceController) SuspendProcess(c *fiber.Ctx) error {
 		})
 	}
 
-	status := "running"
-	if req.Suspended {
-		status = "suspended"
-	}
-
-	// Update process instance status
-	if err := pc.processInstanceRepo.UpdateStatus(instanceID, status); err != nil {
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdSuspendInstance,
+		suspendArgs{InstanceID: instanceID, Suspended: req.Suspended}, nil)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
 		})
-	}
-	if req.Suspended {
-		service.LogAuditErr("process suspended", pc.auditService.LogProcessSuspended(instanceID))
-	} else {
-		service.LogAuditErr("process resumed", pc.auditService.LogProcessResumed(instanceID))
 	}
 
 	message := "resumed"
@@ -784,17 +694,7 @@ func (pc *ProcessInstanceController) TerminateProcess(c *fiber.Ctx) error {
 		reason = "Process terminated by user"
 	}
 
-	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
-	// a partitioned-write-path instance terminates via the Command Gateway
-	// instead of a direct Postgres write. Shared with gRPC CancelProcessInstance.
-	if writePath, lookupErr := partition.LookupInstanceOwner(pc.db, instanceID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.Terminate(instanceID, reason); err != nil {
-			return c.Status(500).JSON(fiber.Map{"type": "InternalError", "message": err.Error()})
-		}
-		return c.Status(204).Send(nil)
-	}
-
-	if err := service.TerminateProcessInstance(pc.db, pc.dispatcher, instanceID, reason); err != nil {
+	if err := runtime.Terminate(c.Context(), instanceID, reason); err != nil {
 		if errors.Is(err, service.ErrProcessInstanceNotFound) {
 			return c.Status(404).JSON(fiber.Map{
 				"type":    "NotFound",
@@ -843,36 +743,13 @@ func (pc *ProcessInstanceController) EndProcess(c *fiber.Ctx) error {
 	normalizedVars["ended"] = true
 	normalizedVars["endedAt"] = time.Now()
 
-	// Update process instance status
-	if err := pc.processInstanceRepo.UpdateStatus(instanceID, "completed"); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	// Update variables
-	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdEndInstance,
+		endArgs{InstanceID: instanceID, Variables: normalizedVars}, nil)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),
 		})
-	}
-
-	for k, v := range normalizedVars {
-		existingVars[k] = v
-	}
-
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, existingVars); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	if err := service.ArchiveFinishedInstance(pc.db, instanceID, nil); err != nil {
-		fmt.Printf("Warning: failed to archive ended process instance %s: %v\n", instanceID, err)
 	}
 
 	return c.JSON(fiber.Map{
@@ -982,30 +859,9 @@ func (pc *ProcessInstanceController) StopProcessWithReason(c *fiber.Ctx) error {
 		stopVariables[k] = v
 	}
 
-	normalizedVars := normalizeVariables(stopVariables)
-
-	// Update variables
-	existingVars, err := pc.processInstanceRepo.GetVariables(instanceID)
+	err = cmdbus.Do(c.Context(), cmdbus.Key(instanceID), cmdStopInstance,
+		stopArgs{InstanceID: instanceID, Variables: normalizeVariables(stopVariables)}, nil)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	for k, v := range normalizedVars {
-		existingVars[k] = v
-	}
-
-	if err := pc.processInstanceRepo.UpsertVariables(instanceID, existingVars); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"type":    "InternalError",
-			"message": err.Error(),
-		})
-	}
-
-	// Terminate the process
-	if err := pc.processInstanceRepo.UpdateStatus(instanceID, "terminated"); err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"type":    "InternalError",
 			"message": err.Error(),

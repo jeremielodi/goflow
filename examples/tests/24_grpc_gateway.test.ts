@@ -5,7 +5,7 @@
  * CreateProcessInstance, ActivateJobs, CompleteJob, FailJob — against a
  * real, unmodified Zeebe client SDK (`zeebe-node`), not a hand-rolled
  * client, since the whole point of this feature is that genuine Zeebe
- * client SDKs can talk to GoFlow directly. Points at localhost:26500
+ * client SDKs can talk to GoFlow directly. Points at 127.0.0.1:26500
  * (Zeebe's own default gateway port) with zero client-side config beyond
  * disabling TLS, matching a self-managed Zeebe broker with no auth.
  *
@@ -44,7 +44,7 @@ const SIGNAL_BPMN = path.join(__dirname, 'bpmn', '24_grpc_signal_process.bpmn');
 const restClient = new GoFlowClient();
 
 function newZbClient(): ZBClient {
-  return new ZBClient('localhost:26500', {
+  return new ZBClient('127.0.0.1:26500', {
     useTLS: false,
     retry: false,
     eagerConnection: false,

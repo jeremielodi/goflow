@@ -19,7 +19,7 @@ import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import { GoFlowClient, sleep } from './client';
 
-const BASE_URL = 'http://localhost:8080';
+const BASE_URL = 'http://127.0.0.1:8080';
 const noTimers = process.argv.includes('--no-timers');
 
 // ─── Wait for app to be healthy ───────────────────────────────────────────────
@@ -63,25 +63,34 @@ async function main() {
   console.log('  GoFlow Integration Test Suite');
   console.log('═'.repeat(60));
 
-  // 1. Tear down existing containers + volumes, then rebuild fresh
-  console.log('\n📦  Tearing down existing Docker volumes…');
-  try {
-    execSync('docker compose down -v --remove-orphans', {
-      cwd: path.join(__dirname, '..', '..'),
-      stdio: 'inherit',
-    });
-  } catch {
-    // nothing running — that's fine
-  }
+  // 1. Tear down existing containers + volumes, then rebuild fresh (SKIP_SETUP=1:
+  // run against the stack already up).
+  if (!process.env.SKIP_SETUP) {
+    console.log('\n📦  Tearing down existing Docker volumes…');
+    try {
+      execSync('docker compose down -v --remove-orphans', {
+        cwd: path.join(__dirname, '..', '..'),
+        stdio: 'inherit',
+      });
+    } catch {
+      // nothing running — that's fine
+    }
 
-  console.log('📦  Starting Docker services (fresh build)…');
-  // GOFLOW_REPLICAS=3 (with COMPOSE_FILE including docker-compose.scale.yaml)
-  // runs the suites against several GoFlow instances behind the load balancer.
-  const replicas = process.env.GOFLOW_REPLICAS ? ` --scale goflow=${process.env.GOFLOW_REPLICAS}` : '';
-  execSync(`docker compose up -d --build --wait${replicas}`, {
-    cwd: path.join(__dirname, '..', '..'),
-    stdio: 'inherit',
-  });
+    console.log('📦  Starting Docker services (fresh build)…');
+    // GOFLOW_REPLICAS=3 (with COMPOSE_FILE including docker-compose.scale.yaml)
+    // runs the suites against several GoFlow instances behind the load balancer.
+    const replicas = process.env.GOFLOW_REPLICAS ? ` --scale goflow=${process.env.GOFLOW_REPLICAS}` : '';
+    try {
+      execSync(`docker compose up -d --build --wait${replicas}`, {
+        cwd: path.join(__dirname, '..', '..'),
+        stdio: 'inherit',
+      });
+    } catch (err) {
+      // --wait gives up while a slow first boot (a Citus bootstrap) is still
+      // running: the health check below decides.
+      console.log('  docker compose up reported a failure — waiting for the app anyway');
+    }
+  }
 
   // 2. Wait until the app responds
   await waitForApp();
@@ -119,14 +128,7 @@ async function main() {
     '24_grpc_gateway.test.ts',
     '25_analytics.test.ts',
     '26_eventlog_shadow.test.ts',
-    '27_partition_engine.test.ts',
-    '28_partition_diamond.test.ts',
-    '29_partition_chain.test.ts',
-    '30_partition_dmn.test.ts',
-    '31_partition_failjob.test.ts',
-    '32_partition_timer.test.ts',
-    '33_partition_terminate_modify.test.ts',
-    '34_partition_parallel.test.ts',
+    '27_partitions.test.ts',
     '35_subprocess.test.ts',
     '36_bpmn_elements.test.ts',
     '37_event_subprocess.test.ts',

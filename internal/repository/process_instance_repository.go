@@ -44,7 +44,7 @@ func (r *ProcessInstanceRepository) CreateVariablesTx(tx *sqlx.Tx, instanceID uu
 			(id, process_instance_id, data, updated_at)
 		VALUES ($1, $2, $3, $4)
 	`, uuid.New(), instanceID, varData, updatedAt)
-	return err
+	return notifyVariables(tx, instanceID, err)
 }
 
 // CreateExecution creates an initial execution record
@@ -85,7 +85,7 @@ func (r *ProcessInstanceRepository) UpsertVariablesTx(tx *sqlx.Tx, instanceID uu
 		ON CONFLICT (process_instance_id) DO UPDATE
 		SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
 	`, uuid.New(), instanceID, jsonData, time.Now())
-	return err
+	return notifyVariables(tx, instanceID, err)
 }
 
 // GetProcessDefinitionID returns the definition_id of a process instance
@@ -145,7 +145,7 @@ func (r *ProcessInstanceRepository) UpsertVariables(instanceID uuid.UUID, variab
 			VALUES ($1, $2, $3, NOW())
 		`, uuid.New(), instanceID, jsonData)
 	}
-	return err
+	return notifyVariables(r.db, instanceID, err)
 }
 
 // FindAll retrieves process instances with optional filters. An empty

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/runtime"
@@ -50,5 +52,5 @@ func (sc *SignalController) BroadcastSignal(c *fiber.Ctx) error {
 // merging variables into each resumed process instance. Shared by the
 // Camunda 7 style handler above and the v2 API.
 func (sc *SignalController) Broadcast(name string, variables map[string]interface{}) (int, []string, error) {
-	return runtime.BroadcastSignal(sc.db, sc.dispatcher, name, variables)
+	return runtime.Signal(context.Background(), name, variables)
 }

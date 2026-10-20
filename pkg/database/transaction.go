@@ -63,7 +63,11 @@ func (t *Transactions) Execute() ([]sql.Result, bool, error) {
 	complete := true
 	results := []sql.Result{}
 	var _error error = nil
-	tx, err := t.Adaptor.db.Beginx()
+	pool, ok := t.Adaptor.db.(*sqlx.DB)
+	if !ok {
+		return nil, false, fmt.Errorf("transactions need a connection pool adapter, not a transaction one")
+	}
+	tx, err := pool.Beginx()
 	if err != nil {
 		complete = false
 		log.Println("Failed to begin transaction:", err)

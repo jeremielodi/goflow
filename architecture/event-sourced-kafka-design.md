@@ -1,6 +1,12 @@
 # GoFlow v2 — Event-Sourced, Kafka-Backed Engine (Design Scope)
 
-Status: **Phase 0 (shadow mode) and Phase 1 (first vertical slice, partitioned
+Status: **history.** The partitioned write path described here (per
+definition, a validated set of BPMN shapes) was replaced on 2026-10-20 by a
+Camunda-8-style deployment mode covering every command and every BPMN
+construct: see [`partitioned-write-path.md`](partitioned-write-path.md).
+The event log of Phase 0 is unchanged.
+
+Original status: **Phase 0 (shadow mode) and Phase 1 (first vertical slice, partitioned
 write path) both shipped on the `dev` branch, 2026-07-04.** Phases 2+ (more
 BPMN constructs, a permanent-parallel-vs-cutover decision) remain scoped but
 not committed. See "Phase 1 — what's actually running today" below for the

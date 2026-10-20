@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_Partitions"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!-- Suite 27: commands of one instance arriving together, on any replica. -->
+
+  <bpmn:message id="Msg_Go" name="Go27">
+    <bpmn:extensionElements><zeebe:subscription correlationKey="=orderId"/></bpmn:extensionElements>
+  </bpmn:message>
+
+  <bpmn:process id="Partitions27" isExecutable="true">
+    <bpmn:startEvent id="p_start"/>
+    <bpmn:sequenceFlow id="f0" sourceRef="p_start" targetRef="p_fork"/>
+    <bpmn:parallelGateway id="p_fork"/>
+    <bpmn:sequenceFlow id="f1" sourceRef="p_fork" targetRef="p_w1"/>
+    <bpmn:sequenceFlow id="f2" sourceRef="p_fork" targetRef="p_w2"/>
+    <bpmn:sequenceFlow id="f3" sourceRef="p_fork" targetRef="p_w3"/>
+    <bpmn:sequenceFlow id="f4" sourceRef="p_fork" targetRef="p_w4"/>
+    <bpmn:serviceTask id="p_w1"><bpmn:extensionElements><zeebe:taskDefinition type="p27-work"/></bpmn:extensionElements></bpmn:serviceTask>
+    <bpmn:serviceTask id="p_w2"><bpmn:extensionElements><zeebe:taskDefinition type="p27-work"/></bpmn:extensionElements></bpmn:serviceTask>
+    <bpmn:serviceTask id="p_w3"><bpmn:extensionElements><zeebe:taskDefinition type="p27-work"/></bpmn:extensionElements></bpmn:serviceTask>
+    <bpmn:serviceTask id="p_w4"><bpmn:extensionElements><zeebe:taskDefinition type="p27-work"/></bpmn:extensionElements></bpmn:serviceTask>
+    <bpmn:sequenceFlow id="f5" sourceRef="p_w1" targetRef="p_join"/>
+    <bpmn:sequenceFlow id="f6" sourceRef="p_w2" targetRef="p_join"/>
+    <bpmn:sequenceFlow id="f7" sourceRef="p_w3" targetRef="p_join"/>
+    <bpmn:sequenceFlow id="f8" sourceRef="p_w4" targetRef="p_join"/>
+    <bpmn:parallelGateway id="p_join"/>
+    <bpmn:sequenceFlow id="f9" sourceRef="p_join" targetRef="p_wait"/>
+    <bpmn:intermediateCatchEvent id="p_wait">
+      <bpmn:messageEventDefinition messageRef="Msg_Go"/>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sequenceFlow id="f10" sourceRef="p_wait" targetRef="p_review"/>
+    <bpmn:userTask id="p_review" name="Review"/>
+    <bpmn:sequenceFlow id="f11" sourceRef="p_review" targetRef="p_end"/>
+    <bpmn:endEvent id="p_end"/>
+  </bpmn:process>
+</bpmn:definitions>

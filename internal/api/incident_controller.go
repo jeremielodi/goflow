@@ -3,11 +3,11 @@ package api
 import (
 	"encoding/json"
 
+	"errors"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
-	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -196,22 +196,12 @@ func (ctrl *IncidentController) SetJobRetries(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"message": "retries must be > 0"})
 	}
 
-	// Gap-closing pass after Phase 5 (see
-	// architecture/event-sourced-kafka-design.md): jobs belonging to a
-	// partitioned-write-path instance set retries via the Command Gateway
-	// instead of a direct Postgres transaction.
-	instanceID, writePath, lookupErr := partition.LookupJobOwner(ctrl.db, jobID)
-	if lookupErr == nil && !ctrl.checkIncidentAccess(c, instanceID, "MANAGE") {
+	var instanceID uuid.UUID
+	if err := ctrl.db.Get(&instanceID, `SELECT process_instance_id FROM public.jobs WHERE id = $1`, jobID); err == nil && !ctrl.checkIncidentAccess(c, instanceID, "MANAGE") {
 		return c.Status(404).JSON(fiber.Map{"message": "job not found"})
 	}
-	if lookupErr == nil && writePath == "partitioned" {
-		if err := partition.SetJobRetries(instanceID, jobID, body.Retries); err != nil {
-			return c.Status(500).JSON(fiber.Map{"message": err.Error()})
-		}
-		return c.JSON(fiber.Map{"message": "retries set, incident resolved"})
-	}
 
-	if err := service.SetJobRetries(ctrl.db, jobID, body.Retries); err != nil {
+	if err := runtime.SetJobRetries(c.Context(), ctrl.db, jobID, body.Retries); err != nil {
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
 
@@ -233,11 +223,15 @@ func (ctrl *IncidentController) ResolveIncident(c *fiber.Ctx) error {
 	if !ctrl.checkIncidentAccess(c, inc.ProcessInstanceID, "MANAGE") {
 		return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
 	}
-	if err := service.ResolveIncident(ctrl.db, id); err != nil {
+	out, err := runtime.ResolveIncident(c.Context(), ctrl.db, id)
+	if err != nil {
+		if errors.Is(err, runtime.ErrIncidentNotFound) {
+			return c.Status(404).JSON(fiber.Map{"message": "incident not found"})
+		}
 		return c.Status(500).JSON(fiber.Map{"message": err.Error()})
 	}
-	if err := runtime.ResumeAfterIncident(ctrl.db, ctrl.dispatcher, inc.ProcessInstanceID, id); err != nil {
-		return c.Status(500).JSON(fiber.Map{"message": "incident resolved, but running the element again failed: " + err.Error()})
+	if out.ResumeError != "" {
+		return c.Status(500).JSON(fiber.Map{"message": "incident resolved, but running the element again failed: " + out.ResumeError})
 	}
 	return c.SendStatus(204)
 }

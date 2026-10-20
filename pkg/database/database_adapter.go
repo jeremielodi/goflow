@@ -8,14 +8,26 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// execer is a connection pool or a transaction.
+type execer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	NamedExec(query string, arg interface{}) (sql.Result, error)
+}
+
 type DataBaseAdapter struct {
-	db *sqlx.DB
+	db execer
 }
 
 func NewDabaseAdapter(db *sqlx.DB) *DataBaseAdapter {
 	return &DataBaseAdapter{
 		db: db,
 	}
+}
+
+// NewTxAdapter writes within tx: part of its transaction, on its
+// connection.
+func NewTxAdapter(tx *sqlx.Tx) *DataBaseAdapter {
+	return &DataBaseAdapter{db: tx}
 }
 
 /**
@@ -27,7 +39,7 @@ func NewDabaseAdapter(db *sqlx.DB) *DataBaseAdapter {
 func (adaptor DataBaseAdapter) Insert(tableName string, parameters []QueryParameter) (sql.Result, error) {
 	sql := adaptor.FormatInsertArrayVsalues(tableName, parameters)
 
-	return adaptor.db.DB.Exec(sql, adaptor.QueryParamsValues(parameters)...)
+	return adaptor.db.Exec(sql, adaptor.QueryParamsValues(parameters)...)
 }
 
 func (adaptor DataBaseAdapter) InsertSlice(tableName string, rows []map[string]interface{}) ([]sql.Result, error) {
@@ -76,7 +88,7 @@ func (adaptor DataBaseAdapter) InsertSlice(tableName string, rows []map[string]i
 func (adaptor DataBaseAdapter) Delete(tableName string, condition []QueryParameter) (sql.Result, error) {
 	sql := adaptor.FormatDeleteWithoutParameters(tableName, condition)
 	params := condition
-	return adaptor.db.DB.Exec(sql, adaptor.QueryParamsValues(params)...)
+	return adaptor.db.Exec(sql, adaptor.QueryParamsValues(params)...)
 }
 
 func (adaptor DataBaseAdapter) QueryParamsToMap(params []QueryParameter) map[string]interface{} {
@@ -247,7 +259,7 @@ func (adaptor DataBaseAdapter) Update(tableName string, parameters []QueryParame
 	sql := adaptor.FormatUpdate2(tableName, parameters, KeyParam)
 	parameters = append(parameters, KeyParam)
 	var mapParams = adaptor.QueryParamsValues(parameters)
-	return adaptor.db.DB.Exec(sql, mapParams...)
+	return adaptor.db.Exec(sql, mapParams...)
 }
 
 func (adaptor DataBaseAdapter) BatchInsert(tableName string, rows [][]QueryParameter) (sql.Result, error) {
@@ -280,5 +292,5 @@ func (adaptor DataBaseAdapter) BatchInsert(tableName string, rows [][]QueryParam
 	}
 
 	query := fmt.Sprintf(`INSERT INTO %s (%s) VALUES %s`, tableName, strings.Join(columns, ", "), placeholders)
-	return adaptor.db.DB.Exec(query, values...)
+	return adaptor.db.Exec(query, values...)
 }

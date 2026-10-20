@@ -11,13 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/api"
 	"github.com/jeremielodi/goflow/internal/dmn"
-	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
 	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/partition"
@@ -59,24 +56,28 @@ func NewServer(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *Server {
 // ── Topology ────────────────────────────────────────────────────────────
 
 func (s *Server) Topology(ctx context.Context, req *pb.TopologyRequest) (*pb.TopologyResponse, error) {
-	host, _ := os.Hostname()
-	return &pb.TopologyResponse{
-		Brokers: []*pb.BrokerInfo{{
-			NodeId:  0,
-			Host:    host,
-			Port:    26500,
-			Version: "goflow-dev",
-			Partitions: []*pb.Partition{{
-				PartitionId: 1,
+	topo, err := partition.Describe(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Unavailable, err.Error())
+	}
+	resp := &pb.TopologyResponse{
+		ClusterSize:       int32(len(topo.Brokers)),
+		PartitionsCount:   int32(topo.PartitionsCount),
+		ReplicationFactor: int32(topo.ReplicationFactor),
+		GatewayVersion:    "goflow-dev",
+	}
+	for i, b := range topo.Brokers {
+		info := &pb.BrokerInfo{NodeId: int32(i), Host: b.Host, Port: 26500, Version: "goflow-dev"}
+		for _, p := range b.Partitions {
+			info.Partitions = append(info.Partitions, &pb.Partition{
+				PartitionId: int32(p),
 				Role:        pb.PartitionBrokerRole_LEADER,
 				Health:      pb.PartitionBrokerHealth_HEALTHY,
-			}},
-		}},
-		ClusterSize:       1,
-		PartitionsCount:   1,
-		ReplicationFactor: 1,
-		GatewayVersion:    "goflow-dev",
-	}, nil
+			})
+		}
+		resp.Brokers = append(resp.Brokers, info)
+	}
+	return resp, nil
 }
 
 // ── DeployResource ──────────────────────────────────────────────────────
@@ -170,32 +171,13 @@ func (s *Server) CreateProcessInstance(ctx context.Context, req *pb.CreateProces
 		}
 	}
 
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return nil, status.Error(codes.Internal, "failed to parse process graph")
-	}
-
 	tenantID := req.TenantId
-
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
-	// flagged write_path = 'partitioned' start via the Command Gateway
-	// instead of the legacy transactional path + rt.ExecuteExecution.
-	var instanceID, execID uuid.UUID
-	if def.WritePath == "partitioned" {
-		instanceID, execID, err = partition.StartProcess(&def, &tenantID, vars)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	} else {
-		instanceID, execID, err = service.StartProcessInstance(s.db, &graph, def.ID, &tenantID, vars)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-
-		rt := runtime.NewRuntime(&graph, s.db, s.dispatcher)
-		if err := rt.ExecuteExecution(ctx, execID); err != nil {
-			return nil, status.Errorf(codes.Internal, "failed to execute process: %v", err)
-		}
+	instanceID, _, err := runtime.StartInstance(ctx, def.ID, &tenantID, vars)
+	if errors.Is(err, runtime.ErrExecutionFailed) {
+		return nil, status.Errorf(codes.Internal, "failed to execute process: %v", err)
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	defKey, err := s.zeebeKeys.GetOrAssignKey("process_definition", def.ID)
@@ -379,27 +361,11 @@ func (s *Server) CompleteJob(ctx context.Context, req *pb.CompleteJobRequest) (*
 		}
 	}
 
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): jobs
-	// belonging to a partitioned-write-path instance complete via the
-	// Command Gateway instead of service.CompleteJob's direct Postgres
-	// transaction.
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.CompleteJob(instanceID, jobID, vars); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.CompleteJobResponse{}, nil
-	}
-
-	result, err := service.CompleteJob(s.db, jobID, vars)
-	if err != nil {
-		return nil, mapJobError(err)
-	}
-
-	if !result.ProcessCompleted {
-		rt := runtime.NewRuntime(result.Graph, s.db, s.dispatcher)
-		if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
+	if _, err := runtime.CompleteJob(ctx, s.db, jobID, vars); err != nil {
+		if errors.Is(err, runtime.ErrExecutionFailed) {
 			return nil, status.Errorf(codes.Internal, "failed to resume process execution: %v", err)
 		}
+		return nil, mapJobError(err)
 	}
 
 	return &pb.CompleteJobResponse{}, nil
@@ -417,27 +383,14 @@ func (s *Server) FailJob(ctx context.Context, req *pb.FailJobRequest) (*pb.FailJ
 	// failure" (Zeebe's own convention) — no extra decrement, unlike the
 	// REST HandleFailure path which uses Camunda 7's convention.
 
-	// Phase 5 (see architecture/event-sourced-kafka-design.md): jobs
-	// belonging to a partitioned-write-path instance fail via the Command
-	// Gateway instead of service.FailJob's direct Postgres transaction.
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.FailJob(instanceID, jobID, int(req.Retries), req.ErrorMessage, ""); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.FailJobResponse{}, nil
-	}
-
-	result, err := service.FailJob(s.db, jobID, int(req.Retries), req.ErrorMessage, "")
-	if err != nil {
+	// Continuing from a boundary event may fail without failing the call:
+	// the failure itself is recorded.
+	if _, err := runtime.FailJob(ctx, s.db, runtime.FailJobArgs{
+		JobID:            jobID,
+		RetriesRemaining: int(req.Retries),
+		ErrorMessage:     req.ErrorMessage,
+	}); err != nil {
 		return nil, mapJobError(err)
-	}
-
-	if result.BoundaryTriggered {
-		rt := runtime.NewRuntime(result.Graph, s.db, s.dispatcher)
-		if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
-			// Non-fatal: the failure itself was already durably recorded.
-			_ = err
-		}
 	}
 
 	return &pb.FailJobResponse{}, nil
@@ -467,7 +420,7 @@ func (s *Server) PublishMessage(ctx context.Context, req *pb.PublishMessageReque
 	if req.Name == "" {
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
-	res, err := runtime.PublishMessage(ctx, s.db, s.dispatcher, runtime.PublishedMessage{
+	res, err := runtime.Publish(ctx, runtime.PublishedMessage{
 		Name:           req.Name,
 		CorrelationKey: req.CorrelationKey,
 		Variables:      vars,
@@ -500,16 +453,7 @@ func (s *Server) CancelProcessInstance(ctx context.Context, req *pb.CancelProces
 
 	reason := "cancelled via gRPC CancelProcessInstance"
 
-	// Gap-closing pass 2: route partitioned-write-path instances through
-	// the Command Gateway instead of a direct Postgres write.
-	if writePath, lookupErr := partition.LookupInstanceOwner(s.db, instanceID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.Terminate(instanceID, reason); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.CancelProcessInstanceResponse{}, nil
-	}
-
-	if err := service.TerminateProcessInstance(s.db, s.dispatcher, instanceID, reason); err != nil {
+	if err := runtime.Terminate(ctx, instanceID, reason); err != nil {
 		if errors.Is(err, service.ErrProcessInstanceNotFound) {
 			return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
 		}
@@ -573,26 +517,15 @@ func (s *Server) ResolveIncident(ctx context.Context, req *pb.ResolveIncidentReq
 		return nil, status.Errorf(codes.NotFound, "incident key %d not found", req.IncidentKey)
 	}
 
-	// Gap-closing pass after Phase 5 (see
-	// architecture/event-sourced-kafka-design.md): incidents belonging to
-	// a partitioned-write-path instance resolve via the Command Gateway
-	// instead of a direct Postgres write.
-	if instanceID, writePath, lookupErr := partition.LookupIncidentOwner(s.db, incidentID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.ResolveIncident(instanceID, incidentID); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.ResolveIncidentResponse{}, nil
+	out, err := runtime.ResolveIncident(ctx, s.db, incidentID)
+	if errors.Is(err, runtime.ErrIncidentNotFound) {
+		return nil, status.Errorf(codes.NotFound, "incident key %d not found", req.IncidentKey)
 	}
-
-	inc, _ := repository.NewIncidentRepository(s.db).GetByID(incidentID)
-	if err := service.ResolveIncident(s.db, incidentID); err != nil {
+	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	// An incident the runtime raised on an element: run it again.
-	if inc != nil {
-		if err := runtime.ResumeAfterIncident(s.db, s.dispatcher, inc.ProcessInstanceID, incidentID); err != nil {
-			return nil, status.Errorf(codes.Internal, "incident resolved, but running the element again failed: %v", err)
-		}
+	if out.ResumeError != "" {
+		return nil, status.Errorf(codes.Internal, "incident resolved, but running the element again failed: %s", out.ResumeError)
 	}
 
 	return &pb.ResolveIncidentResponse{}, nil
@@ -623,29 +556,9 @@ func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProces
 		return nil, status.Errorf(codes.NotFound, "process instance key %d not found", req.ProcessInstanceKey)
 	}
 
-	// Gap-closing pass 2 (see architecture/event-sourced-kafka-design.md):
-	// modification moves an execution's graph position directly, the same
-	// class of bypass every other write path is already gated against.
-	// Unlike Terminate, this isn't implemented through the Command Gateway
-	// — arbitrary token moves don't fit any of ValidateShape's narrow
-	// accepted shapes — so partitioned instances are explicitly rejected
-	// instead, consistent with this RPC's existing single-token-only scope
-	// limit below.
-	if writePath, lookupErr := partition.LookupInstanceOwner(s.db, instanceID); lookupErr == nil && writePath == "partitioned" {
-		return nil, status.Error(codes.FailedPrecondition, "process instance modification is not supported for partitioned-write-path instances")
-	}
-
 	inst, err := s.processInstanceRepo.FindByID(instanceID)
 	if err != nil || inst == nil {
 		return nil, status.Errorf(codes.NotFound, "process instance not found")
-	}
-	def, err := s.processRepo.FindProcessDefinitionByID(inst.ProcessDefinitionID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
-	}
-	var graph engine.ProcessGraph
-	if err := json.Unmarshal(def.ParsedGraph, &graph); err != nil {
-		return nil, status.Error(codes.Internal, "failed to parse process graph")
 	}
 
 	activeExecutions, err := s.processInstanceRepo.GetActiveExecutions(instanceID)
@@ -661,8 +574,7 @@ func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProces
 		TargetElementID: targetElementID,
 	}}
 
-	rt := runtime.NewRuntime(&graph, s.db, s.dispatcher)
-	if _, err := rt.ModifyInstance(ctx, instanceID, moves); err != nil {
+	if _, err := runtime.Modify(ctx, instanceID, moves); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -682,26 +594,14 @@ func (s *Server) UpdateJobRetries(ctx context.Context, req *pb.UpdateJobRetriesR
 		return nil, status.Errorf(codes.NotFound, "job key %d not found", req.JobKey)
 	}
 
-	if instanceID, writePath, lookupErr := partition.LookupJobOwner(s.db, jobID); lookupErr == nil && writePath == "partitioned" {
-		if err := partition.SetJobRetries(instanceID, jobID, int(req.Retries)); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.UpdateJobRetriesResponse{}, nil
-	}
-
-	if err := service.SetJobRetries(s.db, jobID, int(req.Retries)); err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+	if err := runtime.SetJobRetries(ctx, s.db, jobID, int(req.Retries)); err != nil {
+		return nil, mapJobError(err)
 	}
 
 	return &pb.UpdateJobRetriesResponse{}, nil
 }
 
 // ── BroadcastSignal ─────────────────────────────────────────────────────
-// Mirrors internal/api/signal_controller.go's Broadcast — no partition-
-// gating check needed (see the file-level comment in gateway.proto): a
-// partitioned instance can never be one of Broadcast's subscribers,
-// since ValidateShape never allows a signal catch event in any shape the
-// partitioned write path supports.
 
 func (s *Server) BroadcastSignal(ctx context.Context, req *pb.BroadcastSignalRequest) (*pb.BroadcastSignalResponse, error) {
 	if req.SignalName == "" {
@@ -714,8 +614,7 @@ func (s *Server) BroadcastSignal(ctx context.Context, req *pb.BroadcastSignalReq
 		}
 	}
 
-	signalCtrl := api.NewSignalController(s.db, s.dispatcher)
-	if _, _, err := signalCtrl.Broadcast(req.SignalName, vars); err != nil {
+	if _, _, err := runtime.Signal(ctx, req.SignalName, vars); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 

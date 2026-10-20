@@ -37,7 +37,7 @@ func (r *UserRepository) Create(user models.UserCreateModel) (sql.Result, error)
 
 // CreateWithTx inserts a new user using the adapter style within a transaction.
 func (r *UserRepository) CreateWithTx(tx *sqlx.Tx, user models.UserCreateModel) (sql.Result, error) {
-	adapter := database.NewDabaseAdapter(r.db)
+	adapter := database.NewTxAdapter(tx)
 	return adapter.Insert("public.users", []database.QueryParameter{
 		{Key: "id", Value: user.ID},
 		{Key: "email", Value: user.Email},

@@ -85,10 +85,17 @@ services:
       # Taille du pool de connexions par instance GoFlow
       DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-80}
 
-      # Event log (Phase 0 shadow mode — see internal/eventlog)
+      # Event log (shadow mode — see internal/eventlog)
       KAFKA_BROKERS: redpanda:9092
       # Copies de chaque partition à la création des topics (1 = mono-nœud)
       KAFKA_REPLICATION_FACTOR: ${KAFKA_REPLICATION_FACTOR:-1}
+      # Chemin d'écriture (voir internal/cmdbus) : direct (défaut) ou
+      # partitioned (comme Camunda 8 : chaque commande d'une instance passe
+      # par la partition Kafka de cette instance)
+      WRITE_PATH: ${WRITE_PATH:-direct}
+      # Nombre de partitions : ne change plus une fois des instances créées
+      KAFKA_PARTITIONS: ${KAFKA_PARTITIONS:-12}
+      COMMAND_TIMEOUT: ${COMMAND_TIMEOUT:-30s}
 
       # Queue Settings
       QUEUE_MAX_RETRIES: 3

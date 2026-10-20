@@ -29,7 +29,7 @@ func (r *RoleRepository) Create(role models.Role) error {
 }
 
 func (r *RoleRepository) CreateWithTx(tx *sqlx.Tx, role models.Role) error {
-	adapter := database.NewDabaseAdapter(r.db)
+	adapter := database.NewTxAdapter(tx)
 	_, err := adapter.Insert("public.roles", []database.QueryParameter{
 		{Key: "id", Value: role.ID},
 		{Key: "label", Value: role.Label},

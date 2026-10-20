@@ -13,7 +13,7 @@ import { GoFlowClient, runSuite, assert, sleep } from './client';
 const BPMN_MAIN = path.join(__dirname, 'bpmn', '13_call_activity_main.bpmn');
 const BPMN_SUB = path.join(__dirname, 'bpmn', '13_credit_check_process.bpmn');
 const client = new GoFlowClient();
-const BASE = 'http://localhost:8080';
+const BASE = 'http://127.0.0.1:8080';
 
 async function completeExternalTaskForAny(token: string, topic: string): Promise<number> {
   const r = await fetch(`${BASE}/engine-rest/external-task/fetchAndLock`, {

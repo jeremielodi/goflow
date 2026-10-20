@@ -6,7 +6,7 @@
 ![BPMN 2.0](https://img.shields.io/badge/BPMN-2.0-orange)
 ![React](https://img.shields.io/badge/Frontend-React%2019-61DAFB?logo=react&logoColor=black)
 
-GoFlow is a BPMN 2.0 workflow engine written in Go that runs models with Camunda 8 semantics, exposing REST APIs shaped after both **Camunda 7** (`/engine-rest/...`) and **Camunda 8** (`/v2/...`), plus a native **Zeebe gRPC gateway**. It's a lightweight, self-hosted alternative to the Java-based engines: PostgreSQL is its only database (a single server, or a high-availability cluster with automatic failover), the application runs as one instance or several behind a load balancer, and it comes with real-time event streaming and a React operations/tasklist frontend. The core engine runs in production; the Kafka-partitioned write path and Citus storage are experimental. See [Comparison to Camunda 7 / Camunda 8](#comparison-to-camunda-7--camunda-8) for an honest look at what's covered and what isn't.
+GoFlow is a BPMN 2.0 workflow engine written in Go that runs models with Camunda 8 semantics, exposing REST APIs shaped after both **Camunda 7** (`/engine-rest/...`) and **Camunda 8** (`/v2/...`), plus a native **Zeebe gRPC gateway**. It's a lightweight, self-hosted alternative to the Java-based engines: PostgreSQL is its only database (a single server, a high-availability cluster with automatic failover, or a Citus cluster sharding the per-instance tables), the application runs as one instance or several behind a load balancer, and it comes with real-time event streaming and a React operations/tasklist frontend. Like Camunda 8, it can run every command of an instance on the one GoFlow instance owning its Kafka partition, with failover between instances. See [Comparison to Camunda 7 / Camunda 8](#comparison-to-camunda-7--camunda-8) for an honest look at what's covered and what isn't.
 
 ## Contents
 
@@ -15,7 +15,7 @@ GoFlow is a BPMN 2.0 workflow engine written in Go that runs models with Camunda
 - [API Reference](#api-reference)
 - [Frontend](#frontend)
 - [Architecture](#architecture)
-- [Event-Sourced Write Path (Experimental)](#event-sourced-write-path-experimental)
+- [Partitioned Write Path](#partitioned-write-path)
 - [Integration Tests](#integration-tests)
 - [Environment Variables](#environment-variables)
 - [Operations](#operations)
@@ -92,7 +92,7 @@ Conditional events are re-evaluated as soon as a variable of their instance chan
 | Postgres high availability: Patroni cluster, synchronous replication, automatic failover through HAProxy (see [Operations](#postgres-high-availability)) | ✅ |
 | Backups (`pg_dump`, standalone or through the cluster) with a restore check | ✅ |
 | gRPC / native Zeebe protocol | ✅ all 19 RPCs of the zeebe-node 8.3 client protocol (`MigrateProcessInstance`/`UpdateJobTimeout` from newer Zeebe versions not yet) |
-| Kafka-partitioned write path (opt-in, per definition) | 🧪 experimental — see [below](#event-sourced-write-path-experimental) |
+| Partitioned write path, Camunda 8 style (`WRITE_PATH=partitioned`, see [below](#partitioned-write-path)) | ✅ |
 
 ---
 
@@ -320,44 +320,40 @@ A `/modeler` page also lets you author and deploy BPMN diagrams directly in-brow
 
 ## Architecture
 
-Every request goes through the same parser/engine/runtime and lands in the same PostgreSQL database — the only thing that varies **per process definition** is how it gets there: a direct call by default, or through Kafka for the [experimental partitioned path](#event-sourced-write-path-experimental).
+Every request goes through the same parser/engine/runtime and lands in the same PostgreSQL database. What the deployment chooses (`WRITE_PATH`) is *where* each command runs: right where it arrives (`direct`, the default), or — like Camunda 8 — on the one GoFlow instance owning the Kafka partition of its process instance (`partitioned`).
 
 ```
                   ┌──────────────────────────────────────────────────────────────┐
                   │              REST (v1 + v2) API / gRPC gateway               │
                   └──────────────────────────────────────────────────────────────┘
-                                                 │
-                write_path = 'legacy' (default)     write_path = 'partitioned' (opt-in)
-                                 ▼                                    ▼
-┌─────────────────────────────┐      ┌─────────────────────────────┐
-│  Direct call, one ACID tx:  │      │       Command Gateway       │
-│  Parser -> Engine Build ->  │      │ produce a command, wait for │
-│    Runtime.executeNode()    │      │   the confirmation event    │
-└─────────────────────────────┘      └─────────────────────────────┘
-                                                    │
-                                     ┌─────────────────────────────┐
-                                     │      Kafka / Redpanda       │
-                                     │   process-commands topic    │
-                                     │    process-events topic     │
-                                     └─────────────────────────────┘
-                                                    │
-                                     ┌─────────────────────────────┐
-                                     │     Partition Processor     │
-                                     │  one owner per partition,   │
-                                     │  calls the SAME Runtime /   │
-                                     │ Service functions as legacy │
-                                     └─────────────────────────────┘
-                                 ▼                                    ▼
+                                                 │  every command that changes an instance
+                                                 ▼  (internal/cmdbus)
+                     WRITE_PATH=direct (default)        WRITE_PATH=partitioned
+                                 │                                   │
+                                 │                    ┌─────────────────────────────┐
+                                 │                    │  Kafka / Redpanda, topic    │
+                                 │                    │  partition-commands, keyed  │
+                                 │                    │  by process instance        │
+                                 │                    └─────────────────────────────┘
+                                 │                                   │
+                                 │                    ┌─────────────────────────────┐
+                                 │                    │  owner of the partition:    │
+                                 │                    │  one GoFlow instance, one   │
+                                 │                    │  command at a time; reply   │
+                                 │                    │  sent back to the caller    │
+                                 │                    └─────────────────────────────┘
+                                 ▼                                   ▼
+                  ┌──────────────────────────────────────────────────────────────┐
+                  │        the same command handlers: Parser -> Engine ->        │
+                  │                    Runtime.executeNode()                     │
+                  └──────────────────────────────────────────────────────────────┘
                                                  ▼
                   ┌──────────────────────────────────────────────────────────────┐
-                  │                        PostgreSQL 16                         │
-                  │           process_definitions, process_instances,            │
-                  │                 executions, jobs, variables,                 │
-                  │               event_subscriptions, timer_jobs                │
+                  │     PostgreSQL 16 — single server, Patroni HA cluster,       │
+                  │      or Citus (per-instance tables sharded over workers)     │
                   └──────────────────────────────────────────────────────────────┘
 ```
 
-The left branch (direct call, one ACID transaction) is the **default, always-on path** — every process definition uses it unless explicitly flipped. The right branch is real, tested, but experimental — see [Event-Sourced Write Path](#event-sourced-write-path-experimental) below for what it currently covers and its own zoomed-in diagram.
 
 ### Key Design Decisions
 
@@ -369,16 +365,15 @@ The left branch (direct call, one ACID transaction) is the **default, always-on 
 
 ---
 
-## Event-Sourced Write Path (Experimental)
+## Partitioned Write Path
 
-Alongside the default transactional engine, GoFlow also ships an **opt-in, per-process-definition** write path built on Kafka (Redpanda in the bundled Compose stack) — an incremental step toward Zeebe's partitioned execution model, without a rewrite of the working engine. See the right-hand branch in the [global diagram](#architecture) above for where this fits; full design and phase-by-phase history: [`architecture/event-sourced-kafka-design.md`](architecture/event-sourced-kafka-design.md).
+Like Camunda 8, GoFlow can run every process instance on one partition: `WRITE_PATH=partitioned` (default `direct`). Full design: [`architecture/partitioned-write-path.md`](architecture/partitioned-write-path.md).
 
-- **Opt-in, reversible per definition** — flip a process definition with `PATCH /engine-rest/process-definition/:id/write-path { "writePath": "partitioned" }`. Everything not flipped keeps running on the original, unmodified engine untouched by any of this.
-- **How it works** — for a partitioned definition, a **Command Gateway** produces a command to a Kafka topic keyed by process-instance ID instead of writing to Postgres directly. A **Partition Processor** — one owner per Kafka partition, via a standard consumer group — is the only thing that ever mutates that instance's state, and it does so by calling the *exact same* `internal/service` / `internal/runtime` functions the default engine already uses. Postgres is still the durable store; Kafka only decides serialization order and ownership.
-- **What's gated today** — start, complete, fail, retry-reset, incident-resolution, timer firing, and termination are all routed through the gateway for a partitioned instance, so nothing can bypass partition ownership and race the processor's writes.
-- **Validated shapes** — a deploy-time shape validator accepts a linear service-task chain, an exclusive-gateway diamond, a DMN business rule task, an attached boundary error event, a single intermediate timer, and a parallel-gateway fork/join (AND semantics, unconditional — unlike the diamond's XOR). Anything else (inclusive gateways, multi-instance, message/signal correlation, process-instance modification) is explicitly rejected at flip-time rather than silently unsafe.
-- **Requires** `KAFKA_BROKERS` — already wired to the bundled Redpanda service in `docker-compose.yaml`, nothing extra to configure to try it locally.
-- **Status** — real, tested code (dedicated suites 26–34 in the [integration tests](#integration-tests)), but experimental: not the default.
+- **Every command, every BPMN construct** — start, job completion/failure/BPMN error, retries, incident resolution, cancellation, user-task completion, variables, modification, message publication (on the partition of its correlation key), signal broadcast, timers, conditional events. No shape restriction.
+- **How** — the command goes to the Kafka partition of its process instance (`goflow.partition-commands`, `KAFKA_PARTITIONS`, 12 by default, fixed once instances exist). The GoFlow instances form one consumer group: each partition is owned by exactly one of them, which runs its commands one at a time and sends the outcome back (`goflow.partition-replies`). The same handler code runs in direct mode, without Kafka.
+- **Failover** — when an instance stops, its partitions move to the others (measured: ~7 s after a `docker kill`, no instance lost — `examples/tests/drill_partition_failover.ts`). A command left half-applied by a dying owner is delivered again and completed from where it stopped.
+- **Topology** — `GET /v2/topology` and the gRPC `Topology` RPC show which instance leads which partition.
+- **Requires** `KAFKA_BROKERS` (the bundled Redpanda). Postgres (or Citus) stays the state; the full regression passes in both modes, on one instance and on three behind the load balancer, and on Citus.
 
 ---
 
@@ -426,19 +421,12 @@ npx ts-node run_all.ts
 | 24 | gRPC Gateway (Zeebe protocol subset) |
 | 25 | Analytics (Optimize-lite) |
 
-**[Event-Sourced Write Path](#event-sourced-write-path-experimental) suites** (26–34), each verifying one phase of the Kafka-partitioned engine end to end, plus a regression pass of every earlier shape:
+**Event log and write path** (26–27):
 
 | Suite | Feature |
 |---|---|
-| 26 | Event Log Shadow Mode (Phase 0 — observability only, no write-path change) |
-| 27 | Partitioned Write Path — linear shape (start/complete) |
-| 28 | Partitioned Write Path — exclusive-gateway diamond shape |
-| 29 | Partitioned Write Path — multi-task chain |
-| 30 | Partitioned Write Path — DMN business rule task |
-| 31 | Partitioned Write Path — job failure, retry-reset, incident resolution |
-| 32 | Partitioned Write Path — intermediate timer event |
-| 33 | Partitioned Write Path — instance termination + modification gating |
-| 34 | Partitioned Write Path — parallel-gateway fork/join (AND semantics) |
+| 26 | Event Log Shadow Mode (observability only) |
+| 27 | Write path: topology, concurrent commands on one instance, 30 instances at once, messages across partitions, refusals (runs in both modes) |
 
 **BPMN coverage and Camunda 8 semantics** (35–50):
 
@@ -461,7 +449,7 @@ npx ts-node run_all.ts
 | 49 | Call activities (variables, errors, escalations, termination) |
 | 50 | Message end events, runtime incidents, untyped tasks, nested compensation |
 
-The same suites run against several instances behind the load balancer, and against the high-availability cluster (`COMPOSE_FILE` with the files of [Operations](#operations), plus `GOFLOW_REPLICAS=3` for several instances).
+The same suites run against several instances behind the load balancer, and against the high-availability cluster (`COMPOSE_FILE` with the files of [Operations](#operations), plus `GOFLOW_REPLICAS=3` for several instances). With `WRITE_PATH=partitioned` they run on the partitioned write path, and with `COMPOSE_FILE="docker-compose.yaml;docker-compose.citus.yml"` on Citus.
 
 ---
 
@@ -494,11 +482,13 @@ SUPER_USER_PASSWORD=admin123
 # OIDC_AUDIENCE=goflow-api
 # OIDC_JWKS_URL=https://your-idp.example.com/realms/goflow/protocol/openid-connect/certs
 
-# Event-sourced write path (optional, experimental — see above)
-# leave unset to disable both Kafka shadow-mode logging and the
-# partitioned write path entirely
+# Kafka (Redpanda): event log, and the partitioned write path
+# leave KAFKA_BROKERS unset to disable both
 # KAFKA_BROKERS=redpanda:9092
 # KAFKA_REPLICATION_FACTOR=1   # replicas per partition, applied when topics are created
+# WRITE_PATH=direct            # or partitioned (Camunda 8 style, see above)
+# KAFKA_PARTITIONS=12          # fixed once instances exist
+# COMMAND_TIMEOUT=30s          # how long a request waits for its command
 
 # Observability — bearer token required on GET /metrics (unset = open)
 # METRICS_TOKEN=<random value>
@@ -552,7 +542,7 @@ SUPER_USER_PASSWORD=admin123
 docker compose -f docker-compose.yaml -f docker-compose.citus.yml up -d --build --wait
 ```
 
-Brings up a Citus coordinator + 2 workers alongside the app instead of the single default Postgres instance; the plain `docker compose up` command above is completely unaffected either way. See [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md) for what's actually distributed today (config/lookup tables only, as Citus reference tables) and what's intentionally deferred.
+Brings up a Citus coordinator + 2 workers instead of the single Postgres instance; the plain `docker compose up` is unaffected. The per-instance tables — `process_instances`, `executions`, `tasks`, `variables`, `scope_variables`, `gateway_state`, `multi_instance_executions`, `incidents`, `jobs`, `timer_jobs` — are sharded over the workers, all colocated on the process instance, so an instance's rows live on one worker. Config tables are reference tables (copied to every node); the others stay on the coordinator as Citus local tables. Jobs and timers are claimed without `FOR UPDATE` (Citus forbids it across shards): candidates are read, then each is claimed by an update on its own shard that only succeeds while it is still free. See [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md).
 
 ---
 
@@ -709,7 +699,7 @@ GoFlow deliberately targets both REST API shapes with one engine. It is **not** 
 
 **Camunda 8 BPMN semantics:** beyond the API shapes, the engine executes models the way Camunda 8 does — `zeebe:` extensions (script tasks, `zeebe:calledElement`, `zeebe:loopCharacteristics`, `zeebe:subscription` correlation keys, I/O mappings), local variable scopes, multi-instance on any activity, call activities that pass variables and propagate errors and escalations, message buffering with a time to live, timer and signal start events, cron timers, runtime incidents that resolve by running the element again — each one covered by the integration suites (35–50). Untyped tasks pass straight through, as in Camunda 8.
 
-**Where it's architecturally different, not just missing a feature:** the default engine is a Postgres-backed transactional engine, not Zeebe's partitioned/distributed broker model. The application tier runs as several instances behind a load balancer (job/timer claiming with `SKIP LOCKED`, wake-ups and task events relayed through Postgres `NOTIFY`), and Postgres itself can run as a Patroni cluster with synchronous replication and automatic failover — so no single machine is a point of failure. But every write still goes to one primary at a time: this scales up (a bigger primary, PgBouncer, read replicas, eventually sharding with Citus) rather than out the way Zeebe's Raft-replicated, no-shared-database partitions do. The [experimental Kafka-partitioned write path](#event-sourced-write-path-experimental) is a real, working step toward closing that gap for a growing (but still narrow) set of BPMN shapes — not a full answer yet.
+**Where it's architecturally different, not just missing a feature:** Postgres remains the state, where Zeebe keeps each partition's state on its brokers (RocksDB, Raft-replicated). Around that, GoFlow now works the same way: with `WRITE_PATH=partitioned` every command of an instance runs on the one GoFlow instance owning its Kafka partition, partitions move to the survivors when an instance dies (~7 s measured), and `GET /v2/topology` shows who leads what. Storage scales out with Citus (per-instance tables, jobs and timers included, sharded over workers) or stays one Postgres — a single server or a Patroni cluster with synchronous replication and automatic failover. What isn't the same is how far that goes: a Citus cluster or a Postgres primary is still the shared store every partition writes to, so the ceiling is the database cluster, not the number of brokers.
 
 **Frontend:** the React app covers a real slice of Operate (instance inspection, plus a token-replay feature Operate doesn't offer by default), Tasklist (task inbox), a slice of Optimize (`/analytics` — duration distributions, throughput over time, incident rate by process key), and a Modeler (`/modeler` — author and deploy BPMN diagrams directly in-browser, not just view them).
 
@@ -727,20 +717,20 @@ Prioritized by value vs. effort, based on gaps identified during ongoing feature
 - **Genuine historic archive** — dedicated `historic_*` tables mirror Camunda 7's `ACT_RU_*`/`ACT_HI_*` split. Finished instances are archived then removed from the live tables; every read path that could touch a finished instance (including the frontend) transparently merges both sides.
 - **Admin UI + per-resource process permissions** — Users/Roles pages plus a VIEW/START/MANAGE ACL scoped to individual process keys, enforced across both REST APIs.
 - **Users/Roles RBAC hardening** — a follow-up audit of the admin feature above found and fixed several real gaps: `DeleteUser` used to hard-`DELETE`, which crashed with a raw FK-violation error for any user who had ever deployed a BPMN, started an instance, or appeared in an audit log (`deployments`/`process_instances`/`audit_logs` all reference `users.id` with no cascade, deliberately, to preserve history) — now a proper soft-delete (`is_active = false`, already checked at login) via a new `UserRepository.Deactivate`. `DeleteRole` now rejects with 409 while any user is still assigned to it, instead of silently cascading their permissions away. Four read routes (`GET /roles`, `GET /roles/:id`, `GET /users/:id/roles`, `GET /roles/:id/actions`) had no permission guard at all — now gated. A duplicate/misspelled permission code (`CAN_MANGE_USER` used everywhere vs. an unused, correctly-spelled `CAN_MANAGE_USERS`) was consolidated into one correct `CAN_MANAGE_USER` (`database/archive/migrations-before-baseline/014_fix_can_manage_user_code.sql`). Added a real admin password-reset feature (`PUT /users/:id/reset-password`, gated by the previously-unused `CAN_RESET_PASSWORD` action) and the frontend's missing role-label-edit UI. Along the way, found and fixed a severe pre-existing bug unrelated to any of the above: `models.Role`'s `db:"isDefault"` struct tag didn't match the actual Postgres column (`isdefault`, no separator — unquoted DDL identifiers fold to lowercase), so every role read (`GetRole`, `ListRoles`, `GetDefaultRole`) was crashing with a 500 — caught only by a scripted end-to-end verification, not by code review, since the bug was invisible from reading the SQL alone.
-- **Task lifecycle events in the Kafka event log** — an audit of the [event-sourced write path's](#event-sourced-write-path-experimental) domain events found job lifecycle fully instrumented but user-task lifecycle completely uninstrumented: not a missing call site, the proto schema had no `Task*` message type at all. Added `TaskCreated`/`TaskClaimed`/`TaskUnclaimed`/`TaskCompleted`/`TaskCancelled`, mirroring the field shapes of the older, separate `internal/events.TaskEventDispatcher` (SSE/WebSocket/webhook push) that was the only prior task observability signal. See [`architecture/event-sourced-kafka-design.md`](architecture/event-sourced-kafka-design.md) Phase 0 section for exactly which layer each event publishes from and why (task_repository.go can't import the event log directly — an import cycle).
+- **Task lifecycle events in the Kafka event log** — an audit of the event log domain events found job lifecycle fully instrumented but user-task lifecycle completely uninstrumented: not a missing call site, the proto schema had no `Task*` message type at all. Added `TaskCreated`/`TaskClaimed`/`TaskUnclaimed`/`TaskCompleted`/`TaskCancelled`, mirroring the field shapes of the older, separate `internal/events.TaskEventDispatcher` (SSE/WebSocket/webhook push) that was the only prior task observability signal. See [`architecture/event-sourced-kafka-design.md`](architecture/event-sourced-kafka-design.md) Phase 0 section for exactly which layer each event publishes from and why (task_repository.go can't import the event log directly — an import cycle).
 - **gRPC gateway — Zeebe protocol core loop** — a native gRPC server (`internal/zeebegrpc`, port `26500`) implementing all 19 Gateway RPCs (13 at first, the last six added later — see below) (the full RPC set the `zeebe-node` client this project tests against actually supports) as thin translations onto the same service functions REST already uses, verified against the real SDK. `ActivateJobs`'s long-poll wakes near-instantly on a new job via a broadcast channel instead of a fixed poll interval. `UpdateJobRetries` and `BroadcastSignal` were added as a deliberately scoped batch — both wrap an existing function verbatim (`service.SetJobRetries`, `SignalController.Broadcast`) with zero new business logic, chosen over a wider batch (`SetVariables`, `ThrowError`, `CreateProcessInstanceWithResult`, `StreamActivatedJobs`, `DeleteResource`) that each need either new plumbing or their own sizing pass.
 - **Process-graph cache fix** — the cache is now keyed by process *definition* (not instance) and bounded, closing an unbounded-growth, no-dedup bug.
 - **Two FEEL→CEL evaluator bugs fixed** — numeric variables weren't coerced to a common type before evaluation, and keyword substitution (`and`/`or`) used to corrupt matching text inside quoted string literals.
 - **Composite index for fetch-and-lock** — the hottest query in the system got a partial composite index, measured ~18x faster at realistic table sizes.
 - **Analytics (Optimize-lite)** — a duration/throughput/incident-rate endpoint and frontend page, merging live and historic data. Building it surfaced and fixed a real incident-archival cascade-delete bug and a `time.Time`-as-map-key bug that silently zeroed the throughput series.
 - **Cross-instance gRPC job wake-ups** — job creation now broadcasts via Postgres `LISTEN`/`NOTIFY` instead of an in-process-only channel, closing the one real gap that was blocking the app tier from scaling cleanly across multiple instances.
-- **Event-sourced Kafka write path** — see [above](#event-sourced-write-path-experimental) for the current, still-narrow shape and command coverage; full phase-by-phase history in [`architecture/event-sourced-kafka-design.md`](architecture/event-sourced-kafka-design.md).
+- **Partitioned write path, Camunda 8 style** — the July per-definition, shape-restricted Kafka path is replaced by a deployment mode (`WRITE_PATH=partitioned`): every command of every instance, whatever the BPMN, goes through `internal/cmdbus` to the Kafka partition of its instance and runs on the GoFlow instance owning it. The full regression passes on one and on three instances; a failover drill (`examples/tests/drill_partition_failover.ts`) kills an instance under load: partitions taken over in ~7 s, 60/60 instances completed. Testing it with 120 concurrent job completions found a pre-existing bug of the direct path too: some repository `...Tx` functions wrote through the connection pool instead of their transaction — not atomic, and able to exhaust the pool and hang every request. Fixed, with the job row now locked while it is completed or failed. See [`architecture/partitioned-write-path.md`](architecture/partitioned-write-path.md).
 - **Citus-backed distributed storage, Phases 1-2** — an opt-in `docker-compose.citus.yml` override brings up a Citus coordinator + 2 workers alongside the app. Phase 1: global config/lookup tables (definitions, deployments, users/roles, forms, DMN, permissions) are Citus reference tables. Phase 2: the actual per-instance runtime tables — `process_instances`, `executions`, `tasks`, `variables`, `gateway_state`, `multi_instance_executions`, `incidents` — are real, sharded, colocated Citus distributed tables, verified end to end against a real Citus cluster (not just reasoned about). This is a different architectural axis from the Kafka write path — storage sharding rather than write-path ordering — see [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md) for the full story, including two genuine pre-existing races (a termination/completion race, a parallel-gateway-join race) that Citus's added network latency exposed and this work fixed for both the Citus and default deployments. `jobs`/`timer_jobs` deliberately stay undistributed — their global `FOR UPDATE SKIP LOCKED` claim queries need their own redesign first, the one remaining piece of this effort.
 - **Citus performance follow-up: single-shard routing** — the queries against those six per-instance tables that used to filter by row ID alone (correct, but a scatter-gather across every shard) now also filter by `process_instance_id`, confirmed via `EXPLAIN` on the coordinator to flip the plan from `Task Count: 32` to `Task Count: 1`. Found and fixed a real, silent regression along the way: two `gateway_state` lookup queries weren't selecting `process_instance_id`, so a join's second-arriving branch computed its follow-up update against a zero-value UUID and silently updated zero rows — any 2+ branch parallel/inclusive gateway join got permanently stuck right after the join with no error logged. See [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md#6-performance-follow-up--route-single-shard-instead-of-scatter-gather-done-2026-07-05) for the full inventory and fix.
 - **Parallel gateway (AND fork/join) on the partitioned write path** — turned out to be architecturally free, same as the DMN business-rule-task phase: `runtime.ExecuteExecution`'s existing fork/join handling (shared with the legacy/Citus paths) already works generically regardless of who calls it, so the only change needed was a new shape in the deploy-time validator. Sibling branches' job completions are never actually concurrent at the write layer — every command for one instance hashes to the same Kafka partition and is processed strictly serially — so none of the `FOR UPDATE`-locking concerns the legacy/Citus path needs apply here. See [`architecture/event-sourced-kafka-design.md`](architecture/event-sourced-kafka-design.md) "Phase 7" for the full story.
 - **Two more gRPC RPCs: `UpdateJobRetries` and `BroadcastSignal`** — brings the gateway to 13 of the 19 RPCs the `zeebe-node` client this project verifies against actually supports. Both are thin wrappers with zero new business logic: `UpdateJobRetries` mirrors the existing REST `SetJobRetries` handler exactly, including its partitioned-write-path gate; `BroadcastSignal` needs no such gate at all, since `internal/partition.ValidateShape` never allows a signal catch event in any partitioned-write-path shape, so a partitioned instance can structurally never be one of its subscribers. Verified against the real client SDK, not a hand-rolled one.
 - **gRPC gateway completed: the last six RPCs** — `ThrowError` (reuses the BPMN error catching of the engine: activity boundary, error event sub-process, sub-process boundary), `SetVariables`, `CreateProcessInstanceWithResult`, `StreamActivatedJobs` (push counterpart of `ActivateJobs`), `DeployProcess` (deprecated alias of `DeployResource`) and `DeleteResource` (refused while instances of the definition still exist, as in Zeebe). The gateway now covers all 19 RPCs of the zeebe-node 8.3 client, verified with the real SDK and, for the two RPCs that SDK lacks, with grpc-js on its official `zeebe.proto` (suite 40).
-- **Job/timer claiming redesign — fully specified, deliberately not implemented** — scoping this surfaced a real, empirically-confirmed constraint that changed the plan: Citus refuses to plan a `FOR UPDATE` claim query on a distributed table unless it's filtered to exactly one literal instance ID, so a Partition Processor genuinely cannot "claim across the instances it owns" in a single query the way Phase 1's original assessment assumed. The resulting design (a small Citus reference table indexing claimable work, separate from a distributed table holding the full payload) is written up in full in [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md) section 5 as a ready-to-build plan, not built this pass — the actual implementation touches every job/timer creation, claim, and cleanup path and deserves its own session.
+- **Citus: jobs and timers distributed** — `jobs`, `timer_jobs` and `scope_variables` are now sharded with the other per-instance tables. Claims avoid `FOR UPDATE` (which Citus refuses across shards): candidates are read, then each is claimed by an update on its own shard that only succeeds while it is free — simpler than the hot-index design first written up. The remaining coordinator tables are Citus local tables, so they can be joined with the distributed ones; the variables `NOTIFY` trigger (Citus refuses triggers on distributed tables) is replaced by the engine notifying after each write. Full regression on a coordinator + 2 workers.
 - **In-browser BPMN Modeler** — a new `/modeler` page swaps the existing view-only `NavigatedViewer` for bpmn-js's editable `Modeler` build (already the same npm package, no new dependency for the canvas itself), plus `bpmn-js-properties-panel` + `zeebe-bpmn-moddle` (two new dependencies) so task types, gateway conditions, and every other `zeebe:`-namespaced property that actually makes a diagram deployable can be set from the UI, not just shapes and labels. New/Import/Export/Deploy toolbar; Deploy reuses the exact same `deployBpmn` REST call the file-upload flow in Definitions already uses. Verified end to end with a scripted deploy-and-run cycle of a Modeler-equivalent diagram (not just a build check) — the actual canvas/palette/properties-panel rendering itself needs a real browser to verify, which wasn't available in this environment.
 - **Per-instance permission-filtering audit** — the existing VIEW/START/MANAGE process-definition ACL only gated the process-definition list/start endpoints; everything downstream of a running instance (process-instance detail/variables/suspend/terminate, historic process/activity lists, audit logs + token history, incidents, analytics' per-key breakdown, task lists) had no permission check at all. Added a shared `service.CanAccessProcessInstance(db, userID, instanceID, level)` helper (resolves an instance ID to its owning process key, checking the live table then the historic archive, then delegates to the existing `CanAccessProcess`) and wired it into ~25 handlers across `process_instance_controller.go`, `task_controller.go`, `history_controller.go`, `historic_task_controller.go`, `audit_controller.go`, `incident_controller.go`, and `analytics_controller.go` — single-resource endpoints return 404 (matching the existing `GetDefinition` precedent of not revealing a restricted resource exists), list endpoints filter per-row. Found and removed 6 confirmed-dead functions (4 on `TaskController`, 2 on `TaskRepository`) and one dead duplicate route registration, discovered while tracing which handlers were actually reachable. The standout finding was unrelated to permissions as such: `/token-history` was listed in `pkg/middleware.PublicRoutes`, an allowlist matched by **substring**, not prefix — so `GET /engine-rest/audit/process/:id/token-history` bypassed authentication entirely, not just the ACL, for anyone with no token at all. Fixed by removing the entry; regression-covered in suite 23's new test [E].
 - **Removed Redis** — it had been fully vestigial for some time: no Go code ever constructed a client or called it (no `go-redis`/`redigo` dependency at all), the cross-instance job-wake mechanism has used Postgres `LISTEN`/`NOTIFY` from the start (see the `Cross-instance gRPC job wake-ups` entry above), and the `redis`/`redis-commander` services existed only as dead orchestration weight — `goflow`'s `depends_on: redis: condition: service_healthy` blocked app startup on a container the binary never talked to. Removed both services, the `redis_data` volume, and the unused `Redis*` fields/`RedisAddr()`/`GetRedisOptions()` from `internal/config/config.go`. Verified the stack starts clean and a spot-check of core suites still passes with Redis gone entirely.
@@ -754,8 +744,7 @@ Prioritized by value vs. effort, based on gaps identified during ongoing feature
 ### Medium-term (real features)
 
 - **Newer-Zeebe gRPC RPCs** — `MigrateProcessInstance` and `UpdateJobTimeout` exist in newer Zeebe versions than the zeebe-node 8.3 client this project verifies against, if a real client workflow needs them. `MigrateProcessInstance` specifically has no existing primitive to wrap — remapping a running instance to a different process-definition version is new engine logic, not a thin protocol translation like the other RPCs.
-- **More BPMN shapes on the partitioned write path** — inclusive gateways, multi-instance, message/signal correlation, user tasks (would need a brand-new Kafka command type, since none exists for "complete a user task" today), and process-instance modification are all explicitly rejected by today's shape validator; each is a real, scoped follow-on rather than a redesign.
 
 ### Long-term / architectural (flagged, not committed)
 
-- **Full partitioned/distributed execution** — two real, working pieces of progress exist toward this now: the [experimental Kafka write path](#event-sourced-write-path-experimental) (partition ownership for commands) and [Citus-backed distributed storage](architecture/citus-distributed-storage-design.md) (the core per-instance tables are genuinely sharded and colocated now, not just config tables). Neither is the whole picture yet, and hasn't been merged to `main` — `jobs`/`timer_jobs` still can't distribute until their claim-query redesign happens, and that redesign turned out to need more than aligning hash keys: Citus rejects any `FOR UPDATE` claim query on a distributed table that isn't filtered to exactly one literal instance ID (confirmed empirically — not even a known set of owned instance IDs is allowed), so a Partition Processor can't simply "claim across the instances it owns" in one query. The fully-specified design (a small Citus reference table indexing claimable work, separate from the distributed table holding the full job/timer payload) is written up in [`architecture/citus-distributed-storage-design.md`](architecture/citus-distributed-storage-design.md) section 5, not yet implemented. Meanwhile the default engine's app tier already scales horizontally against one Postgres (stateless instances, `SKIP LOCKED` claiming, cross-instance job wake-ups via `LISTEN`/`NOTIFY`).
+- **State on the partitions themselves** — Zeebe keeps each partition's state next to its leader; GoFlow keeps it in Postgres or Citus. Moving state onto the partition owners (with a replicated log as the source of truth) would remove the shared database as the ceiling, at the price of a different engine core — not planned.

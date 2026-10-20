@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
 	"github.com/jeremielodi/goflow/internal/service"
@@ -41,40 +40,21 @@ func (s *Server) ThrowError(ctx context.Context, req *pb.ThrowErrorRequest) (*pb
 		return nil, err
 	}
 
-	instanceID, writePath, err := partition.LookupJobOwner(s.db, jobID)
-	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "job key %d not found", req.JobKey)
-	}
-	if writePath == "partitioned" {
-		if len(vars) > 0 {
-			return nil, status.Error(codes.FailedPrecondition, "variables on ThrowError aren't supported for partitioned-write-path instances")
-		}
-		if err := partition.FailJob(instanceID, jobID, 0, req.ErrorMessage, req.ErrorCode); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-		return &pb.ThrowErrorResponse{}, nil
-	}
-
-	if len(vars) > 0 {
-		if err := s.setVariables(instanceID, uuid.Nil, false, vars, "throwError"); err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-	}
-	result, err := service.FailJob(s.db, jobID, 0, req.ErrorMessage, req.ErrorCode)
+	result, err := runtime.FailJob(ctx, s.db, runtime.FailJobArgs{
+		JobID:        jobID,
+		ErrorMessage: req.ErrorMessage,
+		ErrorCode:    req.ErrorCode,
+		Variables:    vars,
+		Source:       "throwError",
+	})
 	if err != nil {
 		return nil, mapJobError(err)
 	}
-	if result.BoundaryTriggered {
-		rt := runtime.NewRuntime(result.Graph, s.db, s.dispatcher)
-		if err := rt.ExecuteExecution(ctx, result.ExecutionID); err != nil {
-			return nil, status.Errorf(codes.Internal, "error caught, but continuing the process failed: %v", err)
+	if result.ContinueError != "" {
+		if result.PropagatedToCaller {
+			return nil, status.Errorf(codes.Internal, "error caught by the calling process, but continuing it failed: %s", result.ContinueError)
 		}
-	}
-	if result.PropagateError {
-		rt := runtime.NewRuntime(nil, s.db, s.dispatcher)
-		if _, err := rt.PropagateErrorToCaller(ctx, result.ProcessInstanceID, req.ErrorCode); err != nil {
-			return nil, status.Errorf(codes.Internal, "error caught by the calling process, but continuing it failed: %v", err)
-		}
+		return nil, status.Errorf(codes.Internal, "error caught, but continuing the process failed: %s", result.ContinueError)
 	}
 	return &pb.ThrowErrorResponse{}, nil
 }
@@ -116,11 +96,9 @@ func (s *Server) SetVariables(ctx context.Context, req *pb.SetVariablesRequest) 
 	if allowed, permErr := service.CanAccessProcessInstance(s.db, UserIDFromContext(ctx), instanceID, "START"); permErr == nil && !allowed {
 		return nil, status.Errorf(codes.NotFound, "no running process instance with key %d", req.ElementInstanceKey)
 	}
-	if def, err := s.processRepo.FindProcessDefinitionByID(inst.ProcessDefinitionID); err == nil && def.WritePath == "partitioned" {
-		return nil, status.Error(codes.FailedPrecondition, "SetVariables isn't supported for partitioned-write-path instances")
-	}
-
-	if err := s.setVariables(instanceID, scopeID, req.Local, vars, "setVariables"); err != nil {
+	if err := runtime.SetVariables(ctx, runtime.SetVariablesArgs{
+		InstanceID: instanceID, ScopeID: scopeID, Local: req.Local, Variables: vars, Source: "setVariables",
+	}); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	key, err := s.zeebeKeys.GetOrAssignKey("set_variables", uuid.New())
@@ -128,29 +106,6 @@ func (s *Server) SetVariables(ctx context.Context, req *pb.SetVariablesRequest) 
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.SetVariablesResponse{Key: key}, nil
-}
-
-// setVariables sets vars on scopeID (uuid.Nil: the instance), locally or
-// propagating outwards.
-func (s *Server) setVariables(instanceID, scopeID uuid.UUID, local bool, vars map[string]interface{}, source string) error {
-	tx, err := s.db.Beginx()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if local && scopeID != uuid.Nil {
-		err = repository.SetLocalVariablesTx(tx, instanceID, scopeID, vars)
-	} else {
-		err = repository.SetVariablesTx(tx, instanceID, scopeID, vars)
-	}
-	if err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	service.LogAuditErr("variables merged", service.NewAuditService(s.db).LogVariablesMerged(instanceID, vars, source))
-	return nil
 }
 
 // ── CreateProcessInstanceWithResult ─────────────────────────────────────

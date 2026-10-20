@@ -213,6 +213,9 @@ func (r *EngineRepository) GetDueTimers(ctx context.Context, now time.Time) ([]m
 // ClaimDueTimers atomically marks due timers as triggered and returns them.
 // Uses FOR UPDATE SKIP LOCKED so concurrent scheduler instances never double-fire.
 func (r *EngineRepository) ClaimDueTimers(ctx context.Context, limit int) ([]models.TimerJob, error) {
+	if distributedClaims.Load() {
+		return claimDueTimers(ctx, r.db, limit)
+	}
 	var timers []models.TimerJob
 	query := `
         WITH to_claim AS (
@@ -571,7 +574,7 @@ func (r *EngineRepository) UpdateProcessVariablesTx(tx *sqlx.Tx, instanceID uuid
 	} else {
 		_, err = tx.Exec(`INSERT INTO public.variables (id, process_instance_id, data, updated_at) VALUES ($1, $2, $3, NOW())`, uuid.New(), instanceID, jsonData)
 	}
-	return err
+	return notifyVariables(tx, instanceID, err)
 }
 
 // MergeProcessVariables merges new variables with existing ones
@@ -853,7 +856,7 @@ func (r *EngineRepository) CreateVariablesTx(tx *sqlx.Tx, instanceID uuid.UUID, 
 		(id, process_instance_id, data, updated_at)
 		VALUES ($1, $2, $3, $4)
 	`, uuid.New(), instanceID, jsonData, updatedAt)
-	return err
+	return notifyVariables(tx, instanceID, err)
 }
 
 // SetProcessVariableTx sets a single process variable within a transaction
@@ -884,7 +887,7 @@ func (r *EngineRepository) SetProcessVariableTx(tx *sqlx.Tx, instanceID uuid.UUI
 		_, err = tx.Exec(`INSERT INTO public.variables (id, process_instance_id, data, updated_at) VALUES ($1, $2, $3, NOW())`,
 			uuid.New(), instanceID, newData)
 	}
-	return err
+	return notifyVariables(tx, instanceID, err)
 }
 
 // ============================================================
@@ -952,4 +955,39 @@ func (r *EngineRepository) CreateProcessInstanceWithVariables(processKey string,
 	}
 
 	return instanceID, execID, nil
+}
+
+// GetProcessGraphByDefinitionID returns a definition's graph, from the
+// same cache as GetProcessGraphByInstanceID.
+func (r *EngineRepository) GetProcessGraphByDefinitionID(definitionID uuid.UUID) (*engine.ProcessGraph, error) {
+	defKey := definitionID.String()
+	graphCacheMu.RLock()
+	cached := graphCache[defKey]
+	graphCacheMu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+
+	var raw []byte
+	if err := r.db.Get(&raw, `SELECT parsed_graph FROM public.process_definitions WHERE id = $1`, definitionID); err != nil {
+		return nil, err
+	}
+	var graph engine.ProcessGraph
+	if err := json.Unmarshal(raw, &graph); err != nil {
+		return nil, err
+	}
+
+	graphCacheMu.Lock()
+	defer graphCacheMu.Unlock()
+	if existing, ok := graphCache[defKey]; ok {
+		return existing, nil
+	}
+	if len(graphCache) >= graphCacheMaxEntries {
+		for k := range graphCache {
+			delete(graphCache, k)
+			break
+		}
+	}
+	graphCache[defKey] = &graph
+	return &graph, nil
 }

@@ -2,7 +2,6 @@ package eventlog
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -34,36 +33,11 @@ const ringBufferSize = 500
 // projRepo — see architecture/event-sourced-kafka-design.md. This proves
 // engine state is reconstructable from the event stream; it is NOT a real
 // read-model replacement.
-//
-// Consumer also backs Phase 1's Command Gateway synchronous bridge (see
-// internal/partition/gateway.go): WaitFor registers a channel keyed by
-// instance ID, fed by the same per-event loop that already drives record/
-// project, so any replica's HTTP handler can block for the domain event
-// produced by whichever replica's Partition Processor actually handled the
-// command — every replica already runs its own Consumer against the full
-// topic, so this requires no new cross-replica coordination.
 type Consumer struct {
 	mu       sync.Mutex
 	ring     []RecentEvent
 	reader   *kafka.Reader
 	projRepo *repository.EventLogProjectionRepository
-
-	waitersMu sync.Mutex
-	waiters   map[string][]*Waiter
-}
-
-// globalConsumer mirrors Producer's global-singleton pattern (see
-// producer.go) — set once at boot, used by internal/partition/gateway.go's
-// Command Gateway bridge without threading a Consumer dependency through
-// internal/service.
-var globalConsumer *Consumer
-
-func SetGlobalConsumer(c *Consumer) {
-	globalConsumer = c
-}
-
-func GlobalConsumer() *Consumer {
-	return globalConsumer
 }
 
 // NewConsumer returns the projector: it folds events into the
@@ -77,17 +51,14 @@ func NewConsumer(brokers []string, groupID string, db *sqlx.DB) *Consumer {
 			GroupID: groupID,
 		}),
 		projRepo: repository.NewEventLogProjectionRepository(db),
-		waiters:  make(map[string][]*Waiter),
 	}
 }
 
 // NewWatcher returns this replica's watcher: it reads every partition of
-// the topic, from now on, to feed the recent-events ring and wake the
-// Command Gateway's waiters (Register). Its consumer group is unique to
-// this replica: with several replicas sharing a group, Kafka splits the
-// partitions between them, and a replica waiting for the outcome of a
-// command it produced would never see the event when another replica
-// owns that instance's partition. It doesn't project (NewConsumer does).
+// the topic, from now on, to feed the recent-events ring. Its consumer
+// group is unique to this replica, so it sees every event (in a shared
+// group Kafka would split the partitions between replicas). It doesn't
+// project (NewConsumer does).
 func NewWatcher(brokers []string) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
@@ -96,86 +67,6 @@ func NewWatcher(brokers []string) *Consumer {
 			GroupID:     "goflow-eventlog-watch-" + uuid.New().String(),
 			StartOffset: kafka.LastOffset,
 		}),
-		waiters: make(map[string][]*Waiter),
-	}
-}
-
-// WaitFor blocks until an event of type kind is observed for instanceID, or
-// timeout elapses. Split into Register (fast, synchronous) + Await
-// (blocking) rather than one call, so callers can register interest
-// *before* producing the command that will eventually cause the event —
-// matching the snapshot-before-check discipline repository.JobWakeChannel
-// already uses elsewhere in this codebase, to avoid missing an event that
-// arrives in the gap between producing a command and starting to wait for
-// its result.
-func (c *Consumer) Register(instanceID, kind string) *Waiter {
-	w := &Waiter{c: c, instanceID: instanceID, kind: kind, ch: make(chan *pb.Envelope, 1)}
-	c.waitersMu.Lock()
-	c.waiters[instanceID] = append(c.waiters[instanceID], w)
-	c.waitersMu.Unlock()
-	return w
-}
-
-// Waiter is a single registered interest in the next event of Kind for
-// InstanceID, returned by Consumer.Register.
-type Waiter struct {
-	c          *Consumer
-	instanceID string
-	kind       string
-	ch         chan *pb.Envelope
-}
-
-// Await blocks until the awaited event arrives, ctx is cancelled, or
-// timeout elapses, then unregisters itself either way.
-func (w *Waiter) Await(ctx context.Context, timeout time.Duration) (*pb.Envelope, error) {
-	defer w.c.unregister(w)
-	select {
-	case env := <-w.ch:
-		return env, nil
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("eventlog: timed out after %s waiting for %s on instance %s", timeout, w.kind, w.instanceID)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// Cancel unregisters w without ever having received an event — for a
-// caller that pre-registered a spare waiter (to avoid a delivery gap while
-// re-registering after a mismatched event) but didn't end up needing it.
-func (w *Waiter) Cancel() {
-	w.c.unregister(w)
-}
-
-func (c *Consumer) unregister(w *Waiter) {
-	c.waitersMu.Lock()
-	defer c.waitersMu.Unlock()
-	ws := c.waiters[w.instanceID]
-	for i, cur := range ws {
-		if cur == w {
-			c.waiters[w.instanceID] = append(ws[:i], ws[i+1:]...)
-			break
-		}
-	}
-	if len(c.waiters[w.instanceID]) == 0 {
-		delete(c.waiters, w.instanceID)
-	}
-}
-
-// notifyWaiters delivers env to every waiter registered for its instance
-// whose kind matches. Best-effort/at-most-once per waiter (buffered
-// channel, single send) — a waiter that already timed out and unregistered
-// just misses it, which is fine since WaitFor's caller treats a timeout as
-// a real error already.
-func (c *Consumer) notifyWaiters(instanceID, kind string, env *pb.Envelope) {
-	c.waitersMu.Lock()
-	defer c.waitersMu.Unlock()
-	for _, w := range c.waiters[instanceID] {
-		if w.kind == kind {
-			select {
-			case w.ch <- env:
-			default:
-			}
-		}
 	}
 }
 
@@ -205,7 +96,6 @@ func (c *Consumer) Run(ctx context.Context) {
 			continue
 		}
 		c.record(recent) // the watcher
-		c.notifyWaiters(env.ProcessInstanceId, recent.Type, &env)
 	}
 }
 

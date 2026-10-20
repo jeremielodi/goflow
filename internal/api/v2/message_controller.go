@@ -1,7 +1,6 @@
 package v2
 
 import (
-	"context"
 	"errors"
 	"time"
 
@@ -40,7 +39,7 @@ func (mc *MessageController) PublishMessage(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"title": "INVALID_ARGUMENT", "detail": "name is required"})
 	}
 
-	res, err := runtime.PublishMessage(context.Background(), mc.inner.DB(), mc.inner.Dispatcher(), runtime.PublishedMessage{
+	res, err := runtime.Publish(c.Context(), runtime.PublishedMessage{
 		Name:           req.Name,
 		CorrelationKey: req.CorrelationKey,
 		Variables:      req.Variables,

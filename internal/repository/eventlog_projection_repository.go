@@ -37,7 +37,7 @@ func (r *EventLogProjectionRepository) UpsertInstance(id uuid.UUID, processDefin
 			process_key = COALESCE(EXCLUDED.process_key, eventlog_projected_instances.process_key),
 			version = COALESCE(EXCLUDED.version, eventlog_projected_instances.version),
 			status = EXCLUDED.status,
-			updated_at = NOW()
+			updated_at = EXCLUDED.updated_at
 	`, id, processDefinitionID, processKey, version, status, startedAt)
 	return err
 }
@@ -54,7 +54,7 @@ func (r *EventLogProjectionRepository) UpdateInstanceStatus(id uuid.UUID, status
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
 			ended_at = EXCLUDED.ended_at,
-			updated_at = NOW()
+			updated_at = EXCLUDED.updated_at
 	`, id, status, endedAt)
 	return err
 }
@@ -67,7 +67,7 @@ func (r *EventLogProjectionRepository) UpsertJob(id, processInstanceID uuid.UUID
 		VALUES ($1, $2, $3, $4, $5, NOW())
 		ON CONFLICT (id) DO UPDATE SET
 			status = EXCLUDED.status,
-			updated_at = NOW()
+			updated_at = EXCLUDED.updated_at
 	`, id, processInstanceID, executionID, jobType, status)
 	return err
 }
@@ -83,7 +83,7 @@ func (r *EventLogProjectionRepository) UpdateJobStatus(id, processInstanceID uui
 			status = EXCLUDED.status,
 			error_message = COALESCE(EXCLUDED.error_message, eventlog_projected_jobs.error_message),
 			retries_remaining = COALESCE(EXCLUDED.retries_remaining, eventlog_projected_jobs.retries_remaining),
-			updated_at = NOW()
+			updated_at = EXCLUDED.updated_at
 	`, id, processInstanceID, status, errorMessage, retriesRemaining)
 	return err
 }

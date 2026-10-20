@@ -1,8 +1,9 @@
 # GoFlow — Citus-Backed Distributed Storage (Design Scope)
 
-Status: **Phase 1 (infrastructure + reference tables) and Phase 2 (the
-per-instance colocation group) both shipped on the `dev` branch,
-2026-07-05.** This is a separate architectural axis from
+Status: **complete (2026-10-20)** — reference tables, the per-instance
+colocation group (jobs and timers included, section 5), local tables in
+the metadata, full regression on a real cluster. Phases 1–2 shipped
+2026-07-05. This is a separate architectural axis from
 `event-sourced-kafka-design.md` — that document is about the *write path*
 (how a command reaches Postgres); this one is about *storage itself* (how
 many Postgres nodes the data lives on). They're complementary, not
@@ -230,120 +231,47 @@ confused with a Citus-specific one):
   the query/race fixes changed behavior for the default deployment path.
   All green.
 
-## 5. Job/timer claiming redesign (fully specified, not implemented)
+## 5. Jobs, timers and the rest of the coordinator tables (done, 2026-10-20)
 
-Third of 5 items from a user-directed sequential list ("fix all of them,
-one at a time" — see section 6 for item 1, `architecture/event-sourced-kafka-design.md`
-Phase 7 for item 2). Scoped via `AskUserQuestion` to "partitioned instances
-only" — legacy instances' `jobs`/`timer_jobs` stay exactly as they are —
-after finding this was a real fork: legacy's "any replica claims any row"
-model has no ownership concept at all, unlike a Kafka-partitioned instance,
-which already has one (a Partition Processor owning that instance's
-Kafka partition).
+The plan written here in July (a reference "claim index" table next to a
+distributed payload table) was not needed. What was built instead:
 
-### The empirical finding that reshapes this design
+- **`jobs`, `timer_jobs` and `scope_variables` are distributed**, colocated
+  with `process_instances` like the seven tables of phase 2. The bootstrap
+  re-keys `jobs`/`timer_jobs` to `(process_instance_id, id)` on Citus only
+  (Citus requires the distribution column in the primary key); the plain
+  Postgres schema keeps `id`.
+- **Claims without `FOR UPDATE`** (`repository.SetDistributedClaims`). Citus
+  refuses `SELECT … FOR UPDATE` on a distributed table unless the query
+  targets one instance — confirmed in July. So a claim reads candidates
+  without a lock (a multi-shard `SELECT`, which Citus accepts), then claims
+  each with an `UPDATE … WHERE process_instance_id = $1 AND id = $2 AND
+  status = 'pending' RETURNING …`: routed to one shard, and only successful
+  while the row is still free. Two claimers can't get the same job; the
+  loser moves on to its next candidate. Same for due timers
+  (`is_triggered = false`). Plain Postgres keeps `FOR UPDATE SKIP LOCKED`.
+- **Locking a job while it is completed or failed**
+  (`GetJobWithExecutionTx`) first reads the job's instance, then locks with
+  `FOR UPDATE OF j` filtered on that instance — a single-shard query Citus
+  accepts. The job writes name the instance too, so they hit one shard.
+- **Citus local tables.** Every table that is neither reference nor
+  distributed (subscriptions, boundary events, audit, history…) is added
+  to the metadata with `citus_add_local_table_to_metadata` (after
+  registering the coordinator with `citus_set_coordinator_host`). A join
+  between a distributed table and a table Citus doesn't know is refused
+  ("direct joins between distributed and local tables are not
+  supported"); with local tables in the metadata Citus plans them.
+- **No trigger on the variables tables.** Citus won't distribute a table
+  with triggers, and a `NOTIFY` fired on a worker would never reach the
+  coordinator's `LISTEN`. On Citus the bootstrap drops the two triggers of
+  migration 004 and the engine sends the `goflow_variables` notification
+  itself after every variables write (`repository.SetAppVariableNotify`).
+- **No `NOW()` where Citus refuses it**: in an `INSERT … ON CONFLICT DO
+  UPDATE SET` on a distributed table, or compared to a column in an
+  `UPDATE`. The time is passed from Go instead.
 
-Before designing an implementation, the working assumption from Phase 1/2
-— "align the Citus shard key with the Kafka partition key so a Partition
-Processor claims its own due jobs/timers by a known instance-ID set" — was
-tested directly against the real Citus cluster, on a disposable scratch
-table shaped exactly like `jobs` (composite `(process_instance_id, id)`
-primary key, distributed on `process_instance_id`):
-
-```sql
--- No filter at all: rejected outright.
-SELECT id FROM test_jobs WHERE job_type = 'x' AND status = 'pending'
-  FOR UPDATE SKIP LOCKED;
--- ERROR: could not run distributed query with FOR UPDATE/SHARE commands
--- HINT: Consider using an equality filter on the distributed table's
---       partition column.
-
--- A known, finite set of owned instance IDs: ALSO rejected.
-SELECT id FROM test_jobs WHERE process_instance_id = ANY(ARRAY[...])
-  AND job_type = 'x' AND status = 'pending' FOR UPDATE SKIP LOCKED;
--- Same error.
-
--- Exactly one literal instance ID: works, routes to one shard (Task Count: 1).
-SELECT id FROM test_jobs WHERE process_instance_id = '11111111-...'::uuid
-  AND job_type = 'x' AND status = 'pending' FOR UPDATE SKIP LOCKED;
-```
-
-This is a harder constraint than "a `FOR UPDATE` claim query can't join a
-distributed table" (Phase 2's finding, worked around by splitting one
-query into two). Citus doesn't just discourage a filterless or
-multi-instance claim scan — **it refuses to plan one at all.** This rules
-out the "known instance-ID set" framing from Phase 1's original assessment
-outright: a Partition Processor owning, say, 40 active instances cannot
-claim across all 40 in one query, or even in one query per Kafka
-partition — only one process instance at a time. So the real problem
-isn't just "distribute the table and repoint the claim query" — it's "a
-Partition Processor needs to discover *which one* of its own instances has
-a due job/timer without a broad scan," which is a second, structurally
-different problem from the storage-sharding this whole document has
-solved for the other 7 tables.
-
-### The design: separate the hot claiming index from the distributed payload
-
-`jobs`/`timer_jobs` stay completely untouched — no schema change, no new
-column, zero risk to the legacy path. Two new tables are added for the
-partitioned write path only:
-
-- **`partitioned_jobs` / `partitioned_timer_jobs`** — Citus-distributed by
-  `process_instance_id`, colocated with the existing 7-table group. Same
-  columns as `jobs`/`timer_jobs`. Holds the full row for every job/timer
-  belonging to a partitioned-write-path instance.
-- **`job_claim_index` / `timer_claim_index`** — small, kept as Citus
-  *reference* tables (like Phase 1's global config tables — replicated to
-  every node, globally scannable, no distribution-column restriction).
-  Holds only what a claim query needs to find a candidate:
-  `(id, process_instance_id, job_type or event_type, due_at or created_at,
-  locked_by, locked_until)` — not the payload.
-
-Claiming becomes two queries instead of one, but each is legal and cheap:
-
-1. `SELECT ... FROM job_claim_index WHERE job_type = $1 AND status =
-   'pending' LIMIT $2 FOR UPDATE SKIP LOCKED` — a plain reference-table
-   scan, exactly the same shape and cost as today's query against `jobs`
-   directly (reference tables aren't sharded, so this restriction never
-   applies to them).
-2. For each claimed row, `SELECT ... FROM partitioned_jobs WHERE
-   process_instance_id = $1 AND id = $2` — a single-equality, single-shard
-   fetch of the full payload, the same pattern already proven throughout
-   section 6.
-
-Every job/timer creation path for a partitioned instance writes to *both*
-tables in the same transaction (the index row and the full row); every
-completion/failure/deletion path removes from *both*. This is the standard
-"hot index, cold payload" split used by real queueing systems when the
-data used to find work is much smaller and higher-churn than the data
-describing the work itself — not a novel invention, but new to GoFlow, and
-genuinely invasive: job creation (`executor_service_task.go` and others),
-timer creation (every executor that schedules one), the external-task
-fetch path (`FetchAndLockJobsTx`), `TimerScheduler.processDueTimers`, and
-every completion/failure/cleanup path would all need a write-path branch
-choosing legacy tables vs. this pair — a meaningfully larger diff than any
-single item shipped in this session so far, and one that deserves its own
-implementation pass with the same two-stage (plain-stack-first,
-Citus-second) verification discipline as everything above, not a
-same-session add-on.
-
-### Why this wasn't implemented in this pass
-
-Explicitly deferred at the user's direction after the empirical finding
-surfaced real, unplanned-for complexity (a second research problem, not
-just an implementation step) partway through scoping. The design above is
-concrete enough to build directly from when prioritized — the schema
-shape, the two-write/two-read pattern, and the exact set of call sites
-needing a write-path branch are all specified — but actually threading
-that branch through every job/timer touchpoint, plus full two-stack
-regression verification, is real, multi-file work that belongs in its own
-pass.
-
-Once implemented, `jobs`/`timer_jobs` (for partitioned instances) sharded
-and colocated with the rest of the group is the point at which GoFlow
-would have a genuine answer to Zeebe's per-partition storage model — not
-before. Everything else that was scatter-gathering on the six per-instance
-tables is already routed single-shard — see section 6.
+The full integration regression runs on a coordinator + 2 workers
+(`COMPOSE_FILE="docker-compose.yaml;docker-compose.citus.yml"`).
 
 ## 6. Performance follow-up — route single-shard instead of scatter-gather (done, 2026-07-05)
 

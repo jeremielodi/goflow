@@ -9,12 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jeremielodi/goflow/internal/engine"
 	"github.com/jeremielodi/goflow/internal/events"
-	"github.com/jeremielodi/goflow/internal/partition"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/internal/runtime"
-	"github.com/jeremielodi/goflow/internal/service"
 	"github.com/jmoiron/sqlx"
 )
 
@@ -196,37 +193,10 @@ func (p *WorkerPool) processStartProcess(job Job) JobResult {
 		return JobResult{Success: false, Error: fmt.Errorf("process definition not found: %w", err)}
 	}
 
-	// Build graph from BPMN
-	graph, err := engine.BuildGraphForProcess([]byte(procDef.BpmnXML), job.ProcessKey)
-	if err != nil {
-		log.Printf("❌ Failed to build graph: %v", err)
-		return JobResult{Success: false, Error: fmt.Errorf("failed to build graph: %w", err)}
-	}
-
-	// Phase 1 (see architecture/event-sourced-kafka-design.md): definitions
-	// flagged write_path = 'partitioned' start via the Command Gateway,
-	// which already blocks for confirmation — no separate async execute
-	// step needed, unlike the legacy path below.
-	if procDef.WritePath == "partitioned" {
-		instanceID, _, err := partition.StartProcess(procDef, procDef.TenantID, job.Variables)
-		if err != nil {
-			log.Printf("❌ Failed to start partitioned process instance: %v", err)
-			return JobResult{Success: false, Error: err}
-		}
-		log.Printf("✅ Partitioned process instance %s started successfully", instanceID)
-		return JobResult{Success: true, Error: nil}
-	}
-
-	instanceID, execID, err := service.StartProcessInstance(p.db, graph, procDef.ID, procDef.TenantID, job.Variables)
-	if err != nil {
-		log.Printf("❌ Failed to start process instance: %v", err)
-		return JobResult{Success: false, Error: err}
-	}
-
-	// Execute asynchronously
-	rt := runtime.NewRuntime(graph, p.db, p.dispatcher)
+	// Run asynchronously: the request was already answered.
 	go func() {
-		if err := rt.ExecuteExecution(context.Background(), execID); err != nil {
+		instanceID, _, err := runtime.StartInstance(context.Background(), procDef.ID, procDef.TenantID, job.Variables)
+		if err != nil {
 			log.Printf("❌ Execution error for instance %s: %v", instanceID, err)
 		} else {
 			log.Printf("✅ Process instance %s started successfully", instanceID)

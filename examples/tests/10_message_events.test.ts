@@ -13,7 +13,7 @@ import { GoFlowClient, runSuite, assert, sleep } from './client';
 
 const BPMN = path.join(__dirname, 'bpmn', '10_order_notification.bpmn');
 const client = new GoFlowClient();
-const BASE = 'http://localhost:8080';
+const BASE = 'http://127.0.0.1:8080';
 
 async function correlateMessage(
   token: string,
