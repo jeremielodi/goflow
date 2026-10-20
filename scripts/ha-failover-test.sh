@@ -24,6 +24,7 @@ TOKEN="$(curl -sf -X POST "$URL/auth/login" -H 'Content-Type: application/json' 
 auth=(-H "Authorization: Bearer $TOKEN")
 
 BPMN="failover-drill.$$.bpmn" # current directory: a Windows curl reads no /tmp path
+trap 'rm -f "$BPMN"' EXIT
 cat > "$BPMN" <<'BPMN'
 <?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" id="d" targetNamespace="t">
@@ -38,7 +39,6 @@ cat > "$BPMN" <<'BPMN'
 BPMN
 curl -sf "${auth[@]}" -F "resources=@$BPMN;filename=failover.bpmn" -F deployment-name=failover-drill \
 	"$URL/engine-rest/deployment/create" >/dev/null
-rm -f "$BPMN"
 
 start() { curl -sf "${auth[@]}" -H 'Content-Type: application/json' -d '{"variables":{}}' \
 	"$URL/engine-rest/v2/process-definitions/FailoverDrill/start" | json processInstanceId; }
