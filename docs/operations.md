@@ -1,5 +1,7 @@
 # Operations
 
+Starting on one server and adding more later: [Ajouter des serveurs](adding-servers.md).
+
 ## Database migrations
 
 Schema changes are plain SQL files applied by hand, never by the application — see [`database/migrations/README.md`](../database/migrations/README.md).

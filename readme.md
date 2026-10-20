@@ -172,6 +172,7 @@ Design decisions and the partitioned write path: [docs/architecture.md](docs/arc
 - [Architecture](docs/architecture.md) — design decisions, partitioned write path
 - [Environment Variables](docs/configuration.md) — every setting
 - [Operations](docs/operations.md) — migrations, metrics, backups, scaling, high availability
+- [Ajouter des serveurs](docs/adding-servers.md) — de 1 à 4 serveurs et plus : quels fichiers, et ce qu'il faut faire côté base de données à chaque étape
 - [Integration Tests](docs/testing.md) — the suites and how to run them
 - [Roadmap](docs/roadmap.md) — what's done and what's next
 - [`architecture/`](architecture/) — design documents (partitioned write path, Citus storage, history of the event-sourced phases)

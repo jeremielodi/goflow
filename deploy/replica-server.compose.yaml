@@ -1,0 +1,29 @@
+# deploy/replica-server.compose.yaml — the second server: a copy of the
+# database, kept up to date continuously, ready to take over.
+#
+# On the second server, next to docker-compose.yaml (same .env):
+#
+#   PRIMARY_HOST=10.0.0.1 docker compose -f docker-compose.yaml \
+#     -f deploy/replica-server.compose.yaml up -d postgres
+#
+# "postgres" here is the replica: on its first start it copies the first
+# server's database (pg_basebackup), then follows it. Only postgres is
+# started: GoFlow keeps running on the first server.
+#
+# If the first server is lost, promote it and start GoFlow here — see
+# docs/adding-servers.md:
+#
+#   docker exec goflow-postgres psql -U goflow -c "SELECT pg_promote()"
+#   docker compose -f docker-compose.yaml -f deploy/replica-server.compose.yaml up -d
+
+services:
+  postgres:
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: ${PRIMARY_HOST:?PRIMARY_HOST must be the first server's address}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+      POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-200}
+    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
+    command: []
+    volumes:
+      - ./deploy/replica-entrypoint.sh:/replica-entrypoint.sh:ro
