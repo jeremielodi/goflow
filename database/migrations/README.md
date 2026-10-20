@@ -31,6 +31,29 @@ Si une ligne affiche `MANQUANT`, rejouer d'abord la migration archivée
 correspondante (elles sont toutes idempotentes), puis relancer la
 vérification.
 
+## Migrations à appliquer
+
+Dans l'ordre, après la baseline, chacune une seule fois (elles sont
+idempotentes : une exécution en double ne casse rien). Toutes ajoutent
+sans rien modifier aux données existantes.
+
+| Version | Fichier | Ce qu'elle ajoute | Pour |
+|---|---|---|---|
+| 001 | `001_published_messages.sql` | tables `published_messages`, `published_message_correlations` | messages Camunda 8 (durée de vie, déduplication) |
+| 002 | `002_scope_variables.sql` | table `scope_variables` | variables locales (sous-processus, multi-instance) |
+| 003 | `003_incident_execution.sql` | colonne `incidents.execution_id` | incidents qui relancent l'élément à leur résolution |
+| 004 | `004_variables_notify.sql` | fonction et triggers `goflow_notify_variables` | événements conditionnels réévalués à chaque écriture de variable |
+| 005 | `005_hot_path_indexes.sql` | index sur `jobs`, `timer_jobs`, `event_subscriptions`… | performance avec beaucoup d'instances vivantes |
+
+Pour voir où en est une base :
+
+```sql
+SELECT version, description, applied_at FROM schema_migrations ORDER BY version;
+```
+
+Une base neuve créée avec `database/01_schema.sql` les contient déjà
+toutes (et le cluster haute disponibilité aussi, via `deploy/ha/ha-init.sh`).
+
 ## Écrire une nouvelle migration
 
 1. Créer `NNN_description_courte.sql` avec le numéro suivant (`001_...`,

@@ -88,7 +88,9 @@ Conditional events are re-evaluated as soon as a variable of their instance chan
 | WebSocket real-time events (`/ws/tasks`) | ✅ |
 | React frontend (Operate + Tasklist-lite) | ✅ |
 | Docker / Docker Compose deployment | ✅ |
-| Horizontal scaling (PostgreSQL SKIP LOCKED + cross-instance job wake-ups) | ✅ |
+| Horizontal scaling: several instances behind nginx, PgBouncer, read replica, background archiving (see [Operations](#horizontal-scaling)) | ✅ |
+| Postgres high availability: Patroni cluster, synchronous replication, automatic failover through HAProxy (see [Operations](#postgres-high-availability)) | ✅ |
+| Backups (`pg_dump`, standalone or through the cluster) with a restore check | ✅ |
 | gRPC / native Zeebe protocol | ✅ all 19 RPCs of the zeebe-node 8.3 client protocol (`MigrateProcessInstance`/`UpdateJobTimeout` from newer Zeebe versions not yet) |
 | Kafka-partitioned write path (opt-in, per definition) | 🧪 experimental — see [below](#event-sourced-write-path-experimental) |
 
@@ -376,13 +378,13 @@ Alongside the default transactional engine, GoFlow also ships an **opt-in, per-p
 - **What's gated today** — start, complete, fail, retry-reset, incident-resolution, timer firing, and termination are all routed through the gateway for a partitioned instance, so nothing can bypass partition ownership and race the processor's writes.
 - **Validated shapes** — a deploy-time shape validator accepts a linear service-task chain, an exclusive-gateway diamond, a DMN business rule task, an attached boundary error event, a single intermediate timer, and a parallel-gateway fork/join (AND semantics, unconditional — unlike the diamond's XOR). Anything else (inclusive gateways, multi-instance, message/signal correlation, process-instance modification) is explicitly rejected at flip-time rather than silently unsafe.
 - **Requires** `KAFKA_BROKERS` — already wired to the bundled Redpanda service in `docker-compose.yaml`, nothing extra to configure to try it locally.
-- **Status** — real, tested code (dedicated suites 26–34 in the [integration tests](#integration-tests)), but experimental: not the default, and not yet merged to `main`.
+- **Status** — real, tested code (dedicated suites 26–34 in the [integration tests](#integration-tests)), but experimental: not the default.
 
 ---
 
 ## Integration Tests
 
-34 test suites covering every major feature, run against a real Docker Postgres+app stack:
+51 test suites covering every major feature, run against a real Docker Postgres+app stack:
 
 ```bash
 cd examples/tests
@@ -438,6 +440,29 @@ npx ts-node run_all.ts
 | 33 | Partitioned Write Path — instance termination + modification gating |
 | 34 | Partitioned Write Path — parallel-gateway fork/join (AND semantics) |
 
+**BPMN coverage and Camunda 8 semantics** (35–50):
+
+| Suite | Feature |
+|---|---|
+| 35 | Embedded sub-process |
+| 36 | BPMN element coverage (manual/send/receive tasks, throw/link/terminate/error events) |
+| 37 | Event sub-processes and implicit end |
+| 38 | Boundary events |
+| 39 | Native FEEL |
+| 40 | gRPC gateway, remaining RPCs |
+| 41 | Escalation events |
+| 42 | Conditional events |
+| 43 | Compensation |
+| 44 | Camunda 8 script tasks |
+| 45 | Camunda 8 message semantics (correlation keys, time to live, message start) |
+| 46 | Timer and signal start events |
+| 47 | Camunda 8 timers (cycles, cron, FEEL) |
+| 48 | Variable scopes and multi-instance |
+| 49 | Call activities (variables, errors, escalations, termination) |
+| 50 | Message end events, runtime incidents, untyped tasks, nested compensation |
+
+The same suites run against several instances behind the load balancer, and against the high-availability cluster (`COMPOSE_FILE` with the files of [Operations](#operations), plus `GOFLOW_REPLICAS=3` for several instances).
+
 ---
 
 ## Environment Variables
@@ -488,6 +513,31 @@ SUPER_USER_PASSWORD=admin123
 # FEEL-to-CEL path decides, native FEEL runs alongside and mismatches are
 # logged), feel (native interpreter decides), cel (legacy only)
 # FEEL_MODE=shadow
+
+# Connection pool per GoFlow instance (keep instances × this under
+# Postgres's max_connections, or put PgBouncer in front)
+# DB_MAX_OPEN_CONNS=80
+
+# Finished instances: archived in the background (async, default) or in the
+# call that finishes them (sync)
+# ARCHIVE_MODE=async
+
+# Several instances (set by docker-compose.scale.yaml, see Operations):
+# relay task events between instances for SSE/WebSocket clients
+# TASK_EVENTS_FANOUT=true
+# with PgBouncer in front of Postgres: where session-level work (LISTEN,
+# advisory locks) reaches Postgres directly
+# DB_DIRECT_HOST=postgres
+# DB_DIRECT_PORT=5432
+# read replica for history and analytics (unset = the primary)
+# DB_READ_HOST=postgres-replica
+# DB_READ_PORT=5432
+
+# High-availability cluster (deploy/ha, see Operations): passwords of the
+# Patroni nodes, the same on every node
+# PG_SUPERUSER_PASSWORD=<random value>
+# PG_STANDBY_PASSWORD=<random value>
+# PG_ADMIN_PASSWORD=<random value>
 
 # Citus-backed distributed storage (optional — see below)
 # leave unset (the default) to run on a single plain Postgres instance;
@@ -657,7 +707,9 @@ GoFlow deliberately targets both REST API shapes with one engine. It is **not** 
 
 **Solid REST-shape parity with Camunda 8:** `/v2/...` mirrors job activation, user-tasks, process-instance modification/search, DMN evaluation, forms, and flownode/incident/variable search. On top of that, a native gRPC gateway implements Zeebe's actual wire protocol for all 19 RPCs the zeebe-node 8.3 client speaks — job activation (long poll and `StreamActivatedJobs` push), completion, failure and `ThrowError`, instance creation (including `CreateProcessInstanceWithResult`), deployment and `DeleteResource`, messages, signals, `SetVariables`, incidents, decisions and instance modification — so real Zeebe client SDKs can talk to GoFlow directly on port `26500`, not just HTTP clients.
 
-**Where it's architecturally different, not just missing a feature:** the default engine is a single Postgres-backed transactional engine, not Zeebe's partitioned/distributed broker model. The app tier itself is stateless and already scales horizontally — job/timer claiming uses `SKIP LOCKED`, and cross-instance gRPC job wake-ups go through Postgres `LISTEN`/`NOTIFY` — but there's one shared Postgres primary behind it, so this scales up (bigger box, read replicas, sharding via an extension like Citus) rather than out the way Zeebe's Raft-replicated, no-shared-database partitions do. The [experimental Kafka-partitioned write path](#event-sourced-write-path-experimental) is a real, working step toward closing that gap for a growing (but still narrow) set of BPMN shapes — not a full answer yet.
+**Camunda 8 BPMN semantics:** beyond the API shapes, the engine executes models the way Camunda 8 does — `zeebe:` extensions (script tasks, `zeebe:calledElement`, `zeebe:loopCharacteristics`, `zeebe:subscription` correlation keys, I/O mappings), local variable scopes, multi-instance on any activity, call activities that pass variables and propagate errors and escalations, message buffering with a time to live, timer and signal start events, cron timers, runtime incidents that resolve by running the element again — each one covered by the integration suites (35–50). Untyped tasks pass straight through, as in Camunda 8.
+
+**Where it's architecturally different, not just missing a feature:** the default engine is a Postgres-backed transactional engine, not Zeebe's partitioned/distributed broker model. The application tier runs as several instances behind a load balancer (job/timer claiming with `SKIP LOCKED`, wake-ups and task events relayed through Postgres `NOTIFY`), and Postgres itself can run as a Patroni cluster with synchronous replication and automatic failover — so no single machine is a point of failure. But every write still goes to one primary at a time: this scales up (a bigger primary, PgBouncer, read replicas, eventually sharding with Citus) rather than out the way Zeebe's Raft-replicated, no-shared-database partitions do. The [experimental Kafka-partitioned write path](#event-sourced-write-path-experimental) is a real, working step toward closing that gap for a growing (but still narrow) set of BPMN shapes — not a full answer yet.
 
 **Frontend:** the React app covers a real slice of Operate (instance inspection, plus a token-replay feature Operate doesn't offer by default), Tasklist (task inbox), a slice of Optimize (`/analytics` — duration distributions, throughput over time, incident rate by process key), and a Modeler (`/modeler` — author and deploy BPMN diagrams directly in-browser, not just view them).
 
@@ -694,6 +746,10 @@ Prioritized by value vs. effort, based on gaps identified during ongoing feature
 - **Removed Redis** — it had been fully vestigial for some time: no Go code ever constructed a client or called it (no `go-redis`/`redigo` dependency at all), the cross-instance job-wake mechanism has used Postgres `LISTEN`/`NOTIFY` from the start (see the `Cross-instance gRPC job wake-ups` entry above), and the `redis`/`redis-commander` services existed only as dead orchestration weight — `goflow`'s `depends_on: redis: condition: service_healthy` blocked app startup on a container the binary never talked to. Removed both services, the `redis_data` volume, and the unused `Redis*` fields/`RedisAddr()`/`GetRedisOptions()` from `internal/config/config.go`. Verified the stack starts clean and a spot-check of core suites still passes with Redis gone entirely.
 - **Fixed a real nginx/Vite reverse-proxy gap: Admin UI couldn't create a user or a role** — `frontend/nginx.conf`'s proxy regex (`^/(engine-rest|auth|users|events|v2)/`) never listed `roles` or `actions` at all, and required a trailing path segment, so an exact `POST /users` (no further segment) also silently missed it — all four fell through to the SPA fallback and got HTML back instead of a JSON response. `vite.config.ts`'s dev-server proxy had the identical `roles`/`actions` gap. This was invisible to every test in this project so far because they all call the Go backend directly on `:8080`, bypassing nginx/Vite entirely. Fixed both proxy configs (`(/|$)` instead of a bare `/`, plus the two missing prefixes) and added a first real **Playwright** browser e2e suite (`frontend/e2e/`, `npm run test:e2e`) that drives an actual Chromium instance against the dockerized frontend on port 3000 — specifically to catch this whole bug class going forward, since it's structurally invisible to API-level scripted tests. Confirmed the new tests fail against the old proxy config and pass against the fix, not just that they pass. Also added `Cache-Control: no-store` on every proxied API response, closing a related staleness risk (a browser's private cache heuristically retaining an old fallback-HTML response, or a stale JWT surviving a dev-environment DB reset, both silently manifesting as "the list is empty and I can't add anything" with no visible error).
 - **Process-definition BPMN diagram viewer + live token-count overlay** — the Definitions page's chevron link and "N versions" link had pointed at `/processes/:id` since some earlier pass, but that route was never registered — a dead link. Added the missing `/processes/:id` page, reusing the existing `BpmnViewer` component (previously only used on the per-instance detail page) to render the deployed XML read-only. On top of that, added a live "where are running instances currently sitting" overlay: a new `GET /engine-rest/process-definition/key/:key/token-counts` endpoint aggregates active/waiting executions across every running/suspended instance of a key, grouped by BPMN node, polled every 3s and rendered as a cyan badge distinct from the per-instance colored badges on the instance-detail page. Building the query surfaced a real bug: `process_instances` has no `process_key` column at all (only `process_definition_id`) — `process_key` lives on `process_definitions` and needs an explicit join, caught immediately by a live Postgres error rather than silently returning wrong data. Verified end to end with Playwright against a real deployed+started instance, not just a build check. Followed up with: (1) an inline process-instance list at the bottom of the same page (ID, current node, started/ended, status), polled every 5s, with a click-to-open variables modal (Name/Type/Value, reusing the same rendering as the instance-detail page) instead of navigating away; (2) a per-instance "Current Node" column, powered by a new `GET .../key/:key/instance-positions` endpoint (the same live snapshot as token-counts, broken out per instance instead of aggregated) — showing at a glance where each running instance's token currently sits, without opening the full replay view.
+- **Camunda 8 BPMN parity** — the gap list against Camunda 8 is closed: script tasks, message semantics (correlation keys, time to live, deduplication, message start), timer and signal start events, timers with calendar durations, cycles and cron, local variable scopes, multi-instance on any activity (rewritten — it used to share one element variable across parallel iterations), call activities (variables in and out, errors and escalations rising to the caller, called instances terminated with their call activity), runtime incidents, untyped tasks passing through, nested compensation, conditional events evaluated on each variable change. Migrations `001`–`004`.
+- **Horizontal scaling** — several instances behind nginx with PgBouncer and a read replica (`docker-compose.scale.yaml`), the full regression passing on three instances. Measuring under load showed the bottleneck was the disk wait on each commit, not the engine: background archiving and commits that don't wait where a crash can't hurt cut the write-ahead-log syncs per instance by half. Running several instances found three real bugs (a shared Kafka consumer group starving partitioned commands, unordered event publishing, finished-but-unarchived instances still receiving messages). Migration `005`.
+- **Postgres high availability** — Patroni cluster, synchronous replication, failover through HAProxy (`deploy/ha`), with a failover drill (`scripts/ha-failover-test.sh`): a replica promoted in 21–28 s, no instance lost. Running on the cluster found a cycle-timer race and a JWT clock-skew issue, both fixed.
+- **Backups for the cluster** — `backup-postgres.sh` dumps through HAProxy; `test-restore.sh` restores into a throwaway container, never into the production database.
 
 ### Medium-term (real features)
 
