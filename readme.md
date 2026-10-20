@@ -552,10 +552,12 @@ Postgres is the source of truth (Redpanda only holds the event log and in-flight
 
 ```bash
 ./scripts/backup-postgres.sh      # pg_dump -Fc into ./backups, checked readable, rotated after 14 days
-./scripts/test-restore.sh         # restores the latest dump into a temporary database and counts rows
+./scripts/test-restore.sh         # restores the latest dump into a throwaway Postgres container and counts rows
 ```
 
 Run the backup daily from cron (`0 3 * * * cd /path/to/goflow && ./scripts/backup-postgres.sh >> backups/backup.log 2>&1`), copy `backups/` off the server, and run `test-restore.sh` regularly: a backup that was never restored is not a backup. Variables: `BACKUP_DIR`, `BACKUP_KEEP_DAYS`, `POSTGRES_CONTAINER`.
+
+With the high-availability cluster (`deploy/ha`), back up through HAProxy, which leads to whichever node is the primary: `PGHOST=haproxy PGPORT=5000 PGPASSWORD=… ./scripts/backup-postgres.sh` — `pg_dump` then runs in a throwaway `postgres:16` container on GoFlow's Docker network (`DOCKER_NETWORK`). The cluster creates the GoFlow database from `template0`, so its dumps restore into any plain Postgres, the standalone one included. `test-restore.sh` never touches the production database, standalone or cluster. For point-in-time recovery on top of daily dumps, Spilo can archive the write-ahead log continuously to object storage (WAL-G; its `WAL_S3_BUCKET` / `AWS_*` variables on `node.compose.yaml`).
 
 ### Database connections
 

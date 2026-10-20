@@ -12,7 +12,9 @@ psql_su() { psql -h "${PG_HOST:-haproxy}" -p "${PG_PORT:-5000}" -U postgres -v O
 psql_su -d postgres -v pwd="$GOFLOW_PASSWORD" <<'EOSQL'
 SELECT format('CREATE ROLE goflow WITH LOGIN PASSWORD %L', :'pwd')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'goflow') \gexec
-SELECT 'CREATE DATABASE goflow OWNER goflow'
+-- template0: without the monitoring extensions Spilo puts in template1,
+-- so a dump of it restores into any plain Postgres.
+SELECT 'CREATE DATABASE goflow OWNER goflow TEMPLATE template0'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'goflow') \gexec
 EOSQL
 
