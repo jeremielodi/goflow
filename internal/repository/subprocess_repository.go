@@ -150,6 +150,34 @@ func deleteWaitStateTx(tx *sqlx.Tx, instanceID uuid.UUID, execIDs interface{}) e
 	return err
 }
 
+// CancelExecutionWorkTx clears what holds one execution at its element, so
+// the token can be moved elsewhere: its open user tasks and pending/locked
+// jobs are cancelled, its untriggered timers and subscriptions deleted, its
+// armed boundary events disarmed and its open incidents resolved. The
+// execution itself is left as is, for the caller to move. Returns the
+// cancelled task and job IDs for audit logging.
+func (r *EngineRepository) CancelExecutionWorkTx(tx *sqlx.Tx, instanceID, execID uuid.UUID) (cancelledTasks, cancelledJobs []uuid.UUID, err error) {
+	if cancelledTasks, cancelledJobs, err = r.CancelActivityWorkTx(tx, instanceID, execID); err != nil {
+		return nil, nil, err
+	}
+	if err = r.DisarmBoundaryTriggersTx(tx, instanceID, execID); err != nil {
+		return nil, nil, err
+	}
+	if err = deleteWaitStateTx(tx, instanceID, pq.Array([]string{execID.String()})); err != nil {
+		return nil, nil, err
+	}
+	_, err = tx.Exec(`
+		UPDATE public.incidents SET state = 'resolved', resolved_at = NOW()
+		WHERE process_instance_id = $1 AND state = 'open'
+		  AND (execution_id = $2 OR job_id IN (
+		      SELECT id FROM public.jobs WHERE process_instance_id = $1 AND execution_id = $2))
+	`, instanceID, execID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cancelledTasks, cancelledJobs, nil
+}
+
 // CancelScopeTx interrupts everything below rootExecID except keepExecID
 // (uuid.Nil keeps nothing): terminates the executions, cancels their open
 // user tasks and pending/locked jobs, and deletes their untriggered timers

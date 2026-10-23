@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+  id="Definitions_StepBack"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!--
+    SCENARIO: the "previous step" button (POST /v2/process-instances/:id/step-back).
+    StepBackProcess: fill (user) → gateway → check (job) → approve (user, with
+    a boundary timer) → end. The gateway is a pass-through step-back skips.
+    StepBackParallel: prepare (user) → fork → left / right (users) → join → end.
+  -->
+
+  <bpmn:process id="StepBackProcess" name="Step Back Process" isExecutable="true">
+    <bpmn:startEvent id="start">
+      <bpmn:outgoing>f1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="fill" name="Fill Request">
+      <bpmn:incoming>f1</bpmn:incoming>
+      <bpmn:outgoing>f2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="gw" default="f3">
+      <bpmn:incoming>f2</bpmn:incoming>
+      <bpmn:outgoing>f3</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="check" name="Check Request">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="step_back_check" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>f3</bpmn:incoming>
+      <bpmn:outgoing>f4</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:userTask id="approve" name="Approve Request">
+      <bpmn:incoming>f4</bpmn:incoming>
+      <bpmn:outgoing>f5</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="approveTimeout" attachedToRef="approve" cancelActivity="true">
+      <bpmn:outgoing>f6</bpmn:outgoing>
+      <bpmn:timerEventDefinition>
+        <bpmn:timeDuration>PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="end">
+      <bpmn:incoming>f5</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="timedOut">
+      <bpmn:incoming>f6</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="f1" sourceRef="start" targetRef="fill" />
+    <bpmn:sequenceFlow id="f2" sourceRef="fill" targetRef="gw" />
+    <bpmn:sequenceFlow id="f3" sourceRef="gw" targetRef="check" />
+    <bpmn:sequenceFlow id="f4" sourceRef="check" targetRef="approve" />
+    <bpmn:sequenceFlow id="f5" sourceRef="approve" targetRef="end" />
+    <bpmn:sequenceFlow id="f6" sourceRef="approveTimeout" targetRef="timedOut" />
+  </bpmn:process>
+
+  <bpmn:process id="StepBackParallel" name="Step Back Parallel" isExecutable="true">
+    <bpmn:startEvent id="pstart">
+      <bpmn:outgoing>p1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="prepare" name="Prepare">
+      <bpmn:incoming>p1</bpmn:incoming>
+      <bpmn:outgoing>p2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:parallelGateway id="fork">
+      <bpmn:incoming>p2</bpmn:incoming>
+      <bpmn:outgoing>p3</bpmn:outgoing>
+      <bpmn:outgoing>p4</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:userTask id="left" name="Left">
+      <bpmn:incoming>p3</bpmn:incoming>
+      <bpmn:outgoing>p5</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="right" name="Right">
+      <bpmn:incoming>p4</bpmn:incoming>
+      <bpmn:outgoing>p6</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:parallelGateway id="join">
+      <bpmn:incoming>p5</bpmn:incoming>
+      <bpmn:incoming>p6</bpmn:incoming>
+      <bpmn:outgoing>p7</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:endEvent id="pend">
+      <bpmn:incoming>p7</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="p1" sourceRef="pstart" targetRef="prepare" />
+    <bpmn:sequenceFlow id="p2" sourceRef="prepare" targetRef="fork" />
+    <bpmn:sequenceFlow id="p3" sourceRef="fork" targetRef="left" />
+    <bpmn:sequenceFlow id="p4" sourceRef="fork" targetRef="right" />
+    <bpmn:sequenceFlow id="p5" sourceRef="left" targetRef="join" />
+    <bpmn:sequenceFlow id="p6" sourceRef="right" targetRef="join" />
+    <bpmn:sequenceFlow id="p7" sourceRef="join" targetRef="pend" />
+  </bpmn:process>
+</bpmn:definitions>

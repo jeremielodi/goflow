@@ -560,6 +560,9 @@ func (s *Server) ModifyProcessInstance(ctx context.Context, req *pb.ModifyProces
 	if err != nil || inst == nil {
 		return nil, status.Errorf(codes.NotFound, "process instance not found")
 	}
+	if allowed, permErr := service.CanAccessProcessInstance(s.db, UserIDFromContext(ctx), instanceID, "MANAGE"); permErr == nil && !allowed {
+		return nil, status.Errorf(codes.NotFound, "process instance not found")
+	}
 
 	activeExecutions, err := s.processInstanceRepo.GetActiveExecutions(instanceID)
 	if err != nil {

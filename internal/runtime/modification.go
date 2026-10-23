@@ -61,24 +61,14 @@ func (r *Runtime) ModifyInstance(ctx context.Context, instanceID uuid.UUID, move
 				tx.Rollback()
 				return newExecutionIDs, fmt.Errorf("failed to cancel source execution: %w", err)
 			}
-			// Cancel any open task/job still attached to the cancelled
-			// execution so nothing dangling remains reachable once the
-			// token has moved elsewhere.
-			var cancelledTaskIDs []uuid.UUID
-			if err := tx.Select(&cancelledTaskIDs, `
-				UPDATE public.tasks SET status = 'cancelled', updated_at = NOW()
-				WHERE execution_id = $1 AND status IN ('created', 'claimed')
-				RETURNING id
-			`, exec.ID); err != nil {
+			// Cancel everything still attached to the cancelled execution
+			// (task, job, timers, subscriptions, boundary events, incidents)
+			// so nothing dangling remains reachable once the token has
+			// moved elsewhere.
+			cancelledTaskIDs, _, err := engineRepo.CancelExecutionWorkTx(tx, instanceID, exec.ID)
+			if err != nil {
 				tx.Rollback()
-				return newExecutionIDs, fmt.Errorf("failed to cancel open task: %w", err)
-			}
-			if _, err := tx.Exec(`
-				UPDATE public.jobs SET status = 'cancelled', updated_at = NOW()
-				WHERE execution_id = $1 AND status = 'pending'
-			`, exec.ID); err != nil {
-				tx.Rollback()
-				return newExecutionIDs, fmt.Errorf("failed to cancel pending job: %w", err)
+				return newExecutionIDs, fmt.Errorf("failed to cancel the source element's work: %w", err)
 			}
 
 			newExecID := uuid.New()

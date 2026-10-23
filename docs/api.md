@@ -209,6 +209,7 @@ POST /v2/process-instances
 GET  /v2/process-instances/:id
 POST /v2/process-instances/search
 POST /v2/process-instances/:id/modification   (Move Token)
+POST /v2/process-instances/:id/step-back      (Previous step — GoFlow only)
 
 POST /v2/jobs/activation                      (fetch-and-lock equivalent)
 POST /v2/jobs/:id/completion
@@ -229,5 +230,7 @@ POST /v2/flownode-instances/search
 POST /v2/incidents/search
 POST /v2/variables/search
 ```
+
+`POST /v2/process-instances/:id/step-back` (the **Previous step** button on the instance page) sends a waiting token back to the wait state it went through before: `{ "executionId": "…" }` or `{ "elementId": "approve" }` (when one token waits there), optional `"steps": n` (default 1) and `"dryRun": true` (only answers where it would go). The token keeps its execution and variables; its task or job is cancelled, along with its boundary events, timers, subscriptions and open incidents, and the earlier element runs again with a new task or job. Nothing done since then is undone. Pressing it twice goes back two steps. Wait states are user and service tasks, catch events, event-based gateways, sub-processes and call activities; gateways, script and business-rule tasks are skipped. Refused (409 `STEP_BACK_REFUSED`, with the reason) across a parallel or inclusive gateway, out of the token's sub-process, on multi-instance activities, and on instances that aren't running. Like modification, it needs `MANAGE` on the process (404 otherwise).
 
 `POST /v2/messages/publication` and the gRPC `PublishMessage` follow Camunda 8: the message goes to the subscriptions whose `zeebe:subscription correlationKey` evaluates to the published `correlationKey` — at most once per process — or starts the processes waiting on it with a message start event. With a `timeToLive` (ms), it is kept and correlates to subscriptions that open later; a `messageId` already published and alive is refused (409 / `ALREADY_EXISTS`). Nothing waiting is not an error. Processes without a `correlationKey` expression keep matching a key equal to their `correlationKey` variable, as before. `POST /engine-rest/message` keeps Camunda 7's semantics.

@@ -65,6 +65,7 @@ func RegisterCommands(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, tasks
 		"execution_failed":          ErrExecutionFailed,
 		"incident_not_found":        ErrIncidentNotFound,
 		"task_not_found":            ErrUserTaskNotFound,
+		"step_back_refused":         ErrStepBackRefused,
 	} {
 		cmdbus.RegisterError(code, err)
 	}
@@ -78,6 +79,7 @@ func RegisterCommands(db *sqlx.DB, dispatcher *events.TaskEventDispatcher, tasks
 	register(CmdCompleteUserTask, cmds.completeUserTask)
 	register(CmdSetVariables, cmds.setVariables)
 	register(CmdModify, cmds.modify)
+	register(CmdStepBack, cmds.stepBack)
 	register(CmdPublishMessage, cmds.publishMessage)
 	register(CmdBroadcastSignal, cmds.broadcastSignal)
 	register(CmdFireStartTimer, cmds.fireStartTimer)

@@ -107,3 +107,24 @@ export const modifyInstance = async (
   });
   return res.data;
 };
+
+export interface StepBackResult {
+  executionId: string;
+  fromElementId: string;
+  toElementId: string;
+  toElementName?: string;
+  applied: boolean;
+  cancelledTaskIds?: string[];
+}
+
+// The "previous" button: sends a token back to the wait state it went
+// through before — see internal/runtime/step_back.go. With dryRun the
+// backend only says where the token would go (or why it can't).
+export const stepBackInstance = async (
+  id: string,
+  executionId: string,
+  dryRun = false
+): Promise<StepBackResult> => {
+  const res = await apiClient.post(`/v2/process-instances/${id}/step-back`, { executionId, dryRun });
+  return res.data;
+};

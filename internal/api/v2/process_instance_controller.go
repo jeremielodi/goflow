@@ -285,7 +285,7 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 		})
 	}
 
-	if _, err := pc.processInstanceRepo.FindByID(instanceID); err != nil {
+	if _, err := pc.processInstanceRepo.FindByID(instanceID); err != nil || !pc.canManage(c, instanceID) {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"title": "NOT_FOUND", "detail": "process instance not found or not active",
 		})
@@ -307,4 +307,79 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 		"processInstanceKey": instanceID,
 		"newExecutionIds":    newExecutionIDs,
 	})
+}
+
+// canManage reports whether the caller may change instanceID's tokens
+// (MANAGE on its process). Like the v1 checkInstanceAccess, it fails open
+// without an authenticated user: the route-level auth already covers that.
+func (pc *ProcessInstanceController) canManage(c *fiber.Ctx, instanceID uuid.UUID) bool {
+	userID, err := uuid.Parse(common.GetUserUuid(c))
+	if err != nil {
+		return true
+	}
+	allowed, _ := service.CanAccessProcessInstance(pc.db, userID, instanceID, "MANAGE")
+	return allowed
+}
+
+// StepBackRequest names the token to send back, by executionId or by the
+// element it waits at (elementId), and how many wait states back (steps,
+// default 1). dryRun only answers where the token would go.
+type StepBackRequest struct {
+	ExecutionId string `json:"executionId"`
+	ElementId   string `json:"elementId"`
+	Steps       int    `json:"steps"`
+	DryRun      bool   `json:"dryRun"`
+}
+
+// StepBack handles POST /v2/process-instances/:id/step-back — the
+// "previous" button: sends a token back to the wait state it went through
+// before (see internal/runtime/step_back.go). Variables are kept as they
+// are; the element is run again, with a new task or job.
+func (pc *ProcessInstanceController) StepBack(c *fiber.Ctx) error {
+	instanceID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"title": "INVALID_ARGUMENT", "detail": "invalid process instance key",
+		})
+	}
+	var req StepBackRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"title": "INVALID_ARGUMENT", "detail": "invalid body",
+		})
+	}
+	args := runtime.StepBackArgs{InstanceID: instanceID, ElementID: req.ElementId, Steps: req.Steps, DryRun: req.DryRun}
+	if req.ExecutionId != "" {
+		if args.ExecutionID, err = uuid.Parse(req.ExecutionId); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"title": "INVALID_ARGUMENT", "detail": "invalid executionId",
+			})
+		}
+	}
+	if userID, err := uuid.Parse(common.GetUserUuid(c)); err == nil {
+		args.UserID = &userID
+	}
+
+	if _, err := pc.processInstanceRepo.FindByID(instanceID); err != nil || !pc.canManage(c, instanceID) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title": "NOT_FOUND", "detail": "process instance not found or not active",
+		})
+	}
+
+	res, err := runtime.StepBack(c.Context(), args)
+	switch {
+	case errors.Is(err, runtime.ErrStepBackRefused):
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"title": "STEP_BACK_REFUSED", "detail": err.Error(),
+		})
+	case errors.Is(err, service.ErrProcessInstanceNotFound):
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title": "NOT_FOUND", "detail": err.Error(),
+		})
+	case err != nil && !res.Applied:
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"title": "STEP_BACK_FAILED", "detail": err.Error(),
+		})
+	}
+	return c.JSON(res)
 }

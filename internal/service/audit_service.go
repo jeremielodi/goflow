@@ -100,6 +100,33 @@ func (s *AuditService) LogExecutionMoved(executionID, processInstanceID uuid.UUI
 	return s.auditRepo.CreateAuditLog(log)
 }
 
+// LogExecutionSteppedBack logs a token sent back to an element it already
+// went through (the "previous" button). It is an EXECUTION_MOVED entry, so
+// the token history shows it like any other hop; stepBack marks it for
+// StepBackPath. Written in the step back's own transaction: the next step
+// back reads it to know where the token came from.
+func (s *AuditService) LogExecutionSteppedBackTx(tx *sqlx.Tx, executionID, processInstanceID uuid.UUID, fromNode, toNode string, userID *uuid.UUID, requestID uuid.UUID) error {
+	newData, _ := json.Marshal(map[string]interface{}{
+		"executionId": executionID,
+		"fromNode":    fromNode,
+		"toNode":      toNode,
+		"stepBack":    true,
+		"requestId":   requestID,
+		"timestamp":   time.Now(),
+	})
+
+	log := &models.AuditLog{
+		ID:                uuid.New(),
+		ProcessInstanceID: &processInstanceID,
+		UserID:            userID,
+		Action:            models.ActionExecutionMoved,
+		NewData:           newData,
+		CreatedAt:         time.Now(),
+	}
+
+	return s.auditRepo.CreateAuditLogTx(tx, log)
+}
+
 // LogTaskCreated logs when a user task is created
 func (s *AuditService) LogTaskCreated(taskID, processInstanceID uuid.UUID, taskName string, assignee *string, candidateGroup *string) error {
 	newData, _ := json.Marshal(map[string]interface{}{

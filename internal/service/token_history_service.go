@@ -67,6 +67,9 @@ func BuildTokenHistory(logs []models.AuditLog, tasks []models.Task) []TokenHisto
 			toNode, _ := stringField(newData, "toNode")
 			step.ElementId = toNode
 			step.Detail = fmt.Sprintf("%s → %s", fromNode, toNode)
+			if stepBack, _ := newData["stepBack"].(bool); stepBack {
+				step.Detail = fmt.Sprintf("Stepped back: %s → %s", fromNode, toNode)
+			}
 
 		case models.ActionExecutionWaited:
 			nodeID, _ := stringField(newData, "nodeId")

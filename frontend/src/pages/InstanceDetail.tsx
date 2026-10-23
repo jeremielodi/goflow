@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, RefreshCw, ChevronDown, ChevronUp, Info, Move, Play, Pause, SkipBack, SkipForward, X } from 'lucide-react';
-import { getInstance, getInstanceVariables, getInstanceState, modifyInstance } from '../api/processes';
+import { ArrowLeft, RefreshCw, ChevronDown, ChevronUp, Info, Move, Play, Pause, SkipBack, SkipForward, Undo2, X } from 'lucide-react';
+import { getInstance, getInstanceVariables, getInstanceState, modifyInstance, stepBackInstance } from '../api/processes';
 import { listHistoricActivities } from '../api/history';
 import { getTokenHistory } from '../api/audit';
 import { listTasks } from '../api/tasks';
@@ -35,6 +35,9 @@ export default function InstanceDetail() {
   const [sourceElementId, setSourceElementId] = useState('');
   const [targetElementId, setTargetElementId] = useState('');
   const [modifyError, setModifyError] = useState('');
+  const [showStepBack, setShowStepBack] = useState(false);
+  const [stepBackExecutionId, setStepBackExecutionId] = useState('');
+  const [stepBackError, setStepBackError] = useState('');
 
   // Replay: step through the audit-log-derived token history and highlight
   // each position on the diagram. Off by default so the diagram's default
@@ -104,6 +107,31 @@ export default function InstanceDetail() {
     },
     onError: (e: any) => {
       setModifyError(e.response?.data?.detail ?? e.message ?? 'Failed to move token');
+    },
+  });
+
+  // Asks the backend where "previous" would send the chosen token, before
+  // the user confirms — the backend also says why when it can't.
+  const stepBackPreview = useQuery({
+    queryKey: ['step-back-preview', id, stepBackExecutionId],
+    queryFn: () => stepBackInstance(id!, stepBackExecutionId, true),
+    enabled: showStepBack && !!stepBackExecutionId,
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  });
+
+  const stepBackMut = useMutation({
+    mutationFn: () => stepBackInstance(id!, stepBackExecutionId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['activities', id] });
+      qc.invalidateQueries({ queryKey: ['tasks', id] });
+      qc.invalidateQueries({ queryKey: ['instance', id] });
+      qc.invalidateQueries({ queryKey: ['token-history', id] });
+      setShowStepBack(false);
+    },
+    onError: (e: any) => {
+      setStepBackError(e.response?.data?.detail ?? e.message ?? 'Failed to step back');
     },
   });
 
@@ -203,6 +231,19 @@ export default function InstanceDetail() {
         </div>
         <div className="flex items-center gap-2">
           <Badge value={inst.status} />
+          {inst.status === 'running' && activeActivities.length > 0 && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setStepBackExecutionId(activeActivities[0].id);
+                setStepBackError('');
+                setShowStepBack(true);
+              }}
+            >
+              <Undo2 className="w-4 h-4" /> Previous step
+            </Button>
+          )}
           {inst.status === 'running' && activeActivities.length > 0 && (
             <Button
               variant="secondary"
@@ -444,6 +485,67 @@ export default function InstanceDetail() {
           </Table>
         </Card>
       )}
+
+      {/* Previous step modal */}
+      <Modal open={showStepBack} onClose={() => setShowStepBack(false)} title="Previous Step">
+        <div className="space-y-4">
+          {activeActivities.length > 1 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1.5">Token</label>
+              <select
+                value={stepBackExecutionId}
+                onChange={e => {
+                  setStepBackExecutionId(e.target.value);
+                  setStepBackError('');
+                }}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {activeActivities.map(a => (
+                  <option key={a.id} value={a.id}>
+                    {a.activityName ?? a.activityId}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {stepBackPreview.isLoading && <Spinner className="w-4 h-4 text-blue-500" />}
+          {stepBackPreview.error && (
+            <p className="text-sm text-amber-700">
+              {(stepBackPreview.error as any).response?.data?.detail ?? 'This token cannot be stepped back.'}
+            </p>
+          )}
+          {stepBackPreview.data && (
+            <>
+              <p className="text-sm text-gray-700">
+                Send the token from <span className="font-mono">{stepBackPreview.data.fromElementId}</span> back to{' '}
+                <span className="font-semibold">
+                  {stepBackPreview.data.toElementName || stepBackPreview.data.toElementId}
+                </span>
+                ?
+              </p>
+              <ul className="text-xs text-gray-500 list-disc pl-4 space-y-1">
+                <li>The current task or job is cancelled, and a new one is created at the previous step.</li>
+                <li>Variables keep their current values; nothing done since then is undone.</li>
+                <li>That step runs again — a service task calls its worker again.</li>
+              </ul>
+            </>
+          )}
+          {stepBackError && <p className="text-xs text-red-500">{stepBackError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowStepBack(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                setStepBackError('');
+                stepBackMut.mutate();
+              }}
+              disabled={!stepBackPreview.data || stepBackMut.isPending}
+            >
+              {stepBackMut.isPending && <Spinner className="w-4 h-4 text-white" />}
+              Go back
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Move token modal */}
       <Modal open={showModify} onClose={() => setShowModify(false)} title="Move Token">

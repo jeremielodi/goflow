@@ -75,6 +75,7 @@ Conditional events are re-evaluated as soon as a variable of their instance chan
 | Zeebe-style extensions (task headers, I/O mapping, FEEL assignee, form key) | ✅ |
 | Forms (deploy + serve form schemas) | ✅ |
 | Process instance modification ("Move Token") | ✅ |
+| Previous step (send a token back to its earlier wait state) | ✅ |
 | Audit trail (`audit_logs`, one row per state transition) | ✅ |
 | Token-history replay (derived from the audit trail, see below) | ✅ |
 | History API (process + activity instances) | ⚠️ basic — see [gaps](docs/comparison.md#comparison-to-camunda-7--camunda-8) |
@@ -113,7 +114,7 @@ A React 19 + `bpmn-js` single-page app (`frontend/`, dockerized behind nginx) co
 
 - **Dashboard** — at-a-glance counts (running/completed instances, open tasks, incidents)
 - **Process Definitions / Process Instances** — deploy, browse, filter by key/state
-- **Instance Detail** — live BPMN diagram with an active-token overlay, plus a **replay control**: play/pause/step/scrub through the instance's full audit-log-derived token history, with a distinct pulsing marker on the diagram showing where the token was at each step (independent of the live-state overlay). Clicking a row in the Activity History timeline jumps the replay straight to that step. Also supports Move Token (process instance modification) from here.
+- **Instance Detail** — live BPMN diagram with an active-token overlay, plus a **replay control**: play/pause/step/scrub through the instance's full audit-log-derived token history, with a distinct pulsing marker on the diagram showing where the token was at each step (independent of the live-state overlay). Clicking a row in the Activity History timeline jumps the replay straight to that step. Also supports Move Token (process instance modification) and **Previous step** (send a token back to the wait state before, with a preview of where it goes) from here.
 - **Tasks** — task inbox with claim/unclaim/complete, filtered to open tasks by default
 - **History** — historic process instance list/filter
 - **Incidents** — incident list with retry/resolve

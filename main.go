@@ -650,6 +650,7 @@ func main() {
 	app.Post("/v2/flownode-instances/search", v2FlownodeInstanceCtrl.SearchFlownodeInstances)
 	app.Post("/v2/variables/search", v2VariableCtrl.SearchVariables)
 	app.Post("/v2/process-instances/:id/modification", v2ProcessInstanceCtrl.ModifyProcessInstance)
+	app.Post("/v2/process-instances/:id/step-back", v2ProcessInstanceCtrl.StepBack)
 
 	// ============================================================
 	// AUDIT ROUTES

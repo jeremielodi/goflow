@@ -19,7 +19,7 @@ import { execSync, spawn } from 'child_process';
 import * as path from 'path';
 import { GoFlowClient, sleep } from './client';
 
-const BASE_URL = 'http://127.0.0.1:8080';
+const BASE_URL = process.env.GOFLOW_URL ?? 'http://127.0.0.1:8080';
 const noTimers = process.argv.includes('--no-timers');
 
 // ─── Wait for app to be healthy ───────────────────────────────────────────────
@@ -147,6 +147,7 @@ async function main() {
     '50_incidents_message_end.test.ts',
     '51_camunda7_task_api.test.ts',
     '52_camunda7_worker.test.ts',
+    '53_step_back.test.ts',
   ];
 
   const exitCodes: number[] = [];
