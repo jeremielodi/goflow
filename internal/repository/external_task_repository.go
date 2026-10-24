@@ -51,7 +51,8 @@ func (r *ExternalTaskRepository) FetchAndLockJobsTx(tx *sqlx.Tx, topics []TopicC
 				j.retries,
 				j.execution_id,
 				j.process_instance_id,
-				j.status
+				j.status,
+				j.created_at
 			FROM public.jobs j
 			WHERE j.job_type = $1
 			  AND j.status = 'pending'
@@ -339,6 +340,7 @@ type LockedJob struct {
 	ProcessInstanceID uuid.UUID       `db:"process_instance_id"`
 	CurrentElementID  string          `db:"current_element_id"`
 	Status            string          `db:"status"`
+	CreatedAt         time.Time       `db:"created_at"`
 }
 
 // Custom errors

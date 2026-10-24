@@ -3,3 +3,4 @@
 examples/**/node_modules
 backups/
 examples/java-client/target/
+examples/java-client-spring/target/

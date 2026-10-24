@@ -89,7 +89,7 @@ async function run() {
 
           const detail = await apiGet(token, `/engine-rest/history/process-instance/${instanceId}`);
           assert(detail.id === instanceId, `expected id ${instanceId}, got ${detail.id}`);
-          assert(detail.state === 'completed', `expected state=completed, got ${detail.state}`);
+          assert(detail.state === 'COMPLETED', `expected state=COMPLETED, got ${detail.state}`);
           assert(detail.processDefinitionKey === 'orderFulfillment', `expected key orderFulfillment, got ${detail.processDefinitionKey}`);
           assert(detail.startTime != null, 'expected startTime');
           assert(detail.endTime != null, 'expected endTime for completed instance');
@@ -151,7 +151,7 @@ async function run() {
           assert(Array.isArray(history), 'expected array');
           assert(history.length >= 1, 'expected at least one completed instance');
           assert(
-            history.every((h: any) => h.state === 'completed'),
+            history.every((h: any) => h.state === 'COMPLETED'),
             'all results should have state=completed'
           );
         },

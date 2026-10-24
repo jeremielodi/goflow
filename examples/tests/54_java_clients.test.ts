@@ -12,6 +12,9 @@
  *   C) ExternalTaskWorkerExample with HTTP Basic: Camunda 7 External Task Client.
  *   D) ExternalTaskWorkerExample with a JWT.
  *   E) ZeebeClientExample: Camunda 8 Java client over gRPC.
+ *   F) Camunda7OpenApiExample: the Camunda 7 REST client generated from the OpenAPI spec.
+ *   G) examples/java-client-spring: a Camunda 7 application on the engine's Java API
+ *      (RuntimeService, TaskService…), through the REST client Spring Boot starter.
  *
  * Without a JDK the suite fails rather than skipping, so a missing Java
  * never passes for a working one.
@@ -21,15 +24,16 @@ import { spawn } from 'child_process';
 import { BASE_URL, runSuite, assert } from './client';
 
 const PROJECT = path.join(__dirname, '..', 'java-client');
+const SPRING_PROJECT = path.join(__dirname, '..', 'java-client-spring');
 const GRPC = process.env.GOFLOW_GRPC ?? `${new URL(BASE_URL).hostname}:26500`;
 
-function mvnw(args: string[], env: Record<string, string> = {}, timeoutMs = 300_000): Promise<{ code: number; out: string }> {
+function mvnw(args: string[], env: Record<string, string> = {}, timeoutMs = 300_000, project = PROJECT): Promise<{ code: number; out: string }> {
   const windows = process.platform === 'win32';
   return new Promise(resolve => {
     // cmd.exe may not look in the working directory: give the wrapper's full path.
-    const wrapper = windows ? `"${path.join(PROJECT, 'mvnw.cmd')}"` : './mvnw';
+    const wrapper = windows ? `"${path.join(project, 'mvnw.cmd')}"` : './mvnw';
     const child = spawn(wrapper, ['-q', '-B', ...args], {
-      cwd: PROJECT,
+      cwd: project,
       shell: windows,
       env: { ...process.env, GOFLOW_URL: BASE_URL, GOFLOW_GRPC: GRPC, ...env },
     });
@@ -76,6 +80,18 @@ async function run() {
       {
         name: '[E] ZeebeClientExample: Camunda 8 Java client over gRPC',
         fn: () => runExample('ZeebeClientExample'),
+      },
+      {
+        name: '[F] Camunda7OpenApiExample: Camunda 7 OpenAPI REST client',
+        fn: () => runExample('Camunda7OpenApiExample'),
+      },
+      {
+        name: '[G] Camunda 7 Java API (RuntimeService, TaskService…) through the Spring Boot starter',
+        async fn() {
+          const { code, out } = await mvnw(['spring-boot:run'], {}, 600_000, SPRING_PROJECT);
+          const tail = out.trim().split('\n').slice(-15).join('\n');
+          assert(code === 0 && out.includes('Camunda7JavaApiExample OK'), `Spring example failed (exit ${code}):\n${tail}`);
+        },
       },
     ],
   });

@@ -85,12 +85,12 @@ public class RestExample {
         // 7. History: the instance is completed (served from the archive once archived).
         waitFor("instance completed", Duration.ofSeconds(15), () -> {
             JsonNode h = goflow.get("/engine-rest/history/process-instance/" + instanceId);
-            return "completed".equals(h.path("state").asText()) ? Optional.of(h) : Optional.empty();
+            return "COMPLETED".equals(h.path("state").asText()) ? Optional.of(h) : Optional.empty();
         });
         check(true, "instance completed");
 
         JsonNode byBusinessKey = goflow.get("/engine-rest/history/process-instance" + query(
-                "processDefinitionKey", "JavaOrder", "businessKey", orderId, "state", "completed"));
+                "processDefinitionKey", "JavaOrder", "businessKey", orderId, "completed", "true"));
         check(byBusinessKey.size() == 1, "history search by businessKey finds it");
 
         JsonNode doneTasks = goflow.get("/engine-rest/history/task" + query(

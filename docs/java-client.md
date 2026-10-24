@@ -1,16 +1,18 @@
 # Using GoFlow from a Java application
 
-A Java application on another machine can drive GoFlow in three ways:
+A Java application on another machine can drive GoFlow in these ways:
 
 | Way | Library | Port | Use it for |
 |---|---|---|---|
 | [Plain REST](#1-plain-rest) | none (`java.net.http`) + Jackson | 8080 | Everything: deploying, starting instances, user tasks, workers, messages, history, search. |
 | [Camunda 7 External Task Client](#2-camunda-7-external-task-client) | `org.camunda.bpm:camunda-external-task-client` | 8080 | Workers (service tasks). The library a Camunda 7 worker already uses. |
 | [Camunda 8 Java client](#3-camunda-8-java-client-grpc) | `io.camunda:zeebe-client-java` or `io.camunda:camunda-client-java` | 26500 | Workers, starting instances, messages, signals, over gRPC. User tasks still go through REST. |
+| [Camunda 7 OpenAPI REST client](#4-camunda-7-openapi-rest-client) | `org.camunda.community:camunda-engine-rest-client-openapi-java` | 8080 | The whole Camunda 7 REST API as typed Java methods, plain Java, no Spring. |
+| [Camunda 7 Java API over REST](#5-camunda-7-java-api-over-rest-spring-boot) | `org.camunda.community.rest:camunda-platform-7-rest-client-spring-boot-starter` | 8080 | A Camunda 7 application written against `RuntimeService`, `TaskService`… (Spring Boot), almost unchanged. |
 
 They can be mixed. A typical application starts instances and handles user tasks over REST, and runs its workers with one of the two clients.
 
-Each section below comes from [examples/java-client](../examples/java-client), a Maven project with one runnable class per way. They drive the same process ([java-order.bpmn](../examples/java-client/src/main/resources/java-order.bpmn)): a user task `approveOrder` for the group `sales`, a service task of type `charge-card`, then a wait for the message `PaymentConfirmed`, correlated on `orderId`.
+Each section below comes from [examples/java-client](../examples/java-client), a Maven project with one runnable class per way (the Spring Boot one is [examples/java-client-spring](../examples/java-client-spring)). They drive the same process ([java-order.bpmn](../examples/java-client/src/main/resources/java-order.bpmn)): a user task `approveOrder` for the group `sales`, a service task of type `charge-card`, then a wait for the message `PaymentConfirmed`, correlated on `orderId`.
 
 ## Tested versions
 
@@ -22,8 +24,10 @@ Tested on 2026-10-24 against GoFlow `main`, on Java 18 (the examples compile for
 | `camunda-external-task-client` | 7.24.0 | Fetch-and-lock with long polling, `complete`, `handleFailure` with a retry; Basic and JWT authentication. |
 | `zeebe-client-java` | 8.3.22 | Topology, deployment, job worker, instance creation, message publication. |
 | `camunda-client-java` | 8.8.44 | Over gRPC: the same commands, plus `BroadcastSignal`, job worker in polling and streaming mode. **Over REST it does not work** (see [below](#3-camunda-8-java-client-grpc)). |
+| `camunda-engine-rest-client-openapi-java` | 7.24.0 | Deployment, start by key, task query, claim, complete, fetch-and-lock, external task completion, message correlation with typed keys and variables, history, variables. |
+| `camunda-platform-7-rest-client-spring-boot-starter` | 7.24.1 (Spring Boot 3.5.8, Spring Cloud 2025.0.0) | `RepositoryService` (deployment, definition query), `RuntimeService` (start, variables, message correlation), `TaskService`, `ExternalTaskService`, `HistoryService` (instance query). |
 
-Not tested: Spring Zeebe / the Camunda Spring Boot starter, TLS, OAuth.
+Not tested: Spring Zeebe / the Camunda 8 Spring Boot starter, TLS, OAuth.
 
 ## Run the examples
 
@@ -36,6 +40,10 @@ export GOFLOW_USER=admin@goflow.com GOFLOW_PASSWORD=admin123
 ./mvnw -q compile exec:java -Dexec.mainClass=com.goflow.examples.RestExample     # Windows: mvnw.cmd
 ./mvnw -q compile exec:java -Dexec.mainClass=com.goflow.examples.ExternalTaskWorkerExample
 ./mvnw -q compile exec:java -Dexec.mainClass=com.goflow.examples.ZeebeClientExample
+./mvnw -q compile exec:java -Dexec.mainClass=com.goflow.examples.Camunda7OpenApiExample
+
+cd ../java-client-spring
+./mvnw -q spring-boot:run
 ```
 
 `mvnw` is the Maven Wrapper: it downloads Maven 3.9.9 on first use, so only a JDK 17+ is needed. Each example deploys the BPMN, runs one order to its end, checks the result at every step, and ends with `… OK`. A failed check stops it with `CHECK FAILED: …`.
@@ -126,18 +134,18 @@ On failure, `POST …/{id}/failure` with `{"workerId", "errorMessage", "retries"
 ```java
 goflow.post("/engine-rest/message", Map.of(
         "messageName", "PaymentConfirmed",
-        "correlationKeys", Map.of("orderId", orderId),   // plain values, not {"value", "type"}
+        "correlationKeys", Map.of("orderId", orderId),   // plain, or typed {"value", "type"}
         "variables", Map.of("paidAt", "2026-10-24T10:00:00Z")));
 ```
 
-`correlationKeys` takes **plain values**. Camunda 7's typed form (`{"orderId": {"value": "…", "type": "String"}}`) doesn't match anything in GoFlow and answers `404 no process instance found waiting for this message`. A `404` also means the token hasn't reached the catch event yet: retry. `POST /v2/messages/publication` (`name`, `correlationKey`, `variables`, `timeToLive`) works the Camunda 8 way and buffers the message for `timeToLive` ms instead.
+This is Camunda 7's message correlation: `correlationKeys` and the variables (`processVariables`, or `variables`) take plain or typed values, `businessKey` or `processInstanceId` target one instance, `all: true` correlates every waiting one. The reply is `204`, or the list of correlations with `resultEnabled: true`. Nothing waiting answers `400 … MismatchingMessageCorrelationException`, which is also what a token not yet at the catch event gets: retry. `POST /v2/messages/publication` (`name`, `correlationKey`, `variables`, `timeToLive`) works the Camunda 8 way and buffers the message for `timeToLive` ms instead.
 
 ### History and search
 
 ```java
-goflow.get("/engine-rest/history/process-instance/" + instanceId);            // "state": "completed"
+goflow.get("/engine-rest/history/process-instance/" + instanceId);            // "state": "COMPLETED"
 goflow.get("/engine-rest/history/process-instance" + query(
-        "processDefinitionKey", "JavaOrder", "businessKey", orderId, "state", "completed"));
+        "processDefinitionKey", "JavaOrder", "businessKey", orderId, "completed", "true"));
 goflow.get("/engine-rest/history/task" + query("processInstanceId", instanceId, "finished", "true"));
 goflow.get("/engine-rest/process-instance/" + instanceId + "/variables");     // also after the end
 ```
@@ -264,6 +272,8 @@ try (ZeebeClient zeebe = ZeebeClient.newClientBuilder()
 
 The whole flow is in [ZeebeClientExample](../examples/java-client/src/main/java/com/goflow/examples/ZeebeClientExample.java).
 
+The 8.3 client has no basic-auth provider (only OAuth). To use a GoFlow e-mail and password instead of a JWT, put `"Basic " + base64(email + ":" + password)` in the same header from your own `CredentialsProvider`.
+
 ### camunda-client-java 8.8
 
 The current client defaults to Camunda 8's REST API for many commands. That doesn't work against GoFlow: its `/v2` responses are simplified (keys are UUID strings, for one), the client can't parse them, and every command fails with `MalformedResponseException`. Force gRPC:
@@ -293,11 +303,104 @@ With that, the commands above work under their 8.8 names (`io.camunda.client…`
 
 ### What the gRPC side can't do
 
-- **User tasks are not jobs** in GoFlow. Find and complete them over REST: `POST /v2/user-tasks/search`, then `POST /v2/user-tasks/{userTaskKey}/assignment` and `…/completion`.
+- **User tasks are not jobs** in GoFlow. A worker on `io.camunda.zeebe:userTask` (job-based user tasks, as Camunda 8 used them before 8.5) receives nothing. Find and complete them over REST: `POST /v2/user-tasks/search`, then `POST /v2/user-tasks/{userTaskKey}/assignment` and `…/completion`.
 - **gRPC keys and REST IDs don't match.** gRPC hands out numbers (`instanceKey = 109`); REST uses UUIDs, and no endpoint converts one into the other. To find over REST an instance created over gRPC, look for it by a business variable: the example lists the open `approveOrder` tasks and keeps the one whose instance has the right `orderId` (`/v2/variables/search`). When an application needs both, it is simpler to start its instances over REST, with a `businessKey`, and use gRPC for the workers.
 - RPCs of newer clients that GoFlow doesn't have yet: `MigrateProcessInstance`, `UpdateJobTimeout`.
 
 A harmless `SEVERE … RejectedExecutionException` can show up when the client closes while a worker's long poll is still open.
+
+## 4. Camunda 7 OpenAPI REST client
+
+The client generated from Camunda's own OpenAPI spec: every `/engine-rest` endpoint as a typed method, in plain Java (Apache HttpClient 5 and Jackson).
+
+```xml
+<dependency>
+  <groupId>org.camunda.community</groupId>
+  <artifactId>camunda-engine-rest-client-openapi-java</artifactId>
+  <version>7.24.0</version>
+</dependency>
+```
+
+```java
+ApiClient client = new ApiClient();
+client.setBasePath("http://goflow-host:8080/engine-rest");
+client.addDefaultHeader("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString("app@acme.com:secret".getBytes(StandardCharsets.UTF_8)));
+
+new DeploymentApi(client).createDeployment(null, "my-app", false, false, "My app", null, bpmnFile);
+
+var instance = new ProcessDefinitionApi(client).startProcessInstanceByKey("JavaOrder",
+        new StartProcessInstanceDto().businessKey(orderId).variables(Map.of(
+                "orderId", new VariableValueDto().value(orderId).type("String"))));
+
+List<TaskWithAttachmentAndCommentDto> tasks = new TaskApi(client).queryTasks(0, 10,
+        new TaskQueryDto().processInstanceId(instance.getId()).taskDefinitionKey("approveOrder"));
+
+new MessageApi(client).deliverMessage(new CorrelationMessageDto()
+        .messageName("PaymentConfirmed")
+        .correlationKeys(Map.of("orderId", new VariableValueDto().value(orderId).type("String"))));
+```
+
+The whole flow is in [Camunda7OpenApiExample](../examples/java-client/src/main/java/com/goflow/examples/Camunda7OpenApiExample.java). The client covers all of Camunda 7's REST API; the endpoints GoFlow doesn't serve (see [Switching from Camunda 7](switching-from-camunda.md#camunda-7-engine-rest)) answer `404`.
+
+## 5. Camunda 7 Java API over REST (Spring Boot)
+
+A Camunda 7 application usually talks to an embedded engine through its Java API: `RuntimeService`, `TaskService`, `RepositoryService`… The community starter implements those interfaces with REST calls, so the same code runs against a remote GoFlow.
+
+```xml
+<parent>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-parent</artifactId>
+  <version>3.5.8</version>
+</parent>
+<!-- spring-cloud-dependencies 2025.0.0 and camunda-bom 7.24.0 imported in dependencyManagement -->
+
+<dependency>
+  <groupId>org.camunda.community.rest</groupId>
+  <artifactId>camunda-platform-7-rest-client-spring-boot-starter</artifactId>
+  <version>7.24.1</version>
+</dependency>
+<!-- The starter declares these "provided": the application must bring them. -->
+<dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-openfeign</artifactId></dependency>
+<dependency><groupId>com.fasterxml.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
+<dependency><groupId>com.fasterxml.jackson.datatype</groupId><artifactId>jackson-datatype-jdk8</artifactId></dependency>
+<dependency><groupId>com.fasterxml.jackson.datatype</groupId><artifactId>jackson-datatype-jsr310</artifactId></dependency>
+<dependency><groupId>com.fasterxml.jackson.module</groupId><artifactId>jackson-module-kotlin</artifactId></dependency>
+<dependency><groupId>org.camunda.commons</groupId><artifactId>camunda-commons-typed-values</artifactId></dependency>
+```
+
+The full POM is [examples/java-client-spring/pom.xml](../examples/java-client-spring/pom.xml). Without the "provided" ones, the application fails to start (`NoClassDefFoundError: com/fasterxml/jackson/databind/ObjectMapper`).
+
+```properties
+feign.client.config.default.url=http://goflow-host:8080/engine-rest
+camundaplatformrest.security.basicAuth.username=app@acme.com
+camundaplatformrest.security.basicAuth.password=secret
+```
+
+Authenticate with these properties: a `RequestInterceptor` bean of the application is **not** applied to the starter's clients (every call gets `401`).
+
+```java
+@SpringBootApplication
+@EnableCamundaRestClient
+public class App implements CommandLineRunner {
+
+    @Autowired @Qualifier("remote") RuntimeService runtimeService;
+    @Autowired @Qualifier("remote") TaskService taskService;
+
+    public void run(String... args) {
+        ProcessInstance instance = runtimeService.startProcessInstanceByKey("JavaOrder", orderId,
+                Map.of("orderId", orderId, "amount", 120));
+        Task task = taskService.createTaskQuery()
+                .processInstanceId(instance.getId()).taskDefinitionKey("approveOrder").singleResult();
+        taskService.complete(task.getId(), Map.of("approved", true));
+        runtimeService.createMessageCorrelation("PaymentConfirmed")
+                .processInstanceVariableEquals("orderId", orderId)
+                .correlate();
+    }
+}
+```
+
+The whole flow is in [Camunda7JavaApiExample](../examples/java-client-spring/src/main/java/com/goflow/examples/spring/Camunda7JavaApiExample.java): deployment and definition query, start, task query, claim, complete, fetch-and-lock through `ExternalTaskService`, `getVariables`, message correlation, historic instance query. The starter itself doesn't implement every query: `historyService.createHistoricTaskInstanceQuery()` throws `kotlin.NotImplementedError` before any call is made.
 
 ## Pitfalls
 
@@ -306,7 +409,9 @@ A harmless `SEVERE … RejectedExecutionException` can show up when the client c
 | `401` after about 15 minutes | Access token expired: refresh it (`POST /auth/refresh`), or use HTTP Basic on REST. |
 | `NoClassDefFoundError: jakarta/xml/bind/JAXBException` | Camunda 7 client without `jaxb-runtime`. |
 | `MalformedResponseException` from `camunda-client-java` | REST mode: add `.preferRestOverGrpc(false)`. |
-| Message `404 no process instance found waiting` | Typed `correlationKeys` (send plain values), or the token isn't at the catch event yet (retry). |
+| Message `400 … MismatchingMessageCorrelationException` | Nothing waits for it: the token isn't at the catch event yet (retry), or the keys or business key don't match. |
+| `kotlin.NotImplementedError` from the Spring Boot starter | That query isn't implemented by the starter itself (`createHistoricTaskInstanceQuery()`, for one): call the REST API for it. |
+| `401` from the Spring Boot starter although a `RequestInterceptor` bean is set | The starter doesn't apply it: use its `camundaplatformrest.security.basicAuth.*` properties. |
 | gRPC `UNAUTHENTICATED` | No `authorization` header, a wrong password, or an expired or foreign token. |
 | gRPC `NOT_FOUND` or `you do not have START access` | Valid credentials, but the user lacks the permission on that process. |
 | A filter seems ignored | A date in another format than RFC 3339 is ignored; an unknown `/v2` `state` too (see [API conventions](api.md#conventions)). |

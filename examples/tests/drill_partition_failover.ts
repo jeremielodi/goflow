@@ -124,7 +124,7 @@ async function main() {
 
   const statuses = await Promise.all(ids.map(id =>
     retry(async () => (await client.api.get(`/engine-rest/history/process-instance/${id}`)).data.state as string, 'history')));
-  const done = statuses.filter(s => s === 'completed').length;
+  const done = statuses.filter(s => s === 'COMPLETED').length;
   console.log(`${done} / ${ids.length} instances completed`);
 
   execSync(`docker start ${victim}`);

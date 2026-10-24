@@ -44,6 +44,13 @@
       <version>4.0.5</version>
     </dependency>
 
+    <!-- Camunda 7 REST client generated from Camunda's OpenAPI spec (community, plain Java) -->
+    <dependency>
+      <groupId>org.camunda.community</groupId>
+      <artifactId>camunda-engine-rest-client-openapi-java</artifactId>
+      <version>7.24.0</version>
+    </dependency>
+
     <!-- Camunda 8 Java client: gRPC, Zeebe 8.3 protocol (what GoFlow serves) -->
     <dependency>
       <groupId>io.camunda</groupId>

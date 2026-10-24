@@ -39,53 +39,132 @@ func NewMessageController(db *sqlx.DB, dispatcher *events.TaskEventDispatcher) *
 func (mc *MessageController) DB() *sqlx.DB                            { return mc.db }
 func (mc *MessageController) Dispatcher() *events.TaskEventDispatcher { return mc.dispatcher }
 
+// CorrelateMessageRequest is Camunda 7's CorrelationMessageDto: values plain
+// ({"orderId": "A-1"}) or typed ({"orderId": {"value": "A-1", "type":
+// "String"}}), the variables to set under Camunda 7's "processVariables" (or
+// GoFlow's older "variables"), the instance targeted by processInstanceId or
+// businessKey.
 type CorrelateMessageRequest struct {
-	MessageName     string                 `json:"messageName"`
-	CorrelationKeys map[string]interface{} `json:"correlationKeys"` // varName → value
-	Variables       map[string]interface{} `json:"variables"`
-	// Direct process instance targeting (optional)
-	ProcessInstanceID string `json:"processInstanceId"`
+	MessageName       string                 `json:"messageName"`
+	CorrelationKeys   map[string]interface{} `json:"correlationKeys"` // varName → value
+	Variables         map[string]interface{} `json:"variables"`
+	ProcessVariables  map[string]interface{} `json:"processVariables"`
+	ProcessInstanceID string                 `json:"processInstanceId"`
+	BusinessKey       string                 `json:"businessKey"`
+	// All correlates every waiting execution, not just the first.
+	All bool `json:"all"`
+	// ResultEnabled returns the correlations (otherwise 204), with the
+	// instance's variables when VariablesInResultEnabled.
+	ResultEnabled            bool `json:"resultEnabled"`
+	VariablesInResultEnabled bool `json:"variablesInResultEnabled"`
 }
 
-// CorrelateMessage handles POST /engine-rest/message
-// Finds all executions waiting for the given message and resumes them.
+// MessageTarget narrows a correlation to one process instance, by id or
+// business key.
+type MessageTarget struct {
+	ProcessInstanceID string `json:"processInstanceId,omitempty"`
+	BusinessKey       string `json:"businessKey,omitempty"`
+}
+
+// maxCorrelateAll bounds an "all" correlation.
+const maxCorrelateAll = 1000
+
+// CorrelateMessage handles POST /engine-rest/message as Camunda 7 does: 204,
+// or with resultEnabled the list of correlations; 400
+// MismatchingMessageCorrelationException when nothing waits for the message.
 func (mc *MessageController) CorrelateMessage(c *fiber.Ctx) error {
 	var req CorrelateMessageRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": err.Error()})
+		return c7Error(c, fiber.StatusBadRequest, "InvalidRequestException", err.Error())
 	}
 	if req.MessageName == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "messageName is required"})
+		return c7Error(c, fiber.StatusBadRequest, "InvalidRequestException", "messageName is required")
 	}
 
-	processInstanceID, executionID, err := mc.Correlate(c.Context(), req.MessageName, req.CorrelationKeys, req.Variables)
-	if err != nil {
-		status := fiber.StatusInternalServerError
-		if errors.Is(err, ErrNoMatchingSubscription) {
-			status = fiber.StatusNotFound
+	variables := normalizeVariables(req.Variables)
+	for k, v := range normalizeVariables(req.ProcessVariables) {
+		variables[k] = v
+	}
+	keys := normalizeVariables(req.CorrelationKeys)
+	target := MessageTarget{ProcessInstanceID: req.ProcessInstanceID, BusinessKey: req.BusinessKey}
+
+	var results []fiber.Map
+	for len(results) < maxCorrelateAll {
+		instanceID, executionID, err := mc.Correlate(c.Context(), req.MessageName, keys, variables, target)
+		if errors.Is(err, ErrNoMatchingSubscription) && len(results) > 0 {
+			break // "all": nothing more waits
 		}
-		return c.Status(status).JSON(fiber.Map{"message": err.Error()})
+		if errors.Is(err, ErrNoMatchingSubscription) {
+			return c7Error(c, fiber.StatusBadRequest, "RestException", fmt.Sprintf(
+				"org.camunda.bpm.engine.MismatchingMessageCorrelationException: Cannot correlate message '%s': No process definition or execution matches the parameters",
+				req.MessageName))
+		}
+		if err != nil {
+			return c7Error(c, fiber.StatusInternalServerError, "RestException", err.Error())
+		}
+		result := fiber.Map{
+			"resultType":      "Execution",
+			"execution":       fiber.Map{"id": executionID, "processInstanceId": instanceID, "ended": false, "tenantId": nil},
+			"processInstance": nil,
+		}
+		if req.VariablesInResultEnabled {
+			if vars, err := repository.NewProcessInstanceRepository(mc.db).GetVariables(instanceID); err == nil {
+				result["variables"] = toC7Variables(vars)
+			}
+		}
+		results = append(results, result)
+		if !req.All {
+			break
+		}
 	}
 
-	return c.JSON(fiber.Map{
-		"processInstanceId": processInstanceID,
-		"executionId":       executionID,
-	})
+	if !req.ResultEnabled {
+		return c.SendStatus(fiber.StatusNoContent)
+	}
+	return c.JSON(results)
 }
 
 // Correlate resumes the first execution waiting for messageName (optionally
-// scoped by a single correlation key) and merges variables into that process
-// instance. Like a published message, it runs on the partition of its
-// correlation key.
-func (mc *MessageController) Correlate(ctx context.Context, messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
+// scoped by a single correlation key and a target instance) and merges
+// variables into that process instance. Like a published message, it runs
+// on the partition of its correlation key.
+func (mc *MessageController) Correlate(ctx context.Context, messageName string, correlationKeys, variables map[string]interface{}, target MessageTarget) (uuid.UUID, uuid.UUID, error) {
 	key := cmdbus.NameKey("message", messageName, fmt.Sprint(correlationKeys))
 	var out correlateOutcome
 	err := cmdbus.Do(ctx, cmdbus.Key(key), cmdCorrelateMessage,
-		correlateArgs{MessageName: messageName, CorrelationKeys: correlationKeys, Variables: variables}, &out)
+		correlateArgs{MessageName: messageName, CorrelationKeys: correlationKeys, Variables: variables, Target: target}, &out)
 	return out.ProcessInstanceID, out.ExecutionID, err
 }
 
-func (mc *MessageController) correlate(messageName string, correlationKeys, variables map[string]interface{}) (uuid.UUID, uuid.UUID, error) {
+// keepTarget drops the subscriptions outside the targeted instance.
+func (mc *MessageController) keepTarget(subs []repository.EventSubscription, target MessageTarget) ([]repository.EventSubscription, error) {
+	if target.ProcessInstanceID == "" && target.BusinessKey == "" {
+		return subs, nil
+	}
+	allowed := map[uuid.UUID]bool{}
+	if target.BusinessKey != "" {
+		var ids []uuid.UUID
+		if err := mc.db.Select(&ids, `SELECT id FROM public.process_instances WHERE business_key = $1`, target.BusinessKey); err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			allowed[id] = true
+		}
+	}
+	var kept []repository.EventSubscription
+	for _, s := range subs {
+		if target.ProcessInstanceID != "" && s.ProcessInstanceID.String() != target.ProcessInstanceID {
+			continue
+		}
+		if target.BusinessKey != "" && !allowed[s.ProcessInstanceID] {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept, nil
+}
+
+func (mc *MessageController) correlate(messageName string, correlationKeys, variables map[string]interface{}, target MessageTarget) (uuid.UUID, uuid.UUID, error) {
 	subRepo := repository.NewEventSubscriptionRepository(mc.db)
 
 	// Determine correlation filtering
@@ -100,6 +179,9 @@ func (mc *MessageController) correlate(messageName string, correlationKeys, vari
 
 	subs, err := subRepo.FindByMessageName(messageName, corrVarName, corrVarValue)
 	if err != nil {
+		return uuid.Nil, uuid.Nil, err
+	}
+	if subs, err = mc.keepTarget(subs, target); err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
 

@@ -552,6 +552,10 @@ func main() {
 	c7TaskCtrl := api.NewCamunda7TaskController(db, taskEventDispatcher)
 	app.Get("/engine-rest/task", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.List)
 	app.Post("/engine-rest/task", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.List)
+	app.Get("/engine-rest/variable-instance", c7TaskCtrl.VariableInstances)
+	app.Post("/engine-rest/variable-instance", c7TaskCtrl.VariableInstances)
+	app.Get("/engine-rest/variable-instance/count", c7TaskCtrl.VariableInstanceCount)
+	app.Post("/engine-rest/variable-instance/count", c7TaskCtrl.VariableInstanceCount)
 	app.Get("/engine-rest/task/count", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.Count)
 	app.Post("/engine-rest/task/count", permissions(db, "CAN_READ_TASKS"), c7TaskCtrl.Count)
 	app.Get("/engine-rest/task/:id", c7TaskCtrl.Get)
@@ -595,6 +599,7 @@ func main() {
 
 	// Full historic process/activity instance endpoints (Camunda 7 compatible)
 	app.Get("/engine-rest/history/process-instance", historyCtrl.ListHistoricProcessInstances)
+	app.Post("/engine-rest/history/process-instance", historyCtrl.ListHistoricProcessInstances)
 	app.Get("/engine-rest/history/process-instance/:id", historyCtrl.GetHistoricProcessInstance)
 	app.Get("/engine-rest/history/activity-instance", historyCtrl.ListHistoricActivityInstances)
 

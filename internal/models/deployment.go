@@ -40,6 +40,23 @@ type ProcessDefinition struct {
 	WritePath string `db:"write_path" json:"writePath"`
 }
 
+// MarshalJSON adds the Camunda 7 ProcessDefinitionDto fields GoFlow has no
+// counterpart for, with Camunda's defaults: Camunda 7 clients (the REST
+// client Spring Boot starter, for one) require suspended and
+// startableInTasklist. GoFlow doesn't suspend definitions.
+func (d ProcessDefinition) MarshalJSON() ([]byte, error) {
+	type plain ProcessDefinition
+	return json.Marshal(struct {
+		plain
+		Suspended           bool    `json:"suspended"`
+		StartableInTasklist bool    `json:"startableInTasklist"`
+		VersionTag          *string `json:"versionTag"`
+		Description         *string `json:"description"`
+		Category            string  `json:"category"`
+		Resource            *string `json:"resource"`
+	}{plain: plain(d), StartableInTasklist: true, Category: "http://bpmn.io/schema/bpmn"})
+}
+
 // ProcessDefinitionCreateModel for INSERT
 type ProcessDefinitionCreateModel struct {
 	DeploymentID uuid.UUID

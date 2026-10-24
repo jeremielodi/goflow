@@ -72,7 +72,7 @@ npx ts-node run_all.ts
 | 51 | Camunda 7 task API (`/engine-rest/task`): query, count, claim, assignee, typed variables, complete |
 | 52 | Camunda 7 application and worker: start by key with a business key, `fetchAndLock` fields and long polling, `extendLock`, `unlock`, `bpmnError`, `failure` retries |
 | 53 | Previous step (step a token back): paths, refusals across a fork, stale job rejected, permissions |
-| 54 | Java clients: runs [examples/java-client](../examples/java-client) — plain REST, the Camunda 7 External Task Client (Basic and JWT), the Camunda 8 Java client over gRPC (see [Java client](java-client.md)) |
+| 54 | Java clients: runs [examples/java-client](../examples/java-client) and [examples/java-client-spring](../examples/java-client-spring) — plain REST, the Camunda 7 External Task Client (Basic and JWT), the Camunda 8 Java client over gRPC, the Camunda 7 OpenAPI REST client, a Camunda 7 Java-API application through the REST client Spring Boot starter (see [Java client](java-client.md)) |
 
 To run against a GoFlow that isn't on `127.0.0.1:8080`, set `GOFLOW_URL` (and `GOFLOW_GRPC` for suite 54). `SKIP_SETUP=1` runs against the stack already up instead of rebuilding it with fresh volumes.
 

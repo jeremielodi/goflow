@@ -96,7 +96,7 @@ public class ExternalTaskWorkerExample {
                     return Optional.empty();
                 }
             });
-            waitFor("instance completed", Duration.ofSeconds(15), () -> "completed".equals(
+            waitFor("instance completed", Duration.ofSeconds(15), () -> "COMPLETED".equals(
                     goflow.get("/engine-rest/history/process-instance/" + instanceId).path("state").asText())
                     ? Optional.of(true) : Optional.empty());
             JsonNode vars = goflow.get("/engine-rest/process-instance/" + instanceId + "/variables");

@@ -54,6 +54,48 @@ func c7Time(t *time.Time) *string {
 	return &s
 }
 
+// parseC7Date reads a date in RFC 3339 or Camunda 7's format; nil when it
+// is empty or neither.
+func parseC7Date(s string) *time.Time {
+	for _, layout := range []string{time.RFC3339, camunda7Time} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
+// c7Params returns a request's parameters by name, read from the JSON body
+// of a POST query (Camunda 7 sends its query DTOs there) or else the query
+// string. Booleans read "true"/"false", lists comma-joined.
+func c7Params(c *fiber.Ctx) (func(string) string, error) {
+	if c.Method() != fiber.MethodPost || len(c.Body()) == 0 {
+		return func(name string) string { return c.Query(name) }, nil
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(c.Body(), &body); err != nil {
+		return nil, err
+	}
+	return func(name string) string {
+		switch v := body[name].(type) {
+		case nil:
+			return c.Query(name)
+		case string:
+			return v
+		case bool:
+			return strconv.FormatBool(v)
+		case []interface{}:
+			parts := make([]string, 0, len(v))
+			for _, p := range v {
+				parts = append(parts, fmt.Sprint(p))
+			}
+			return strings.Join(parts, ",")
+		default:
+			return fmt.Sprint(v)
+		}
+	}, nil
+}
+
 // c7Error is Camunda 7's error body.
 func c7Error(c *fiber.Ctx, status int, typ, message string) error {
 	return c.Status(status).JSON(fiber.Map{"type": typ, "message": message})

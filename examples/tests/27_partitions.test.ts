@@ -125,7 +125,7 @@ async function main() {
           const vars = await client.getProcessVariables(id);
           for (let i = 0; i < 4; i++) assert(`part${i}` in vars, `variable part${i} of a concurrent completion was lost: ${JSON.stringify(vars)}`);
           await finish(id, orderId);
-          assert(await historicStatus(id) === 'completed', 'the instance should be completed');
+          assert(await historicStatus(id) === 'COMPLETED', 'the instance should be completed');
         },
       },
       {
@@ -140,7 +140,7 @@ async function main() {
 
           await Promise.all(ids.map((id, i) => finish(id, orders[i])));
           const statuses = await Promise.all(ids.map(historicStatus));
-          assert(statuses.every(s => s === 'completed'), `not all completed: ${JSON.stringify(statuses)}`);
+          assert(statuses.every(s => s === 'COMPLETED'), `not all completed: ${JSON.stringify(statuses)}`);
         },
       },
       {

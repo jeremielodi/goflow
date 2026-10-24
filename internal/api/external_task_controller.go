@@ -72,6 +72,7 @@ type FetchAndLockResponse struct {
 	BusinessKey          *string `json:"businessKey"`
 	TenantID             *string `json:"tenantId"`
 	LockExpirationTime   *string `json:"lockExpirationTime"`
+	CreateTime           *string `json:"createTime"`
 	Priority             int     `json:"priority"`
 	ErrorMessage         *string `json:"errorMessage"`
 	ErrorDetails         *string `json:"errorDetails"`

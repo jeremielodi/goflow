@@ -126,6 +126,7 @@ func (ctrl *ExternalTaskController) FetchAndLock(c *fiber.Ctx) error {
 				BusinessKey:          info.BusinessKey,
 				TenantID:             info.TenantID,
 				LockExpirationTime:   c7Time(&expires),
+				CreateTime:           c7Time(&job.CreatedAt),
 			})
 		}
 	}

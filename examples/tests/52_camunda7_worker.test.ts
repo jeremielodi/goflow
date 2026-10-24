@@ -87,7 +87,7 @@ async function main() {
           await c7.post(`/task/${ship.id}/complete`, {});
           await client.waitForProcessEnd(inst.id, 10000);
           const hist = (await c7.get('/history/process-instance', { params: { businessKey: bk } })).data;
-          assert(hist.length === 1 && hist[0].businessKey === bk && hist[0].state === 'completed', `history by businessKey: ${JSON.stringify(hist)}`);
+          assert(hist.length === 1 && hist[0].businessKey === bk && hist[0].state === 'COMPLETED', `history by businessKey: ${JSON.stringify(hist)}`);
         },
       },
       {

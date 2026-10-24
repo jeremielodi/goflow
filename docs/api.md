@@ -72,6 +72,8 @@ GET /engine-rest/process-definition?key=myProcess&latestVersion=true
 GET /engine-rest/process-definition?latestVersion=true
 ```
 
+Each definition also carries Camunda 7's `suspended` (always `false`: GoFlow doesn't suspend definitions), `startableInTasklist` (`true`), `versionTag`, `description`, `category` and `resource`, which Camunda 7 clients expect.
+
 ### Process permissions
 
 ```http
@@ -212,6 +214,27 @@ POST /engine-rest/task?firstResult=0&maxResults=50
 |---|---|---|
 | `variableNames` | comma-separated list | Only these variables. |
 
+### Variable instances (`/engine-rest/variable-instance`)
+
+Camunda 7's variable query, which `RuntimeService.getVariables` calls when it runs over REST:
+
+```http
+GET|POST /engine-rest/variable-instance          (firstResult, maxResults)
+GET|POST /engine-rest/variable-instance/count    → { "count": n }
+→ [{ "id", "name", "type", "value", "valueInfo", "processInstanceId", "executionId",
+     "activityInstanceId", "processDefinitionId", "tenantId", … }]
+```
+
+| Parameter | Type | Effect |
+|---|---|---|
+| `processInstanceIdIn` | list of UUIDs | Variables of these instances. |
+| `executionIdIn` | list of UUIDs | Same (GoFlow keeps an instance's variables at its own scope, so `executionId` is the process instance id). |
+| `variableName` / `variableNameIn` | string / list | These names. |
+| `variableNameLike` | string | SQL `LIKE` on the name, case-sensitive (`%` and `_`). |
+| `tenantIdIn` | list | Instances of these tenants. |
+
+Running and suspended instances only; sub-process and multi-instance local variables aren't listed.
+
 ## External Tasks (Service Workers)
 
 Camunda 7's external task API, with its request and response shapes:
@@ -270,13 +293,17 @@ GET /timers/:id
 ## Messages & Signals
 
 ```http
-# Correlate message to waiting process
+# Correlate a message to a waiting process, as in Camunda 7
 POST /engine-rest/message
 {
   "messageName": "PaymentReceived",
-  "correlationKeys": { "orderId": "123" },
-  "variables": { "paymentRef": "PAY-001" }
+  "correlationKeys": { "orderId": { "value": "123", "type": "String" } },
+  "processVariables": { "paymentRef": { "value": "PAY-001", "type": "String" } },
+  "resultEnabled": true
 }
+→ 204 (no body), or with resultEnabled:
+  [{ "resultType": "Execution", "execution": { "id", "processInstanceId", "ended", "tenantId" },
+     "processInstance": null, "variables": {…} }]   (variables with variablesInResultEnabled)
 
 # Broadcast signal to ALL waiting instances
 POST /engine-rest/signal
@@ -286,13 +313,29 @@ POST /engine-rest/signal
 }
 ```
 
+**`POST /engine-rest/message`** body (Camunda 7's `CorrelationMessageDto`):
+
+| Field | Type | Effect |
+|---|---|---|
+| `messageName` | string | **Required.** |
+| `correlationKeys` | object | Process variables the instance must have; values plain (`"123"`) or typed (`{"value", "type"}`). GoFlow matches on the first key. |
+| `businessKey` | string | Only the instance with this business key. |
+| `processInstanceId` | UUID | Only this instance. |
+| `processVariables` | object | Variables set on the instance, plain or typed. `variables` (GoFlow's earlier name) still works. |
+| `all` | boolean | Correlate every waiting execution, not just the first (at most 1000). |
+| `resultEnabled` | boolean | Reply with the list of correlations instead of `204`. |
+| `variablesInResultEnabled` | boolean | Include each instance's variables in that list. |
+
+Nothing waiting for the message is `400` with `{"type": "RestException", "message": "org.camunda.bpm.engine.MismatchingMessageCorrelationException: …"}`, as in Camunda 7 (a token that hasn't reached the catch event yet gives the same answer: retry). Not supported: `localCorrelationKeys`, `processVariablesLocal`, `tenantId`, starting an instance from a message start event (use `POST /v2/messages/publication`).
+
 ## History
 
 Reads live and archived data together: running instances and instances that ended long ago come back from the same call.
 
 ```http
-GET /engine-rest/history/process-instance
-GET /engine-rest/history/process-instance/:id
+GET  /engine-rest/history/process-instance
+POST /engine-rest/history/process-instance    (filters in a JSON body, as Camunda 7 clients send them)
+GET  /engine-rest/history/process-instance/:id
 
 GET /engine-rest/history/activity-instance
 
@@ -301,21 +344,29 @@ GET /engine-rest/history/task/count          → { "count": n }   (same filters)
 GET /engine-rest/history/task/:id
 ```
 
-**`GET /engine-rest/history/process-instance`** — newest first (by start date).
+**`GET|POST /engine-rest/history/process-instance`** — newest first (by start date). With `POST`, the filters go in a JSON body (`firstResult` and `maxResults` stay in the query string).
+
+Each instance's `state` is Camunda 7's: `ACTIVE`, `SUSPENDED`, `COMPLETED` or `EXTERNALLY_TERMINATED` (GoFlow's terminated instances were stopped through the API). The response also carries `processDefinitionName`, `processDefinitionVersion`, `tenantId` and `deleteReason`.
 
 | Parameter | Type | Effect |
 |---|---|---|
+| `processInstanceId` | UUID | One instance. |
+| `processInstanceIds` | comma-separated UUIDs | These instances. |
 | `processDefinitionKey` | string | Process key, any version. |
-| `businessKey` | string | Business key. |
-| `state` | `active` \| `suspended` \| `completed` \| `terminated` | Instance state (`active` = running). |
+| `businessKey` (or Camunda 7's `processInstanceBusinessKey`) | string | Business key. |
+| `state` | `ACTIVE` \| `SUSPENDED` \| `COMPLETED` \| `EXTERNALLY_TERMINATED`, or GoFlow's `active` \| `suspended` \| `completed` \| `terminated` | Instance state. |
+| `active`, `suspended`, `completed`, `externallyTerminated` | `true` | Camunda 7's way to ask for one state (ignored when `state` is given). |
+| `finished` / `unfinished` | `true` | Ended / not ended. |
 | `startedAfter` | date | Started strictly after. |
 | `startedBefore` | date | Started strictly before. |
 | `finishedAfter` | date | Ended strictly after (running instances never match). |
 | `firstResult` | integer | Offset (default 0). |
 | `maxResults` | integer | Page size (default 100, at most 1000). |
 
+Dates here are RFC 3339 or Camunda 7's format (`2026-10-01T00:00:00.000+0200`).
+
 ```http
-GET /engine-rest/history/process-instance?processDefinitionKey=invoice&state=completed&finishedAfter=2026-10-01T00:00:00Z&maxResults=50
+GET /engine-rest/history/process-instance?processDefinitionKey=invoice&completed=true&finishedAfter=2026-10-01T00:00:00Z&maxResults=50
 ```
 
 **`GET /engine-rest/history/activity-instance`** — one row per token (execution), oldest first. Archived instances fall back to one row per element visited.

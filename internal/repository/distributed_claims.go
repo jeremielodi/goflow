@@ -48,7 +48,7 @@ func claimJobsTx(tx *sqlx.Tx, jobType, workerID string, lockedUntil time.Time, m
 			SET status = 'locked', locked_by = $1, locked_until = $2
 			WHERE process_instance_id = $3 AND id = $4 AND status = 'pending'
 			  AND (locked_by IS NULL OR locked_until < $5)
-			RETURNING id, payload, retries, execution_id, process_instance_id, status`,
+			RETURNING id, payload, retries, execution_id, process_instance_id, status, created_at`,
 			workerID, lockedUntil, c.ProcessInstanceID, c.ID, time.Now()); err != nil {
 			return nil, err
 		}

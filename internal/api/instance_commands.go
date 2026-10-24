@@ -169,6 +169,7 @@ type correlateArgs struct {
 	MessageName     string                 `json:"messageName"`
 	CorrelationKeys map[string]interface{} `json:"correlationKeys,omitempty"`
 	Variables       map[string]interface{} `json:"variables,omitempty"`
+	Target          MessageTarget          `json:"target"`
 }
 
 type correlateOutcome struct {
@@ -178,6 +179,6 @@ type correlateOutcome struct {
 
 func (ic *instanceCommands) correlate(_ context.Context, a correlateArgs) (correlateOutcome, error) {
 	mc := &MessageController{db: ic.db, dispatcher: ic.dispatcher, auditService: ic.audit}
-	instanceID, execID, err := mc.correlate(a.MessageName, a.CorrelationKeys, a.Variables)
+	instanceID, execID, err := mc.correlate(a.MessageName, a.CorrelationKeys, a.Variables, a.Target)
 	return correlateOutcome{ProcessInstanceID: instanceID, ExecutionID: execID}, err
 }

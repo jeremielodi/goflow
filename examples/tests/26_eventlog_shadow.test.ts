@@ -292,7 +292,7 @@ async function run() {
 
           // Cross-check against the real REST view of the same instance.
           const real = await client.api.get(`/engine-rest/history/process-instance/${instanceId}`);
-          assert(real.data?.state === 'completed', `expected real historic instance to also report completed, got ${JSON.stringify(real.data)}`);
+          assert(real.data?.state === 'COMPLETED', `expected real historic instance to also report completed, got ${JSON.stringify(real.data)}`);
         },
       },
 

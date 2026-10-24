@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // HistoricArchiveRepository owns the historic_* tables that a finished
@@ -229,6 +230,9 @@ type HistoricProcessInstanceFilter struct {
 	StartedAfter  *time.Time
 	StartedBefore *time.Time
 	FinishedAfter *time.Time
+	BusinessKey   string
+	// ProcessInstanceIDs keeps only these instances (empty: no filter).
+	ProcessInstanceIDs []string
 }
 
 func (r *HistoricArchiveRepository) FindAllProcessInstances(f HistoricProcessInstanceFilter) ([]HistoricProcessInstance, error) {
@@ -258,6 +262,16 @@ func (r *HistoricArchiveRepository) FindAllProcessInstances(f HistoricProcessIns
 	if f.FinishedAfter != nil {
 		query += ` AND ended_at > $` + strconv.Itoa(idx)
 		args = append(args, *f.FinishedAfter)
+		idx++
+	}
+	if f.BusinessKey != "" {
+		query += ` AND business_key = $` + strconv.Itoa(idx)
+		args = append(args, f.BusinessKey)
+		idx++
+	}
+	if len(f.ProcessInstanceIDs) > 0 {
+		query += ` AND id::text = ANY($` + strconv.Itoa(idx) + `)`
+		args = append(args, pq.Array(f.ProcessInstanceIDs))
 		idx++
 	}
 	query += ` ORDER BY started_at DESC`
