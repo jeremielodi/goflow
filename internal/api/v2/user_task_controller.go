@@ -115,8 +115,13 @@ func (uc *UserTaskController) SearchUserTasks(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 
+	// Only the tasks of instances the caller may VIEW, as GET /engine-rest/tasks.
+	access := newInstanceAccess(c, uc.db, "VIEW")
 	items := make([]fiber.Map, 0, len(tasks))
 	for i := range tasks {
+		if !access.allowed(tasks[i].ProcessInstanceID) {
+			continue
+		}
 		items = append(items, uc.toV2UserTask(&tasks[i]))
 	}
 
@@ -128,7 +133,7 @@ func (uc *UserTaskController) SearchUserTasks(c *fiber.Ctx) error {
 	// isn't stored on historic_tasks, so skip the merge for that filter —
 	// a known, narrow limitation rather than returning wrong results).
 	if req.Filter.ProcessInstanceKey != "" && req.Filter.CandidateGroup == "" {
-		if instanceID, parseErr := uuid.Parse(req.Filter.ProcessInstanceKey); parseErr == nil {
+		if instanceID, parseErr := uuid.Parse(req.Filter.ProcessInstanceKey); parseErr == nil && access.allowed(instanceID) {
 			archiveRepo := repository.NewHistoricArchiveRepository(uc.db)
 			historicTasks, histErr := archiveRepo.FindTasksByProcessInstance(instanceID)
 			if histErr == nil {

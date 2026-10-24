@@ -92,6 +92,18 @@ async function run() {
             assert(item.processDefinitionId === 'TaskListenerProcess', 'unexpected processDefinitionId in results');
             assert(item.state === 'COMPLETED', `unexpected state ${item.state} in filtered results`);
           }
+
+          // state ACTIVE used to be a 500 (mapped to "active", not the enum's "running").
+          const inst = await client.api.post('/v2/process-instances', { processDefinitionId: 'TaskListenerProcess' });
+          const active = await client.api.post('/v2/process-instances/search', {
+            filter: { processDefinitionId: 'TaskListenerProcess', state: 'ACTIVE' },
+          });
+          assert(active.data.items.some((i: any) => i.processInstanceKey === inst.data.processInstanceKey),
+            'expected the new instance in the ACTIVE search');
+          for (const item of active.data.items) {
+            assert(item.state === 'ACTIVE', `unexpected state ${item.state} in ACTIVE results`);
+          }
+          await client.api.delete(`/engine-rest/process-instance/${inst.data.processInstanceKey}`);
         },
       },
 

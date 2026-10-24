@@ -17,6 +17,38 @@ import * as protoLoader from '@grpc/proto-loader';
 const PROTO_PATH = path.join(__dirname, '..', '..', 'internal', 'zeebegrpc', 'proto', 'gateway.proto');
 const GRPC_ADDR = '127.0.0.1:26500';
 
+// The gateway refuses calls without valid credentials (see
+// internal/zeebegrpc/auth.go). The suites authenticate as the seeded
+// superuser with HTTP Basic, as zeebe-node's basicAuth option does.
+export const GRPC_BASIC_AUTH = { username: 'admin@goflow.com', password: 'admin123' };
+
+/**
+ * One unary call on a fresh client that sends exactly the given
+ * authorization header (none when undefined). Resolves to the response, or
+ * rejects with the grpc ServiceError.
+ */
+export function rawGatewayCall(method: string, req: unknown, authorization?: string): Promise<any> {
+  const packageDef = protoLoader.loadSync(PROTO_PATH, { keepCase: true, longs: String, enums: String, defaults: true, oneofs: true });
+  const proto = grpc.loadPackageDefinition(packageDef) as any;
+  const client = new proto.gateway_protocol.Gateway(GRPC_ADDR, grpc.credentials.createInsecure(),
+    authorization === undefined ? {} : { interceptors: [authInterceptor(authorization)] });
+  return new Promise((resolve, reject) =>
+    client[method](req, (err: grpc.ServiceError | null, res: any) => {
+      client.close();
+      err ? reject(err) : resolve(res);
+    }));
+}
+
+/** A grpc-js client interceptor adding the given authorization header to every call. */
+export function authInterceptor(authorization = 'Basic ' + Buffer.from(`${GRPC_BASIC_AUTH.username}:${GRPC_BASIC_AUTH.password}`).toString('base64')) {
+  return (options: any, nextCall: any) => new grpc.InterceptingCall(nextCall(options), {
+    start(metadata: grpc.Metadata, listener: any, next: any) {
+      metadata.set('authorization', authorization);
+      next(metadata, listener);
+    },
+  });
+}
+
 export class GrpcGatewayClient {
   private client: any;
 
@@ -29,7 +61,9 @@ export class GrpcGatewayClient {
       oneofs: true,
     });
     const proto = grpc.loadPackageDefinition(packageDef) as any;
-    this.client = new proto.gateway_protocol.Gateway(GRPC_ADDR, grpc.credentials.createInsecure());
+    this.client = new proto.gateway_protocol.Gateway(GRPC_ADDR, grpc.credentials.createInsecure(), {
+      interceptors: [authInterceptor()],
+    });
   }
 
   topology(): Promise<any> {

@@ -148,6 +148,7 @@ async function main() {
     '51_camunda7_task_api.test.ts',
     '52_camunda7_worker.test.ts',
     '53_step_back.test.ts',
+    '54_java_clients.test.ts',
   ];
 
   const exitCodes: number[] = [];

@@ -48,7 +48,14 @@
  *      just the per-instance ACL, for anyone with no token at all.
  */
 import * as path from 'path';
+import { execSync } from 'child_process';
 import { GoFlowClient, runSuite, assert } from './client';
+
+function psql(sql: string): string {
+  return execSync(`docker compose exec -T postgres psql -U goflow -d goflow -tAc "${sql}"`, {
+    cwd: path.join(__dirname, '..', '..'),
+  }).toString().trim();
+}
 
 const BPMN = path.join(__dirname, 'bpmn', '23_permission_process.bpmn');
 const superuser = new GoFlowClient();
@@ -276,6 +283,61 @@ async function run() {
           // The granted user (VIEW only) can see it.
           const granteeGet = await granteeClient.api.get(`/engine-rest/process-instance/${instanceId}`);
           assert(granteeGet.status === 200, `expected the VIEW-granted user to see the instance, got ${granteeGet.status}`);
+        },
+      },
+
+      // ── F: the /v2 searches filter by per-instance grants too ───────────────
+      {
+        name: '[F] /v2 user-task, incident, flow-node and variable searches respect per-instance grants',
+        async fn() {
+          await deploy(superuser);
+          const inst = await superuser.startProcess('PermissionProcess', { secret: 'only-for-viewers' });
+          const instanceId = (inst as any).processInstanceId ?? (inst as any).id;
+          // PermissionProcess raises no incident on its own: add one so the
+          // incident search has a row to hide.
+          psql(`INSERT INTO incidents (process_instance_id, incident_type, activity_id, error_message) VALUES ('${instanceId}', 'executionError', 'reviewTask', 'v2 permission test')`);
+
+          const { id: strangerId, client: stranger } = await createUser(`v2-stranger-${Date.now()}@goflow.com`);
+          const { id: granteeId, client: grantee } = await createUser(`v2-grantee-${Date.now()}@goflow.com`);
+          await superuser.api.post('/engine-rest/process-definition/key/PermissionProcess/permissions', {
+            granteeType: 'user', granteeId, permission: 'VIEW',
+          });
+          // /v2/user-tasks/search is also gated by CAN_READ_TASKS: give it to
+          // both, so this tests the per-instance filter.
+          const role = await superuser.api.post('/roles', { label: `f-task-reader-${Date.now()}`, is_default: 0 });
+          const actions = await superuser.api.get('/actions');
+          const readTasks = (actions.data.actions as any[]).find(a => a.code === 'CAN_READ_TASKS');
+          await superuser.api.post(`/roles/${role.data.role.id}/actions/${readTasks.id}`);
+          await superuser.api.post(`/users/${strangerId}/roles/${role.data.role.id}`);
+          await superuser.api.post(`/users/${granteeId}/roles/${role.data.role.id}`);
+
+          const search = (c: GoFlowClient, what: string, filter: Record<string, unknown>) =>
+            c.api.post(`/v2/${what}/search`, { filter }).catch((e: any) => e.response);
+          const keys = (res: any) => (res.data.items as any[]).map(i => i.processInstanceKey);
+
+          // Stranger: rows hidden, single-instance searches 404.
+          const sTasks = await search(stranger, 'user-tasks', { processInstanceKey: instanceId });
+          assert(sTasks.status === 200 && sTasks.data.items.length === 0, `stranger should see no task, got ${JSON.stringify(sTasks.data)}`);
+          const sAllTasks = await search(stranger, 'user-tasks', {});
+          assert(!keys(sAllTasks).includes(instanceId), 'unfiltered task search must hide the restricted instance');
+          const sInc = await search(stranger, 'incidents', {});
+          assert(!keys(sInc).includes(instanceId), 'incident search must hide the restricted instance');
+          const sFlow = await search(stranger, 'flownode-instances', { processInstanceKey: instanceId });
+          assert(sFlow.status === 404, `stranger flow-node search: expected 404, got ${sFlow.status}`);
+          const sVars = await search(stranger, 'variables', { processInstanceKey: instanceId });
+          assert(sVars.status === 404, `stranger variable search: expected 404, got ${sVars.status}`);
+
+          // Grantee (VIEW): sees all of it.
+          const gTasks = await search(grantee, 'user-tasks', { processInstanceKey: instanceId });
+          assert(gTasks.data.items.length === 1, `grantee should see the task, got ${JSON.stringify(gTasks.data)}`);
+          const gInc = await search(grantee, 'incidents', { processInstanceKey: instanceId });
+          assert(gInc.data.items.length === 1, `grantee should see the incident, got ${JSON.stringify(gInc.data)}`);
+          const gFlow = await search(grantee, 'flownode-instances', { processInstanceKey: instanceId });
+          assert(gFlow.status === 200 && gFlow.data.items.length > 0, `grantee flow-node search failed: ${gFlow.status}`);
+          const gVars = await search(grantee, 'variables', { processInstanceKey: instanceId, name: 'secret' });
+          assert(gVars.status === 200 && gVars.data.items[0]?.value === 'only-for-viewers', `grantee variable search failed: ${JSON.stringify(gVars.data)}`);
+
+          await superuser.api.delete(`/engine-rest/process-instance/${instanceId}`);
         },
       },
 

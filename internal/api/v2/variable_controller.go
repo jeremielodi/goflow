@@ -8,11 +8,12 @@ import (
 )
 
 type VariableController struct {
+	db           *sqlx.DB
 	instanceRepo *repository.ProcessInstanceRepository
 }
 
 func NewVariableController(db *sqlx.DB) *VariableController {
-	return &VariableController{instanceRepo: repository.NewProcessInstanceRepository(db)}
+	return &VariableController{db: db, instanceRepo: repository.NewProcessInstanceRepository(db)}
 }
 
 // SearchVariablesRequest matches the (simplified) Camunda 8 search body.
@@ -40,6 +41,12 @@ func (vc *VariableController) SearchVariables(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"title": "INVALID_ARGUMENT", "detail": "invalid processInstanceKey",
+		})
+	}
+
+	if !newInstanceAccess(c, vc.db, "VIEW").allowed(instanceID) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title": "NOT_FOUND", "detail": "process instance not found",
 		})
 	}
 

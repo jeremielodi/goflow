@@ -731,14 +731,22 @@ func main() {
 	// gRPC GATEWAY (Zeebe protocol subset — see internal/zeebegrpc)
 	// ============================================================
 
-	anonymousUserID, err := zeebegrpc.ResolveAnonymousUserID(db)
-	if err != nil {
-		log.Printf("⚠️ gRPC gateway: could not resolve a super_admin fallback identity, gRPC calls without a bearer token will be rejected: %v", err)
+	// Every gRPC call needs credentials, as on REST. GRPC_ALLOW_ANONYMOUS=true
+	// lets calls with none run as the first super_admin (for a trusted local
+	// network only); invalid credentials are refused either way.
+	var anonymousUserID uuid.UUID
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GRPC_ALLOW_ANONYMOUS")), "true") {
+		if anonymousUserID, err = zeebegrpc.ResolveAnonymousUserID(db); err != nil {
+			log.Printf("⚠️ gRPC gateway: GRPC_ALLOW_ANONYMOUS is set but no super_admin was found; calls without credentials will be refused: %v", err)
+		} else {
+			log.Println("⚠️ gRPC gateway: GRPC_ALLOW_ANONYMOUS=true — calls without credentials run as super_admin")
+		}
 	}
+	grpcAuth := zeebegrpc.NewAuthenticator(db, jwcService, oidcService, anonymousUserID)
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(zeebegrpc.UnaryAuthInterceptor(jwcService, anonymousUserID)),
-		grpc.StreamInterceptor(zeebegrpc.StreamAuthInterceptor(jwcService, anonymousUserID)),
+		grpc.UnaryInterceptor(grpcAuth.UnaryInterceptor()),
+		grpc.StreamInterceptor(grpcAuth.StreamInterceptor()),
 	)
 	pb.RegisterGatewayServer(grpcServer, zeebegrpc.NewServer(db, taskEventDispatcher))
 

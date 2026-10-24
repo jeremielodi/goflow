@@ -23,13 +23,14 @@ import * as grpc from '@grpc/grpc-js';
 import * as protoLoader from '@grpc/proto-loader';
 import { ZBClient } from 'zeebe-node';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
+import { GRPC_BASIC_AUTH, authInterceptor } from './grpc_client';
 
 const BPMN = path.join(__dirname, 'bpmn', '40_grpc_more.bpmn');
 const GRPC_ADDR = process.env.GRPC_ADDR ?? '127.0.0.1:26500';
 const restClient = new GoFlowClient();
 
 function newZbClient(): ZBClient {
-  return new ZBClient(GRPC_ADDR, { useTLS: false, retry: false, eagerConnection: false });
+  return new ZBClient(GRPC_ADDR, { useTLS: false, retry: false, eagerConnection: false, basicAuth: GRPC_BASIC_AUTH });
 }
 
 // Raw client on zeebe-node's official proto, for RPCs zeebe-node 8.3 lacks.
@@ -38,7 +39,7 @@ function officialGateway(): any {
     keepCase: true, longs: String, enums: String, defaults: true, oneofs: true,
   });
   const proto = grpc.loadPackageDefinition(def) as any;
-  return new proto.gateway_protocol.Gateway(GRPC_ADDR, grpc.credentials.createInsecure());
+  return new proto.gateway_protocol.Gateway(GRPC_ADDR, grpc.credentials.createInsecure(), { interceptors: [authInterceptor()] });
 }
 
 function call<T>(client: any, method: string, req: unknown): Promise<T> {

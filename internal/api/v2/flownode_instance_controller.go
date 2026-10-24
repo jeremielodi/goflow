@@ -8,11 +8,12 @@ import (
 )
 
 type FlownodeInstanceController struct {
+	db           *sqlx.DB
 	instanceRepo *repository.ProcessInstanceRepository
 }
 
 func NewFlownodeInstanceController(db *sqlx.DB) *FlownodeInstanceController {
-	return &FlownodeInstanceController{instanceRepo: repository.NewProcessInstanceRepository(db)}
+	return &FlownodeInstanceController{db: db, instanceRepo: repository.NewProcessInstanceRepository(db)}
 }
 
 // SearchFlownodeInstancesRequest matches the (simplified) Camunda 8 search body.
@@ -54,6 +55,12 @@ func (fc *FlownodeInstanceController) SearchFlownodeInstances(c *fiber.Ctx) erro
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"title": "INVALID_ARGUMENT", "detail": "invalid processInstanceKey",
+		})
+	}
+
+	if !newInstanceAccess(c, fc.db, "VIEW").allowed(instanceID) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"title": "NOT_FOUND", "detail": "process instance not found",
 		})
 	}
 

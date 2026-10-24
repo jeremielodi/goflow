@@ -169,7 +169,8 @@ Design decisions and the partitioned write path: [docs/architecture.md](docs/arc
 
 - [Switching from Camunda 7 / Camunda 8](docs/switching-from-camunda.md) — what an application already on Camunda changes, client by client
 - [Comparison to Camunda 7 / Camunda 8](docs/comparison.md) — what's covered and what isn't
-- [API Reference](docs/api.md) — REST (`/engine-rest`, `/v2`), events, audit trail
+- [API Reference](docs/api.md) — REST (`/engine-rest`, `/v2`), events, audit trail, every filter
+- [Java client](docs/java-client.md) — a remote Java application over REST, the Camunda 7 External Task Client or the Camunda 8 Java client, with tested examples
 - [Architecture](docs/architecture.md) — design decisions, partitioned write path
 - [Environment Variables](docs/configuration.md) — every setting
 - [Operations](docs/operations.md) — migrations, metrics, backups, scaling, high availability

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_StepBackParallel"
+  targetNamespace="http://bpmn.io/schema/bpmn">
+
+  <!--
+    SCENARIO: a token in a parallel branch can't step back over the fork.
+    prepare (user) → fork → left / right (users) → join → end.
+  -->
+
+  <bpmn:process id="StepBackParallel" name="Step Back Parallel" isExecutable="true">
+    <bpmn:startEvent id="pstart">
+      <bpmn:outgoing>p1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="prepare" name="Prepare">
+      <bpmn:incoming>p1</bpmn:incoming>
+      <bpmn:outgoing>p2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:parallelGateway id="fork">
+      <bpmn:incoming>p2</bpmn:incoming>
+      <bpmn:outgoing>p3</bpmn:outgoing>
+      <bpmn:outgoing>p4</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:userTask id="left" name="Left">
+      <bpmn:incoming>p3</bpmn:incoming>
+      <bpmn:outgoing>p5</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:userTask id="right" name="Right">
+      <bpmn:incoming>p4</bpmn:incoming>
+      <bpmn:outgoing>p6</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:parallelGateway id="join">
+      <bpmn:incoming>p5</bpmn:incoming>
+      <bpmn:incoming>p6</bpmn:incoming>
+      <bpmn:outgoing>p7</bpmn:outgoing>
+    </bpmn:parallelGateway>
+    <bpmn:endEvent id="pend">
+      <bpmn:incoming>p7</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="p1" sourceRef="pstart" targetRef="prepare" />
+    <bpmn:sequenceFlow id="p2" sourceRef="prepare" targetRef="fork" />
+    <bpmn:sequenceFlow id="p3" sourceRef="fork" targetRef="left" />
+    <bpmn:sequenceFlow id="p4" sourceRef="fork" targetRef="right" />
+    <bpmn:sequenceFlow id="p5" sourceRef="left" targetRef="join" />
+    <bpmn:sequenceFlow id="p6" sourceRef="right" targetRef="join" />
+    <bpmn:sequenceFlow id="p7" sourceRef="join" targetRef="pend" />
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_StepBackParallel">
+    <bpmndi:BPMNPlane id="BPMNPlane_StepBackParallel" bpmnElement="StepBackParallel">
+      <bpmndi:BPMNShape id="pstart_di" bpmnElement="pstart">
+        <dc:Bounds x="152" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="prepare_di" bpmnElement="prepare">
+        <dc:Bounds x="240" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="fork_di" bpmnElement="fork">
+        <dc:Bounds x="395" y="95" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="left_di" bpmnElement="left">
+        <dc:Bounds x="500" y="20" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="right_di" bpmnElement="right">
+        <dc:Bounds x="500" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="join_di" bpmnElement="join">
+        <dc:Bounds x="655" y="95" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="pend_di" bpmnElement="pend">
+        <dc:Bounds x="762" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="p1_di" bpmnElement="p1">
+        <di:waypoint x="188" y="120" />
+        <di:waypoint x="240" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p2_di" bpmnElement="p2">
+        <di:waypoint x="340" y="120" />
+        <di:waypoint x="395" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p3_di" bpmnElement="p3">
+        <di:waypoint x="420" y="95" />
+        <di:waypoint x="420" y="60" />
+        <di:waypoint x="500" y="60" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p4_di" bpmnElement="p4">
+        <di:waypoint x="420" y="145" />
+        <di:waypoint x="420" y="180" />
+        <di:waypoint x="500" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p5_di" bpmnElement="p5">
+        <di:waypoint x="600" y="60" />
+        <di:waypoint x="680" y="60" />
+        <di:waypoint x="680" y="95" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p6_di" bpmnElement="p6">
+        <di:waypoint x="600" y="180" />
+        <di:waypoint x="680" y="180" />
+        <di:waypoint x="680" y="145" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="p7_di" bpmnElement="p7">
+        <di:waypoint x="705" y="120" />
+        <di:waypoint x="762" y="120" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

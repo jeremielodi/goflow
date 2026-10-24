@@ -36,6 +36,7 @@
 import * as path from 'path';
 import { ZBClient } from 'zeebe-node';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
+import { GRPC_BASIC_AUTH, rawGatewayCall } from './grpc_client';
 
 const BPMN = path.join(__dirname, 'bpmn', '24_grpc_process.bpmn');
 const ORDER_BPMN = path.join(__dirname, 'bpmn', '10_order_notification.bpmn');
@@ -46,6 +47,7 @@ const restClient = new GoFlowClient();
 function newZbClient(): ZBClient {
   return new ZBClient('127.0.0.1:26500', {
     useTLS: false,
+    basicAuth: GRPC_BASIC_AUTH,
     retry: false,
     eagerConnection: false,
   });
@@ -350,6 +352,34 @@ async function run() {
           await restClient.waitForProcessEnd(instanceUUID, 10000);
           const inst = await restClient.getProcessInstance(instanceUUID);
           assert(inst !== null && inst.status === 'completed', `expected the instance to complete after BroadcastSignal, got ${inst?.status}`);
+        },
+      },
+
+      {
+        name: '[L] Calls without valid credentials are refused (UNAUTHENTICATED); Basic and Bearer JWT accepted',
+        async fn() {
+          const UNAUTHENTICATED = 16;
+          const refused = async (authorization: string | undefined, method = 'Topology', req: unknown = {}) => {
+            const err: any = await rawGatewayCall(method, req, authorization).then(() => null, e => e);
+            return err?.code === UNAUTHENTICATED;
+          };
+          const create = { bpmnProcessId: 'GrpcProcess', version: -1, variables: '{}' };
+
+          // These used to run as super_admin.
+          assert(await refused(undefined), 'no credentials must be refused');
+          assert(await refused('Bearer not-a-real-token'), 'a garbage token must be refused');
+          assert(await refused('Bearer not-a-real-token', 'CreateProcessInstance', create),
+            'CreateProcessInstance with a garbage token must be refused');
+          const wrongPassword = 'Basic ' + Buffer.from(`${GRPC_BASIC_AUTH.username}:wrong`).toString('base64');
+          assert(await refused(wrongPassword), 'a wrong password must be refused');
+
+          const basic = 'Basic ' + Buffer.from(`${GRPC_BASIC_AUTH.username}:${GRPC_BASIC_AUTH.password}`).toString('base64');
+          const topology = await rawGatewayCall('Topology', {}, basic);
+          assert(topology.brokers.length > 0, 'Basic credentials must be accepted');
+
+          const login = await new GoFlowClient().loginAsSuperUser();
+          const created = await rawGatewayCall('CreateProcessInstance', create, `Bearer ${login.access_token}`);
+          assert(!!created.processInstanceKey, 'a valid GoFlow JWT must be accepted');
         },
       },
 

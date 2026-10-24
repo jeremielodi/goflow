@@ -8,11 +8,12 @@ import (
 )
 
 type IncidentController struct {
+	db           *sqlx.DB
 	incidentRepo *repository.IncidentRepository
 }
 
 func NewIncidentController(db *sqlx.DB) *IncidentController {
-	return &IncidentController{incidentRepo: repository.NewIncidentRepository(db)}
+	return &IncidentController{db: db, incidentRepo: repository.NewIncidentRepository(db)}
 }
 
 // SearchIncidentsRequest matches the (simplified) Camunda 8 search body.
@@ -80,8 +81,13 @@ func (ic *IncidentController) SearchIncidents(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"title": "INTERNAL_ERROR", "detail": err.Error()})
 	}
 
+	// Only the incidents of instances the caller may VIEW, as GET /engine-rest/incident.
+	access := newInstanceAccess(c, ic.db, "VIEW")
 	items := make([]fiber.Map, 0, len(incidents))
 	for _, inc := range incidents {
+		if !access.allowed(inc.ProcessInstanceID) {
+			continue
+		}
 		items = append(items, fiber.Map{
 			"incidentKey":        inc.ID,
 			"processInstanceKey": inc.ProcessInstanceID,

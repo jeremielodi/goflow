@@ -192,7 +192,7 @@ func (pc *ProcessInstanceController) SearchProcessInstances(c *fiber.Ctx) error 
 	status := ""
 	switch strings.ToUpper(req.Filter.State) {
 	case "ACTIVE":
-		status = "active"
+		status = "running"
 	case "COMPLETED":
 		status = "completed"
 	case "TERMINATED":
@@ -313,12 +313,7 @@ func (pc *ProcessInstanceController) ModifyProcessInstance(c *fiber.Ctx) error {
 // (MANAGE on its process). Like the v1 checkInstanceAccess, it fails open
 // without an authenticated user: the route-level auth already covers that.
 func (pc *ProcessInstanceController) canManage(c *fiber.Ctx, instanceID uuid.UUID) bool {
-	userID, err := uuid.Parse(common.GetUserUuid(c))
-	if err != nil {
-		return true
-	}
-	allowed, _ := service.CanAccessProcessInstance(pc.db, userID, instanceID, "MANAGE")
-	return allowed
+	return newInstanceAccess(c, pc.db, "MANAGE").allowed(instanceID)
 }
 
 // StepBackRequest names the token to send back, by executionId or by the

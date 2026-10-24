@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Java clients of a remote GoFlow server — see docs/java-client.md.
+    Three ways, one class each:
+      RestExample               plain REST (java.net.http + Jackson)
+      ExternalTaskWorkerExample Camunda 7 External Task Client (REST)
+      ZeebeClientExample        Camunda 8 Java client (gRPC, port 26500)
+    Run one: ./mvnw -q compile exec:java -Dexec.mainClass=com.goflow.examples.RestExample
+    (integration suite 54, examples/tests/54_java_clients.test.ts, runs them all)
+  -->
+  <groupId>com.goflow.examples</groupId>
+  <artifactId>goflow-java-client</artifactId>
+  <version>1.0.0</version>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jackson.version>2.17.2</jackson.version>
+  </properties>
+
+  <dependencies>
+    <!-- REST: JSON (de)serialization -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+    </dependency>
+
+    <!-- Camunda 7 External Task Client: workers over /engine-rest -->
+    <dependency>
+      <groupId>org.camunda.bpm</groupId>
+      <artifactId>camunda-external-task-client</artifactId>
+      <version>7.24.0</version>
+    </dependency>
+    <!-- The client loads JAXB at startup (XML data format); not in the JDK since Java 11. -->
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <version>4.0.5</version>
+    </dependency>
+
+    <!-- Camunda 8 Java client: gRPC, Zeebe 8.3 protocol (what GoFlow serves) -->
+    <dependency>
+      <groupId>io.camunda</groupId>
+      <artifactId>zeebe-client-java</artifactId>
+      <version>8.3.22</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>2.0.13</version>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.3.0</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>

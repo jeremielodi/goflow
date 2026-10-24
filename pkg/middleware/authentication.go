@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/jeremielodi/goflow/internal/models"
 	"github.com/jeremielodi/goflow/internal/repository"
 	"github.com/jeremielodi/goflow/pkg/authentication"
 	"github.com/jeremielodi/goflow/pkg/common"
@@ -246,6 +247,33 @@ func AuthenticationMiddleware(jwtService *authentication.JWTService,
 	}
 }
 
+// UserFromBasicAuth checks an "Authorization: Basic <base64(email:password)>"
+// header value against GoFlow's users, and returns the active user it
+// names, or nil. Shared by the REST middleware and the gRPC gateway.
+func UserFromBasicAuth(db *sqlx.DB, header string) *models.User {
+	if !strings.HasPrefix(header, "Basic ") {
+		return nil
+	}
+	payload, err := base64.StdEncoding.DecodeString(header[len("Basic "):])
+	if err != nil {
+		return nil
+	}
+	email, password, ok := strings.Cut(string(payload), ":")
+	if !ok {
+		return nil
+	}
+	userRepo := repository.NewUserRepository(db)
+	user, err := userRepo.FindByEmail(email)
+	if err != nil || !user.IsActive {
+		return nil
+	}
+	hash, err := userRepo.GetPasswordHash(user.ID)
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash.PasswordHash), []byte(password)) != nil {
+		return nil
+	}
+	return &user
+}
+
 // CombinedAuthMiddleware handles both JWT and Basic Auth, plus OIDC bearer
 // tokens if oidcService is non-nil (see authentication.NewOIDCService — it
 // returns nil when OIDC isn't configured, so this stays a no-op by default).
@@ -263,34 +291,15 @@ func CombinedAuthMiddleware(db *sqlx.DB, jwtService *authentication.JWTService, 
 
 		// Try Basic Auth first
 		if strings.HasPrefix(auth, "Basic ") {
-
-			payload, err := base64.StdEncoding.DecodeString(auth[6:])
-			if err == nil {
-				parts := strings.SplitN(string(payload), ":", 2)
-				if len(parts) == 2 {
-					email := parts[0]
-					password := parts[1]
-
-					userRepo := repository.NewUserRepository(db)
-					user, err := userRepo.FindByEmail(email)
-					if err == nil && user.IsActive {
-						userPassword, err := userRepo.GetPasswordHash(user.ID)
-						if err == nil {
-							err = bcrypt.CompareHashAndPassword([]byte(userPassword.PasswordHash), []byte(password))
-							if err == nil {
-								// Basic Auth successful
-								common.SetUserUuid(c, user.ID.String())
-								if user.TenantID != nil {
-									common.SetTenantId(c, *user.TenantID)
-								}
-								c.Locals("user_id", user.ID)
-								c.Locals("user_email", user.Email)
-								c.Locals("auth_type", "basic")
-								return c.Next()
-							}
-						}
-					}
+			if user := UserFromBasicAuth(db, auth); user != nil {
+				common.SetUserUuid(c, user.ID.String())
+				if user.TenantID != nil {
+					common.SetTenantId(c, *user.TenantID)
 				}
+				c.Locals("user_id", user.ID)
+				c.Locals("user_email", user.Email)
+				c.Locals("auth_type", "basic")
+				return c.Next()
 			}
 
 			// Basic Auth failed

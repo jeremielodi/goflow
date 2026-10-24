@@ -63,7 +63,8 @@ test('Previous step sends the token from approve back to check', async ({ page, 
 
   await page.goto(`/instances/${id}`);
   await page.getByRole('button', { name: /previous step/i }).click();
-  await expect(page.getByText('Check Request')).toBeVisible({ timeout: 10_000 });
+  // The diagram shows "Check Request" too: check the modal's own sentence.
+  await expect(page.locator('p', { hasText: 'Send the token from' })).toContainText('Check Request', { timeout: 10_000 });
   await page.getByRole('button', { name: 'Go back', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Go back', exact: true })).toBeHidden({ timeout: 10_000 });
 

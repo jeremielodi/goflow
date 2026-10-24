@@ -126,6 +126,11 @@ services:
       # Observabilité : jeton Bearer exigé sur GET /metrics (vide = ouvert)
       METRICS_TOKEN: ${METRICS_TOKEN:-}
 
+      # Gateway gRPC (26500) : chaque appel exige des identifiants (JWT,
+      # OIDC ou Basic). true = un appel SANS identifiants s'exécute comme
+      # super_admin ; réservé à un réseau local de confiance.
+      GRPC_ALLOW_ANONYMOUS: ${GRPC_ALLOW_ANONYMOUS:-false}
+
       # Rétention : supprime les instances terminées depuis plus de N jours
       # (historic_*, audit_logs liés). Vide = tout garder.
       RETENTION_DAYS: ${RETENTION_DAYS:-}

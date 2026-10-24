@@ -22,6 +22,7 @@ import { execSync } from 'child_process';
 import { GoFlowClient, runSuite, assert, sleep } from './client';
 
 const BPMN = path.join(__dirname, 'bpmn', '53_step_back.bpmn');
+const PARALLEL_BPMN = path.join(__dirname, 'bpmn', '53_step_back_parallel.bpmn');
 const client = new GoFlowClient();
 
 function psql(sql: string): string {
@@ -80,6 +81,7 @@ async function startToApprove(vars: Record<string, unknown>) {
 async function run() {
   await client.loginAsSuperUser();
   await client.deployBpmn(BPMN, 'Step Back Test');
+  await client.deployBpmn(PARALLEL_BPMN, 'Step Back Parallel Test');
 
   await runSuite({
     name: '53 — Previous step (step back a token)',

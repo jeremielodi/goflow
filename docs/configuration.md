@@ -38,6 +38,12 @@ SUPER_USER_PASSWORD=admin123
 # Observability — bearer token required on GET /metrics (unset = open)
 # METRICS_TOKEN=<random value>
 
+# gRPC gateway (port 26500): every call needs credentials, as on REST —
+# "authorization: Bearer <GoFlow JWT or OIDC token>" or "Basic <e-mail:password>".
+# Invalid credentials are always refused (UNAUTHENTICATED). true lets a call
+# with NO credentials run as the first super_admin: trusted local networks only.
+# GRPC_ALLOW_ANONYMOUS=false
+
 # Retention — automatically delete instances that finished more than N days
 # ago (unset or 0 = keep everything forever); see "Operations" below
 # RETENTION_DAYS=365
